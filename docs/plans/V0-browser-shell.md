@@ -1,7 +1,9 @@
 # Plan: V0 — Browser Shell
 
-**Status:** locked  
+**Status:** complete  
 **Explicit reference:** Implementation tasks must cite `docs/plans/V0-browser-shell.md` to treat this file as authoritative.
+
+V0 completed on Windows development environment.
 
 This plan is implementation-ready for Composer. It does not reopen the accepted runtime. Authoritative architecture remains:
 

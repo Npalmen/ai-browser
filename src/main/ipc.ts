@@ -15,7 +15,8 @@ function isTrustedAppSender(event: IpcMainInvokeEvent): boolean {
     return false;
   }
 
-  if (event.senderFrame && event.senderFrame !== mainWindow.webContents.mainFrame) {
+  const mainFrame = mainWindow.webContents.mainFrame;
+  if (!event.senderFrame || !mainFrame || event.senderFrame !== mainFrame) {
     return false;
   }
 

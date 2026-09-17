@@ -9,7 +9,8 @@
     "start": "electron-forge start",
     "package": "electron-forge package",
     "typecheck": "tsc --noEmit",
-    "test:url": "tsx --test src/shared/navigation-url.test.ts"
+    "test:url": "tsx --test src/shared/navigation-url.test.ts",
+    "test:tabs": "tsx --test src/browser/tab-registry.test.ts"
   },
   "license": "MIT",
   "devDependencies": {

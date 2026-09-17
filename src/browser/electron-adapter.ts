@@ -36,16 +36,7 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     }
 
     const tabId = crypto.randomUUID();
-    const view = new WebContentsView({
-      webPreferences: {
-        session: this.websiteSession,
-        nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true,
-        webSecurity: true,
-        webviewTag: false,
-      },
-    });
+    const view = this.createWebsiteView();
 
     this.views.set(tabId, view);
     this.registry.addTab({
@@ -83,11 +74,12 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     }
 
     const view = this.views.get(tabId)!;
+    this.views.delete(tabId);
+
     const webContents = view.webContents;
     if (!webContents.isDestroyed()) {
       webContents.close();
     }
-    this.views.delete(tabId);
 
     const nextActiveTabId = this.registry.removeTab(tabId);
     if (nextActiveTabId === null) {
@@ -192,7 +184,7 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
   }
 
   layoutActiveView(): void {
-    if (!this.activeAttachedTabId) {
+    if (this.disposed || !this.activeAttachedTabId) {
       return;
     }
 
@@ -209,9 +201,10 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
       return;
     }
 
+    this.disposed = true;
     this.detachActiveView();
 
-    for (const [tabId, view] of this.views) {
+    for (const [tabId, view] of [...this.views.entries()]) {
       const webContents = view.webContents;
       if (!webContents.isDestroyed()) {
         webContents.close();
@@ -220,7 +213,6 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     }
 
     this.registry.clear();
-    this.disposed = true;
   }
 
   private attachView(tabId: TabId): void {
@@ -250,10 +242,78 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     this.activeAttachedTabId = null;
   }
 
+  private createWebsiteView(): WebContentsView {
+    return new WebContentsView({
+      webPreferences: {
+        session: this.websiteSession,
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        webSecurity: true,
+        webviewTag: false,
+      },
+    });
+  }
+
+  private recoverFromRendererCrash(tabId: TabId): void {
+    if (this.disposed || !this.views.has(tabId)) {
+      return;
+    }
+
+    console.error(`[adapter] recovering crashed renderer for tab ${tabId}`);
+
+    const wasActive = this.activeAttachedTabId === tabId;
+    const oldView = this.views.get(tabId)!;
+
+    if (wasActive) {
+      this.detachActiveView();
+    } else {
+      try {
+        this.mainWindow.contentView.removeChildView(oldView);
+      } catch {
+        // View may already be detached.
+      }
+    }
+
+    if (!oldView.webContents.isDestroyed()) {
+      oldView.webContents.close();
+    }
+    this.views.delete(tabId);
+
+    const replacementView = this.createWebsiteView();
+    this.views.set(tabId, replacementView);
+    this.registry.updateTab(tabId, {
+      url: 'about:blank',
+      title: 'Page crashed',
+      loading: false,
+      canGoBack: false,
+      canGoForward: false,
+    });
+
+    this.attachWebContentsHandlers(tabId, replacementView);
+
+    if (wasActive) {
+      this.attachView(tabId);
+    }
+
+    void replacementView.webContents.loadURL('about:blank').catch((error: unknown) => {
+      console.error(`[adapter] failed to load crash recovery page for tab ${tabId}:`, error);
+      if (!this.disposed && this.views.has(tabId)) {
+        this.syncMetadata(tabId, true);
+      }
+    });
+
+    this.publishState();
+  }
+
   private attachWebContentsHandlers(tabId: TabId, view: WebContentsView): void {
     const webContents = view.webContents;
 
     const denyNavigation = (event: Electron.Event, url: string): void => {
+      if (this.disposed || !this.views.has(tabId)) {
+        return;
+      }
+
       if (!isAllowedWebsiteNavigation(url)) {
         console.log(`[adapter] denied website navigation: ${url}`);
         event.preventDefault();
@@ -264,6 +324,10 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     webContents.on('will-redirect', denyNavigation);
 
     webContents.setWindowOpenHandler(({ url }) => {
+      if (this.disposed) {
+        return { action: 'deny' };
+      }
+
       if (isAllowedWebsiteNavigation(url)) {
         void this.createTab({ url }).catch((error: unknown) => {
           console.error('[adapter] failed to open popup as tab:', error);
@@ -275,7 +339,19 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
       return { action: 'deny' };
     });
 
+    webContents.on('render-process-gone', (_event, details) => {
+      if (details.reason === 'clean-exit') {
+        return;
+      }
+
+      this.recoverFromRendererCrash(tabId);
+    });
+
     const sync = (): void => {
+      if (this.disposed || !this.views.has(tabId)) {
+        return;
+      }
+
       this.syncMetadata(tabId, true);
     };
 
@@ -287,6 +363,10 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     webContents.on('did-start-loading', sync);
     webContents.on('did-stop-loading', sync);
     webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+      if (this.disposed || !this.views.has(tabId)) {
+        return;
+      }
+
       console.error(
         `[adapter] page load failed (${errorCode}) ${validatedURL}: ${errorDescription}`,
       );
@@ -296,7 +376,7 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
   }
 
   private publishState(): void {
-    if (!this.options.onStateChange) {
+    if (this.disposed || !this.options.onStateChange) {
       return;
     }
 
@@ -308,6 +388,10 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
   }
 
   private syncMetadata(tabId: TabId, publish: boolean): void {
+    if (this.disposed) {
+      return;
+    }
+
     const view = this.views.get(tabId);
     if (!view) {
       return;
