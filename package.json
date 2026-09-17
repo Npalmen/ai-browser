@@ -8,7 +8,8 @@
   "scripts": {
     "start": "electron-forge start",
     "package": "electron-forge package",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:url": "tsx --test src/shared/navigation-url.test.ts"
   },
   "license": "MIT",
   "devDependencies": {
@@ -26,6 +27,7 @@
     "react-dom": "^19.1.0",
     "style-loader": "^4.0.0",
     "ts-loader": "^9.5.2",
+    "tsx": "^4.19.4",
     "typescript": "^5.8.3",
     "webpack": "^5.99.5"
   }

@@ -1,15 +1,18 @@
 import { app, BrowserWindow } from 'electron';
 
+import { initializeBrowserRuntime } from './browser-runtime';
 import { initializeSecurity } from './security';
 import { createMainWindow } from './window';
 
 void app.whenReady().then(() => {
   initializeSecurity();
-  createMainWindow();
+  const mainWindow = createMainWindow();
+  initializeBrowserRuntime(mainWindow);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createMainWindow();
+      const window = createMainWindow();
+      initializeBrowserRuntime(window);
     }
   });
 });

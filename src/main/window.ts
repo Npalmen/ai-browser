@@ -5,7 +5,25 @@ import { APP_UI_PARTITION } from './sessions';
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
 declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
 
+export const CHROME_HEIGHT = 88;
+
 let mainWindow: BrowserWindow | null = null;
+
+export function getWebsiteViewBounds(window: BrowserWindow): {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+} {
+  const [width, height] = window.getContentSize();
+
+  return {
+    x: 0,
+    y: CHROME_HEIGHT,
+    width,
+    height: Math.max(0, height - CHROME_HEIGHT),
+  };
+}
 
 function isTrustedAppNavigation(targetUrl: string, trustedEntryUrl: URL): boolean {
   try {
