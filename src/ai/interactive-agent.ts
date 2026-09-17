@@ -510,6 +510,16 @@ export class InteractiveAgent {
         },
       });
       const output = parseAgentModelOutput(response.output);
+      if (emittedAnswerText && output.kind === 'interaction') {
+        return {
+          ok: false,
+          error: new ModelError(
+            'MODEL_OUTPUT_INVALID',
+            'The model output changed from streamed answer text to an interaction proposal.',
+          ),
+          emittedAnswerText: true,
+        };
+      }
       return { ok: true, output, emittedAnswerText };
     } catch (error) {
       if (error instanceof ModelError) {

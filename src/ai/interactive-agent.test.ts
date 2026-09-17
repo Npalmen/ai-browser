@@ -5,7 +5,7 @@ import { InteractiveAgent } from './interactive-agent';
 import type { InteractionModelRuntime } from './interaction-model-runtime';
 import type { AgentModelOutput } from './interaction-output-schema';
 import { MODEL_CATALOG } from './model-catalog';
-import { ModelError } from './model-errors';
+import { ModelError, type ModelErrorCode } from './model-errors';
 import type { ModelRequest } from './model-types';
 import type { InteractionExecutionPort } from './interactive-agent';
 import type { PageState, TabId } from '../shared/browser-types';
@@ -249,6 +249,20 @@ function agentOf(input: {
   return { agent, pages, runtime, executor };
 }
 
+function isModelError(code: ModelErrorCode) {
+  return (error: unknown) => error instanceof ModelError && error.code === code;
+}
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 1000;
+  while (!predicate()) {
+    if (Date.now() > deadline) {
+      throw new Error('Timed out waiting for condition');
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
 describe('InteractiveAgent', () => {
   it('returns an answer without invoking the executor', async () => {
     const runtime = new FakeInteractionRuntime({
@@ -476,6 +490,227 @@ describe('InteractiveAgent', () => {
 
     assert.equal(observeCalls, 2);
     assert.equal(runtime.requests.length, 1);
+  });
+
+  it('rejects streamed answer text followed by a final interaction proposal', async () => {
+    const runtime = new FakeInteractionRuntime(async (_request, options) => {
+      options?.onAnswerTextDelta?.('Visible answer');
+      return {
+        output: {
+          kind: 'interaction',
+          proposal: { kind: 'click', targetId: 'target-1' },
+        },
+        resolvedProviderModelId: 'test/model',
+        latencyMs: 1,
+      };
+    });
+    const executor = new FakeExecutor();
+    const { agent } = agentOf({ runtime, executor });
+
+    await assert.rejects(
+      () => agent.interact({ tabId: TAB, instruction: 'Click save' }),
+      isModelError('MODEL_OUTPUT_INVALID'),
+    );
+    assert.equal(runtime.requests.length, 1);
+    assert.equal(executor.calls.length, 0);
+  });
+
+  it('does not fall back after streamed answer text switches to interaction', async () => {
+    const runtime = new FakeInteractionRuntime(async (_request, options, callIndex) => {
+      if (callIndex === 1) {
+        options?.onAnswerTextDelta?.('Visible answer');
+        return {
+          output: {
+            kind: 'interaction',
+            proposal: { kind: 'click', targetId: 'target-1' },
+          },
+          resolvedProviderModelId: 'test/model',
+          latencyMs: 1,
+        };
+      }
+      return {
+        output: { kind: 'answer', text: 'Fallback answer', referencedTargets: [] },
+        resolvedProviderModelId: 'test/fallback',
+        latencyMs: 1,
+      };
+    });
+    const executor = new FakeExecutor();
+    const { agent } = agentOf({ runtime, executor });
+
+    await assert.rejects(
+      () => agent.interact({ tabId: TAB, instruction: 'Click save' }),
+      isModelError('MODEL_OUTPUT_INVALID'),
+    );
+    assert.equal(runtime.requests.length, 1);
+    assert.equal(executor.calls.length, 0);
+  });
+
+  it('falls back after MODEL_UNAVAILABLE when no answer text was streamed', async () => {
+    const runtime = new FakeInteractionRuntime(async (_request, _options, callIndex) => {
+      if (callIndex === 1) {
+        throw new ModelError('MODEL_UNAVAILABLE', 'unavailable');
+      }
+      return {
+        output: { kind: 'answer', text: 'Fallback answer', referencedTargets: [] },
+        resolvedProviderModelId: 'test/fallback',
+        latencyMs: 1,
+      };
+    });
+    const executor = new FakeExecutor();
+    const { agent } = agentOf({ runtime, executor });
+
+    const result = await agent.interact({ tabId: TAB, instruction: 'What is here?' });
+
+    assert.equal(result.kind, 'answer');
+    if (result.kind === 'answer') {
+      assert.equal(result.text, 'Fallback answer');
+      assert.equal(result.alias, 'page-deep');
+    }
+    assert.equal(runtime.requests.length, 2);
+    assert.equal(runtime.requests[0]?.profile.alias, 'page-standard');
+    assert.equal(runtime.requests[1]?.profile.alias, 'page-deep');
+    assert.equal(executor.calls.length, 0);
+  });
+
+  it('does not fall back after partial streamed answer text before model failure', async () => {
+    const runtime = new FakeInteractionRuntime(async (_request, options) => {
+      options?.onAnswerTextDelta?.('Partial answer');
+      throw new ModelError('MODEL_UNAVAILABLE', 'unavailable after stream');
+    });
+    const executor = new FakeExecutor();
+    const { agent } = agentOf({ runtime, executor });
+
+    await assert.rejects(
+      () => agent.interact({ tabId: TAB, instruction: 'What is here?' }),
+      isModelError('MODEL_UNAVAILABLE'),
+    );
+    assert.equal(runtime.requests.length, 1);
+    assert.equal(executor.calls.length, 0);
+  });
+
+  it('does not fall back after MODEL_AUTH_FAILED', async () => {
+    const runtime = new FakeInteractionRuntime(async () => {
+      throw new ModelError('MODEL_AUTH_FAILED', 'auth failed');
+    });
+    const executor = new FakeExecutor();
+    const { agent } = agentOf({ runtime, executor });
+
+    await assert.rejects(
+      () => agent.interact({ tabId: TAB, instruction: 'What is here?' }),
+      isModelError('MODEL_AUTH_FAILED'),
+    );
+    assert.equal(runtime.requests.length, 1);
+    assert.equal(executor.calls.length, 0);
+  });
+
+  it('cancels during an active model call without invoking the executor', async () => {
+    const modelStarted = new Deferred<void>();
+    const releaseModel = new Deferred<void>();
+    const runtime = new FakeInteractionRuntime(async (_request, options) => {
+      modelStarted.resolve();
+      await releaseModel.promise;
+      if (options?.signal?.aborted) {
+        throw new ModelError('REQUEST_CANCELLED', 'cancelled');
+      }
+      return {
+        output: { kind: 'answer', text: 'late', referencedTargets: [] },
+        resolvedProviderModelId: 'test/model',
+        latencyMs: 1,
+      };
+    });
+    const executor = new FakeExecutor();
+    const { agent } = agentOf({ runtime, executor });
+    const controller = new AbortController();
+
+    const pending = agent.interact({
+      tabId: TAB,
+      instruction: 'What is here?',
+      abortSignal: controller.signal,
+    });
+    await modelStarted.promise;
+    controller.abort();
+    releaseModel.resolve();
+
+    await assert.rejects(pending, isModelError('REQUEST_CANCELLED'));
+    assert.equal(runtime.requests.length, 1);
+    assert.equal(executor.calls.length, 0);
+  });
+
+  it('lets the latest same-tab request cancel the previous model flow', async () => {
+    const aInGenerate = new Deferred<void>();
+    const releaseA = new Deferred<void>();
+    const runtime = new FakeInteractionRuntime(async (_request, options, callIndex) => {
+      if (callIndex === 1) {
+        aInGenerate.resolve();
+        await releaseA.promise;
+        if (options?.signal?.aborted) {
+          throw new ModelError('REQUEST_CANCELLED', 'cancelled');
+        }
+        return {
+          output: { kind: 'answer', text: 'from-A', referencedTargets: [] },
+          resolvedProviderModelId: 'test/model',
+          latencyMs: 1,
+        };
+      }
+      return {
+        output: { kind: 'answer', text: 'from-B', referencedTargets: [] },
+        resolvedProviderModelId: 'test/model',
+        latencyMs: 1,
+      };
+    });
+    const executor = new FakeExecutor();
+    const { agent } = agentOf({ runtime, executor });
+
+    const aPromise = agent.interact({ tabId: TAB, instruction: 'Question A?' });
+    await aInGenerate.promise;
+    const bPromise = agent.interact({ tabId: TAB, instruction: 'Question B?' });
+    releaseA.resolve();
+
+    await assert.rejects(aPromise, isModelError('REQUEST_CANCELLED'));
+    const bResult = await bPromise;
+
+    assert.equal(bResult.kind, 'answer');
+    if (bResult.kind === 'answer') {
+      assert.equal(bResult.text, 'from-B');
+    }
+    assert.equal(runtime.requests.length, 2);
+    assert.equal(
+      runtime.requests[1]?.messages[1]?.content[0]?.type === 'text'
+        ? runtime.requests[1].messages[1].content[0].text
+        : '',
+      'Question B?',
+    );
+    assert.equal(executor.calls.length, 0);
+  });
+
+  it('re-parses malicious runtime output with forbidden authority fields', async () => {
+    const runtime = new FakeInteractionRuntime(async () => ({
+      output: {
+        kind: 'interaction',
+        proposal: {
+          kind: 'click',
+          targetId: 'target-1',
+          tabId: 'attacker-tab',
+        },
+      } as AgentModelOutput,
+      resolvedProviderModelId: 'test/model',
+      latencyMs: 1,
+    }));
+    const executor = new FakeExecutor();
+    const { agent } = agentOf({ runtime, executor });
+
+    await assert.rejects(
+      () =>
+        agent.interact({
+          tabId: TAB,
+          instruction: 'Analyze this page.',
+          taskClass: 'page_analysis',
+        }),
+      isModelError('MODEL_OUTPUT_INVALID'),
+    );
+    assert.equal(runtime.requests.length, 1);
+    assert.equal(runtime.requests[0]?.profile.alias, 'page-deep');
+    assert.equal(executor.calls.length, 0);
   });
 
   it('stores sanitized interaction summaries without target IDs', async () => {
