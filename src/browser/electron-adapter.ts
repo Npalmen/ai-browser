@@ -1,7 +1,9 @@
-import { BrowserWindow, session, WebContentsView } from 'electron';
+import { BrowserWindow, session, WebContentsView, type WebContents } from 'electron';
 
 import type { BrowserAdapter } from './browser-adapter';
 import { TabNotFoundError, TabRegistry } from './tab-registry';
+import { ElectronPageObserver } from '../observation/electron-page-observer';
+import { TargetRegistry } from '../observation/target-registry';
 import type { BrowserState, PageState, TabId } from '../shared/browser-types';
 import {
   ObservationError,
@@ -22,6 +24,10 @@ export interface ElectronBrowserAdapterOptions {
 export class ElectronBrowserAdapter implements BrowserAdapter {
   private readonly registry = new TabRegistry();
   private readonly views = new Map<TabId, WebContentsView>();
+  private readonly targetRegistry = new TargetRegistry();
+  private readonly pageObserver = new ElectronPageObserver({
+    resolveWebContents: (tabId) => this.resolveWebContents(tabId),
+  });
   private readonly websiteSession = session.fromPartition(WEBSITE_PARTITION);
   private activeAttachedTabId: TabId | null = null;
   private disposed = false;
@@ -77,6 +83,8 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     if (this.activeAttachedTabId === tabId) {
       this.detachActiveView();
     }
+
+    this.targetRegistry.clearTab(tabId);
 
     const view = this.views.get(tabId)!;
     this.views.delete(tabId);
@@ -169,15 +177,9 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     return this.registry.serialize();
   }
 
-  async observePage(
-    _tabId: TabId,
-    _options?: ObservePageOptions,
-  ): Promise<PageObservation> {
-    // Phase 2 replaces this stub with ElectronPageObserver delegation.
-    throw new ObservationError(
-      'OBSERVATION_FAILED',
-      'Page observation transport is not implemented yet',
-    );
+  async observePage(tabId: TabId, options?: ObservePageOptions): Promise<PageObservation> {
+    this.assertNotDisposed();
+    return this.pageObserver.observePage(tabId, options);
   }
 
   async getPageState(tabId: TabId): Promise<PageState> {
@@ -218,6 +220,8 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     }
 
     this.disposed = true;
+    this.pageObserver.dispose();
+    this.targetRegistry.clearAll();
     this.detachActiveView();
 
     for (const [tabId, view] of [...this.views.entries()]) {
@@ -277,6 +281,8 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     }
 
     console.error(`[adapter] recovering crashed renderer for tab ${tabId}`);
+
+    this.targetRegistry.clearTab(tabId);
 
     const wasActive = this.activeAttachedTabId === tabId;
     const oldView = this.views.get(tabId)!;
@@ -372,7 +378,12 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     };
 
     webContents.on('did-start-navigation', sync);
-    webContents.on('did-navigate', sync);
+    webContents.on('did-navigate', () => {
+      if (!this.disposed && this.views.has(tabId)) {
+        this.targetRegistry.clearTab(tabId);
+      }
+      sync();
+    });
     webContents.on('did-navigate-in-page', sync);
     webContents.on('did-finish-load', sync);
     webContents.on('page-title-updated', sync);
@@ -430,6 +441,20 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     if (publish) {
       this.publishState();
     }
+  }
+
+  private resolveWebContents(tabId: TabId): WebContents {
+    const view = this.views.get(tabId);
+    if (!view) {
+      throw new ObservationError('TAB_NOT_FOUND', `Tab not found: ${tabId}`);
+    }
+
+    const webContents = view.webContents;
+    if (webContents.isDestroyed()) {
+      throw new ObservationError('TAB_NOT_FOUND', `Tab web contents destroyed: ${tabId}`);
+    }
+
+    return webContents;
   }
 
   private getView(tabId: TabId): WebContentsView {
