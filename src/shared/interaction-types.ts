@@ -1,7 +1,9 @@
-import type { TabId } from './browser-types';
+import type { PageState, TabId } from './browser-types';
+import type { InteractionErrorCode } from './interaction-errors';
 import type {
   DocumentRevision,
   ObservationId,
+  PageObservation,
   TargetId,
 } from './observation-types';
 
@@ -77,3 +79,42 @@ export type BoundInteractionProposal =
   | BoundTypeProposal
   | BoundSelectProposal
   | BoundScrollProposal;
+
+/** Authority granted after an explicit allow policy decision. */
+export type InteractionAuthority = 'INTERACT' | 'NAVIGATE';
+
+export type InteractionPolicyOutcome =
+  | 'ALLOW_INTERACT'
+  | 'ALLOW_NAVIGATE'
+  | 'DENY'
+  | 'DEFER_EXECUTE';
+
+export type InteractionPolicyAllowDecision =
+  | { outcome: 'ALLOW_INTERACT'; authority: 'INTERACT' }
+  | { outcome: 'ALLOW_NAVIGATE'; authority: 'NAVIGATE' };
+
+export type InteractionPolicyDenyDecision =
+  | { outcome: 'DENY'; errorCode: InteractionErrorCode }
+  | { outcome: 'DEFER_EXECUTE'; errorCode: 'DEFERRED_TO_EXECUTE' };
+
+export type InteractionPolicyDecision = InteractionPolicyAllowDecision | InteractionPolicyDenyDecision;
+
+export interface InteractionGrant {
+  readonly actionId: string;
+  readonly authority: InteractionAuthority;
+  readonly kind: BoundInteractionProposal['kind'];
+  readonly tabId: TabId;
+  readonly observationId: ObservationId;
+  readonly documentRevision: DocumentRevision;
+  readonly targetId?: TargetId;
+  readonly optionTargetId?: TargetId;
+  readonly issuedAt: number;
+}
+
+export interface InteractionResult {
+  actionId: string;
+  status: 'succeeded' | 'failed' | 'denied';
+  pageState: PageState;
+  observation?: PageObservation;
+  errorCode?: InteractionErrorCode;
+}
