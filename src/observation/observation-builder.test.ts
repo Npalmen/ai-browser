@@ -55,6 +55,29 @@ function candidate(
 }
 
 describe('buildObservation', () => {
+  it('redacts password text leaked from DOM snapshot input values', () => {
+    const { observation } = buildObservation(
+      baseInput([
+        candidate({
+          documentOrder: 0,
+          priority: ObservationPriority.VisibleInteractiveInViewport,
+          role: 'textbox',
+          tag: 'input',
+          interactive: true,
+          attributes: { type: 'password' },
+          text: 'fixture-password-secret',
+          targetIdentity: { backendNodeId: 1 },
+        }),
+      ]),
+    );
+
+    const serialized = JSON.stringify(observation);
+    assert.equal(serialized.includes('fixture-password-secret'), false);
+    assert.equal(observation.nodes[0].text, undefined);
+    assert.equal(observation.nodes[0].states?.secret, true);
+    assert.equal(observation.stats.redactedValueCount, 1);
+  });
+
   it('redacts password values and counts redactions', () => {
     const { observation } = buildObservation(
       baseInput([

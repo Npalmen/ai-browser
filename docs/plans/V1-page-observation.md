@@ -1,7 +1,9 @@
 # Plan: V1 — Page Observation
 
-**Status:** locked  
+**Status:** complete  
 **Explicit reference:** Implementation tasks must cite `docs/plans/V1-page-observation.md` to treat this file as authoritative.
+
+V1 completed against deterministic localhost fixture on Windows development environment.
 
 This plan is implementation-ready for Composer. It does not reopen the accepted runtime or V0 security model. Authoritative architecture remains:
 

@@ -142,6 +142,35 @@ describe('dom-snapshot-parser', () => {
     assert.equal(hiddenVisibility?.display, 'block');
   });
 
+  it('parses Chromium rectangle-array layout bounds', () => {
+    const parsed = parseDomSnapshot(
+      {
+        strings: ['#document', 'button', 'block', 'visible', '1'],
+        documents: [
+          {
+            nodes: {
+              parentIndex: [-1, 0],
+              nodeType: [9, 1],
+              nodeName: [0, 1],
+              backendNodeId: [1, 2],
+              attributes: [[], []],
+            },
+            layout: {
+              nodeIndex: [1],
+              bounds: [[100, 150, 120, 40]],
+              styles: [2, 3, 4],
+            },
+          },
+        ],
+      },
+      new Map([[0, 'main-frame']]),
+      100,
+      50,
+    );
+
+    assert.deepEqual(parsed.nodes[1].bounds, { x: 0, y: 100, width: 120, height: 40 });
+  });
+
   it('converts offscreen bounds into viewport coordinates', () => {
     const parsed = parseDomSnapshot(
       baseSnapshot(),
@@ -302,6 +331,72 @@ describe('normalizeCollectedSources', () => {
     );
     assert.ok(childButton);
     assert.equal(childButton.frameId, 'child-frame');
+  });
+
+  it('decodes child document frameId from the DOMSnapshot string table', () => {
+    const normalized = normalizeCollectedSources({
+      frameTree: frameTree({
+        frameTree: {
+          frame: {
+            id: 'main-frame',
+            loaderId: 'loader-1',
+            securityOrigin: 'https://example.com',
+          },
+          childFrames: [
+            {
+              frame: {
+                id: 'child-frame',
+                securityOrigin: 'https://example.com',
+              },
+            },
+          ],
+        },
+      }),
+      layoutMetrics: layoutMetrics(),
+      accessibilityTree: { nodes: [] },
+      domSnapshot: {
+        strings: ['#document', 'button', 'child-frame', 'block', 'visible', '1'],
+        documents: [
+          {
+            nodes: {
+              parentIndex: [-1],
+              nodeType: [9],
+              nodeName: [0],
+              backendNodeId: [100],
+              attributes: [[]],
+            },
+            layout: { nodeIndex: [], bounds: [], styles: [] },
+          },
+          {
+            frameId: 2,
+            nodes: {
+              parentIndex: [-1, 0],
+              nodeType: [9, 1],
+              nodeName: [0, 1],
+              backendNodeId: [10, 11],
+              attributes: [[], []],
+            },
+            layout: {
+              nodeIndex: [1],
+              bounds: [0, 0, 50, 20],
+              styles: [3, 4, 5],
+            },
+          },
+        ],
+      },
+      documentIdentity: {
+        mainFrameId: 'main-frame',
+        loaderId: 'loader-1',
+        revision: 'main-frame:loader-1',
+      },
+      pageMetadata: { url: 'https://example.com/', title: 'Example', loading: false },
+    });
+
+    const child = normalized.candidates.find(
+      (candidate) => candidate.targetIdentity?.backendNodeId === 11,
+    );
+    assert.ok(child);
+    assert.equal(child.frameId, 'child-frame');
   });
 
   it('creates bounded cross-origin iframe placeholders without interior claims', () => {

@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Observation Fixture</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 16px;
+      }
+      .spacer {
+        height: 1200px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <nav aria-label="Fixture navigation">
+        <a href="#below-fold">Below fold section</a>
+      </nav>
+    </header>
+
+    <main>
+      <h1>Observation Fixture</h1>
+
+      <p id="fixture-paragraph">
+        This deterministic fixture page exercises the V1 observation pipeline with stable semantic content.
+      </p>
+
+      <form aria-label="Fixture form">
+        <label>
+          Fixture text
+          <input id="fixture-text" type="text" name="fixture-text" value="visible-value" />
+        </label>
+
+        <label>
+          Fixture email
+          <input id="fixture-email" type="email" name="fixture-email" value="fixture@example.test" />
+        </label>
+
+        <label>
+          Fixture password
+          <input
+            id="fixture-password"
+            type="password"
+            name="fixture-password"
+            value="fixture-password-secret"
+          />
+        </label>
+
+        <label>
+          Fixture card
+          <input
+            id="fixture-card"
+            type="text"
+            name="fixture-card"
+            autocomplete="cc-number"
+            value="4111111111111111"
+          />
+        </label>
+
+        <label>
+          <input id="fixture-checkbox" type="checkbox" name="fixture-checkbox" checked />
+          Fixture checkbox
+        </label>
+
+        <label>
+          Fixture select
+          <select id="fixture-select" name="fixture-select">
+            <option value="alpha">Alpha option</option>
+            <option value="beta" selected>Beta option</option>
+          </select>
+        </label>
+
+        <label>
+          Fixture textarea
+          <textarea id="fixture-textarea" name="fixture-textarea">Fixture textarea content</textarea>
+        </label>
+
+        <button id="fixture-submit" type="button">Submit fixture</button>
+        <button id="fixture-disabled" type="button" disabled>Disabled action</button>
+      </form>
+
+      <p>
+        <a id="fixture-link" href="https://example.test/fixture-link">Fixture link</a>
+      </p>
+
+      <section aria-label="Editable region">
+        <div id="fixture-editable" contenteditable="true">Fixture editable content</div>
+      </section>
+
+      <section aria-label="Same-origin iframe">
+        <iframe id="fixture-iframe" title="Fixture iframe" src="/iframe.html" width="360" height="180"></iframe>
+      </section>
+    </main>
+
+    <section id="below-fold" class="spacer" aria-label="Below fold content">
+      <h2>Below fold heading</h2>
+      <p id="below-fold-text">Below fold fixture text for off-screen observation.</p>
+    </section>
+  </body>
+</html>

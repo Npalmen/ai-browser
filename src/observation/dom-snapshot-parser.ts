@@ -79,6 +79,23 @@ function decodeRareNumber(
   return Number.isFinite(value) ? value : undefined;
 }
 
+function extractLayoutBounds(
+  bounds: number[] | number[][] | undefined,
+  layoutIndex: number,
+): number[] | undefined {
+  if (!bounds || bounds.length === 0) {
+    return undefined;
+  }
+
+  if (Array.isArray(bounds[0])) {
+    const rect = (bounds as number[][])[layoutIndex];
+    return Array.isArray(rect) && rect.length >= 4 ? rect.slice(0, 4) : undefined;
+  }
+
+  const rect = (bounds as number[]).slice(layoutIndex * 4, layoutIndex * 4 + 4);
+  return rect.length === 4 ? rect : undefined;
+}
+
 function buildLayoutIndex(
   strings: string[],
   document: CdpDomSnapshotDocument,
@@ -100,7 +117,7 @@ function buildLayoutIndex(
     const styleValues = styles.slice(styleStart, styleStart + computedStyleCount);
 
     layoutByNodeIndex.set(nodeIndex, {
-      bounds: bounds.slice(layoutIndex * 4, layoutIndex * 4 + 4),
+      bounds: extractLayoutBounds(bounds, layoutIndex),
       display: decodeSnapshotString(strings, styleValues[0]),
       visibility: decodeSnapshotString(strings, styleValues[1]),
       opacity: parseOpacity(decodeSnapshotString(strings, styleValues[2])),

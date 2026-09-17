@@ -16,6 +16,15 @@ const SECRET_AUTOCOMPLETE_VALUES = new Set([
   'ssn',
 ]);
 
+export function containsSensitiveValueLiteral(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return false;
+  }
+
+  return /^\d{13,19}$/.test(trimmed);
+}
+
 export function isSecretCandidate(input: RedactionInput): boolean {
   const type = input.attributes?.type?.toLowerCase();
   if (type === 'password') {

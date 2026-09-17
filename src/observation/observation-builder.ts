@@ -5,7 +5,11 @@ import {
   OBSERVATION_BUDGETS,
   type ObservationBudgetConfig,
 } from './budgets';
-import { redactCandidateValue } from './redaction';
+import {
+  containsSensitiveValueLiteral,
+  isSecretCandidate,
+  redactCandidateValue,
+} from './redaction';
 import type { TargetRecord } from './target-registry';
 import type {
   FrameId,
@@ -191,19 +195,41 @@ function prepareCandidate(
   candidate: ObservationCandidate,
   budgets: ObservationBudgetConfig,
 ): { prepared: PreparedCandidate; truncated: boolean } {
-  const redaction = redactCandidateValue({
+  const redactionInput = {
     tag: candidate.tag,
     role: candidate.role,
     name: candidate.name,
     value: candidate.value,
     attributes: candidate.attributes,
-  });
+  };
+  const redaction = redactCandidateValue(redactionInput);
+  let secret = redaction.secret || isSecretCandidate(redactionInput);
 
   let truncated = false;
+  let textRedacted = false;
+  let nameRedacted = false;
 
-  const name = trimOptionalText(candidate.name);
-  const text = trimOptionalText(candidate.text);
-  const value = trimOptionalText(redaction.value);
+  let name = trimOptionalText(candidate.name);
+  let text = trimOptionalText(candidate.text);
+  let value = trimOptionalText(redaction.value);
+
+  if (name && containsSensitiveValueLiteral(name)) {
+    secret = true;
+    name = undefined;
+    nameRedacted = true;
+  }
+
+  if (text && (secret || containsSensitiveValueLiteral(text))) {
+    secret = true;
+    text = undefined;
+    textRedacted = true;
+  }
+
+  if (value && containsSensitiveValueLiteral(value)) {
+    secret = true;
+    value = undefined;
+    textRedacted = true;
+  }
 
   let preparedName: string | undefined;
   let preparedText: string | undefined;
@@ -238,8 +264,8 @@ function prepareCandidate(
       name: preparedName,
       value: preparedValue,
       text: preparedText,
-      secret: redaction.secret,
-      redacted: redaction.redacted,
+      secret,
+      redacted: redaction.redacted || textRedacted || nameRedacted,
       attributes: attributeResult.attributes,
     },
     truncated,

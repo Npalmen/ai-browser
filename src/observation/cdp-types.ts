@@ -86,7 +86,7 @@ export interface CdpDomSnapshotNodes {
 
 export interface CdpDomSnapshotLayout {
   nodeIndex?: number[];
-  bounds?: number[];
+  bounds?: number[] | number[][];
   styles?: number[];
 }
 
@@ -97,7 +97,7 @@ export interface CdpDomSnapshotDocument {
   encodingName?: number;
   publicId?: number;
   systemId?: number;
-  frameId?: string;
+  frameId?: string | number;
   nodes: CdpDomSnapshotNodes;
   layout: CdpDomSnapshotLayout;
   scrollOffsetX?: number;

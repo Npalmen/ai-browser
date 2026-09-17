@@ -8,7 +8,7 @@ import type {
 } from './cdp-types';
 import { parseAccessibilityTree } from './ax-parser';
 import type { NormalizedDomNode } from './dom-snapshot-parser';
-import { parseDomSnapshot } from './dom-snapshot-parser';
+import { decodeSnapshotString, parseDomSnapshot } from './dom-snapshot-parser';
 import type { DocumentIdentity } from './document-identity';
 import {
   ObservationPriority,
@@ -118,6 +118,23 @@ function isSameOriginFrame(frame: FrameInfo, mainFrameOrigin?: string): boolean 
   return frame.securityOrigin === mainFrameOrigin;
 }
 
+function decodeDocumentFrameId(
+  snapshot: CdpDomSnapshotResponse,
+  documentIndex: number,
+): FrameId | undefined {
+  const rawFrameId = snapshot.documents[documentIndex]?.frameId;
+  if (rawFrameId === undefined) {
+    return undefined;
+  }
+
+  if (typeof rawFrameId === 'string') {
+    const trimmed = rawFrameId.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  return decodeSnapshotString(snapshot.strings, rawFrameId);
+}
+
 function buildDocumentFrameMap(
   snapshot: CdpDomSnapshotResponse,
   mainFrameId: FrameId,
@@ -126,7 +143,7 @@ function buildDocumentFrameMap(
   map.set(0, mainFrameId);
 
   for (let index = 1; index < snapshot.documents.length; index += 1) {
-    const frameId = snapshot.documents[index].frameId?.trim();
+    const frameId = decodeDocumentFrameId(snapshot, index);
     if (frameId) {
       map.set(index, frameId);
     }

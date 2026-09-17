@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { isSecretCandidate, redactCandidateValue } from './redaction';
+import { containsSensitiveValueLiteral, isSecretCandidate, redactCandidateValue } from './redaction';
 
 describe('redaction', () => {
   it('treats password inputs as secret', () => {
@@ -51,6 +51,11 @@ describe('redaction', () => {
     assert.equal(result.secret, true);
     assert.equal(result.redacted, true);
     assert.equal(result.value, undefined);
+  });
+
+  it('detects sensitive numeric literals', () => {
+    assert.equal(containsSensitiveValueLiteral('4111111111111111'), true);
+    assert.equal(containsSensitiveValueLiteral('fixture@example.test'), false);
   });
 
   it('keeps normal email and text values', () => {
