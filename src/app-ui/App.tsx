@@ -216,16 +216,21 @@ export function App() {
       return;
     }
 
-    setTabAiState((current) => appendUserQuestion(current, tabId, question));
+    const rendererRequestId = crypto.randomUUID();
+    setTabAiState((current) => appendUserQuestion(current, tabId, question, rendererRequestId));
 
     void window.aiAssistant
       .askCurrentPage({ tabId, question })
       .then((result) => {
         if (!result.ok) {
-          setTabAiState((current) => applyAskStartFailure(current, tabId, result.error));
+          setTabAiState((current) =>
+            applyAskStartFailure(current, tabId, result.error, rendererRequestId),
+          );
           return;
         }
-        setTabAiState((current) => acknowledgeAsk(current, tabId, result.askId));
+        setTabAiState((current) =>
+          acknowledgeAsk(current, tabId, result.askId, rendererRequestId),
+        );
       })
       .catch((error: unknown) => {
         console.error('[app-ui] failed to start AI ask:', error);

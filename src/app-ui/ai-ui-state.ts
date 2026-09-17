@@ -19,6 +19,8 @@ export interface TabAiUiState {
   draft: string;
   latestAskId: string | null;
   staleAskIds: ReadonlySet<string>;
+  latestSubmissionId: string | null;
+  staleSubmissionIds: ReadonlySet<string>;
 }
 
 export type AiUiState = Record<TabId, TabAiUiState>;
@@ -30,6 +32,8 @@ export function emptyTabAiState(): TabAiUiState {
     draft: '',
     latestAskId: null,
     staleAskIds: new Set(),
+    latestSubmissionId: null,
+    staleSubmissionIds: new Set(),
   };
 }
 
@@ -37,12 +41,22 @@ export function appendUserQuestion(
   state: AiUiState,
   tabId: TabId,
   question: string,
+  submissionId: string,
   createId: () => string = createEntryId,
 ): AiUiState {
   const tab = tabOf(state, tabId);
+  let staleSubmissionIds: ReadonlySet<string> = tab.staleSubmissionIds;
+  if (tab.latestSubmissionId && tab.latestSubmissionId !== submissionId) {
+    const nextStale = new Set(staleSubmissionIds);
+    nextStale.add(tab.latestSubmissionId);
+    staleSubmissionIds = nextStale;
+  }
+
   return withTab(state, tabId, {
     ...tab,
     draft: '',
+    latestSubmissionId: submissionId,
+    staleSubmissionIds,
     entries: [
       ...tab.entries,
       {
@@ -58,18 +72,27 @@ export function acknowledgeAsk(
   state: AiUiState,
   tabId: TabId,
   askId: string,
+  submissionId: string,
   createId: () => string = createEntryId,
 ): AiUiState {
-  return withTab(state, tabId, establishAsk(tabOf(state, tabId), askId, createId));
+  const tab = tabOf(state, tabId);
+  if (!isCurrentSubmission(tab, submissionId)) {
+    return state;
+  }
+  return withTab(state, tabId, establishAsk(tab, askId, createId));
 }
 
 export function applyAskStartFailure(
   state: AiUiState,
   tabId: TabId,
   error: AiSafeError,
+  submissionId: string,
   createId: () => string = createEntryId,
 ): AiUiState {
   const tab = tabOf(state, tabId);
+  if (!isCurrentSubmission(tab, submissionId)) {
+    return state;
+  }
   return withTab(state, tabId, {
     ...tab,
     activeAskId: null,
@@ -126,6 +149,10 @@ export function purgeClosedTabs(state: AiUiState, liveTabIds: ReadonlySet<TabId>
   return changed ? next : state;
 }
 
+function isCurrentSubmission(tab: TabAiUiState, submissionId: string): boolean {
+  return !tab.staleSubmissionIds.has(submissionId) && tab.latestSubmissionId === submissionId;
+}
+
 function establishAsk(tab: TabAiUiState, askId: string, createId: () => string): TabAiUiState {
   if (tab.staleAskIds.has(askId)) {
     return tab;
@@ -138,6 +165,10 @@ function establishAsk(tab: TabAiUiState, askId: string, createId: () => string):
     staleAskIds = nextStale;
   }
 
+  return ensureAskEntry({ ...tab, staleAskIds }, askId, createId);
+}
+
+function ensureAskEntry(tab: TabAiUiState, askId: string, createId: () => string): TabAiUiState {
   const existingIndex = findAssistantIndex(tab.entries, askId);
   const entries =
     existingIndex >= 0
@@ -160,7 +191,6 @@ function establishAsk(tab: TabAiUiState, askId: string, createId: () => string):
   return {
     ...tab,
     entries,
-    staleAskIds,
     latestAskId: askId,
     activeAskId: isTerminal(entry.status) ? null : askId,
   };
@@ -239,12 +269,18 @@ function clearTabConversation(tab: TabAiUiState): TabAiUiState {
       staleAskIds.add(entry.askId);
     }
   }
+  const staleSubmissionIds = new Set(tab.staleSubmissionIds);
+  if (tab.latestSubmissionId) {
+    staleSubmissionIds.add(tab.latestSubmissionId);
+  }
   return {
     entries: [],
     activeAskId: null,
     draft: '',
     latestAskId: null,
     staleAskIds,
+    latestSubmissionId: null,
+    staleSubmissionIds,
   };
 }
 
