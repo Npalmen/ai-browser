@@ -10,6 +10,7 @@ const TEXT_NODE = 3;
 
 export interface NormalizedDomNode {
   backendNodeId: number;
+  parentBackendNodeId?: number;
   frameId: string;
   nodeType: number;
   tag?: string;
@@ -212,6 +213,12 @@ export function parseDomSnapshotDocument(
       throw new ObservationError('OBSERVATION_FAILED', 'DOM snapshot node is missing backendNodeId');
     }
 
+    const parentIndex = nodes.parentIndex?.[nodeIndex];
+    const parentBackendNodeId =
+      parentIndex !== undefined && parentIndex >= 0
+        ? nodes.backendNodeId?.[parentIndex]
+        : undefined;
+
     const nodeType = nodes.nodeType?.[nodeIndex] ?? 0;
     const tag = decodeSnapshotString(snapshot.strings, nodes.nodeName?.[nodeIndex])?.toLowerCase();
     const nodeValue = decodeSnapshotString(snapshot.strings, nodes.nodeValue?.[nodeIndex]);
@@ -255,6 +262,7 @@ export function parseDomSnapshotDocument(
 
     parsed.push({
       backendNodeId,
+      parentBackendNodeId,
       frameId,
       nodeType,
       tag: nodeType === ELEMENT_NODE ? tag : undefined,

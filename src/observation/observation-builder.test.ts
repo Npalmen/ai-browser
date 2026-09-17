@@ -145,6 +145,46 @@ describe('buildObservation', () => {
     assert.equal(observation.stats.truncated, true);
   });
 
+  it('adds bounded nativeOptions catalogs to native select nodes', () => {
+    const { observation } = buildObservation(
+      baseInput([
+        candidate({
+          documentOrder: 0,
+          priority: ObservationPriority.VisibleInteractiveInViewport,
+          tag: 'select',
+          role: 'combobox',
+          interactive: true,
+          targetIdentity: { backendNodeId: 1 },
+        }),
+        candidate({
+          documentOrder: 1,
+          priority: ObservationPriority.StructuralContext,
+          tag: 'option',
+          role: 'option',
+          name: 'Red',
+          parentBackendNodeId: 1,
+          targetIdentity: { backendNodeId: 2 },
+          selected: true,
+        }),
+        candidate({
+          documentOrder: 2,
+          priority: ObservationPriority.StructuralContext,
+          tag: 'option',
+          role: 'option',
+          name: 'Blue',
+          parentBackendNodeId: 1,
+          targetIdentity: { backendNodeId: 3 },
+        }),
+      ]),
+    );
+
+    const selectNode = observation.nodes.find((node) => node.tag === 'select');
+    assert.ok(selectNode?.nativeOptions);
+    assert.equal(selectNode.nativeOptions.length, 2);
+    assert.equal(selectNode.nativeOptions[0]?.name, 'Red');
+    assert.equal(selectNode.nativeOptions[0]?.selected, true);
+  });
+
   it('filters and truncates attributes using the allowlist', () => {
     const { observation } = buildObservation(
       baseInput(

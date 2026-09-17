@@ -1,6 +1,22 @@
 import { BrowserWindow, session, WebContentsView, type WebContents } from 'electron';
 
 import type { BrowserAdapter } from './browser-adapter';
+import type {
+  AdapterClickRequest,
+  AdapterInteractionResult,
+  AdapterScrollIntoViewRequest,
+  AdapterSelectRequest,
+  AdapterTypeRequest,
+  AdapterViewportScrollRequest,
+} from './interaction-adapter-types';
+import {
+  executeAdapterClick,
+  executeAdapterScrollIntoView,
+  executeAdapterSelect,
+  executeAdapterType,
+  executeAdapterViewportScroll,
+} from './interaction-primitives';
+import { InteractionSessionManager } from './interaction-session';
 import { TabNotFoundError, TabRegistry } from './tab-registry';
 import { ElectronPageObserver } from '../observation/electron-page-observer';
 import { TargetRegistry } from '../observation/target-registry';
@@ -29,6 +45,9 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
   private readonly pageObserver = new ElectronPageObserver({
     resolveWebContents: (tabId) => this.resolveWebContents(tabId),
     targetRegistry: this.targetRegistry,
+  });
+  private readonly interactionSessions = new InteractionSessionManager({
+    isObservationInProgress: (tabId) => this.pageObserver.isObservationInProgress(tabId),
   });
   private readonly websiteSession = session.fromPartition(WEBSITE_PARTITION);
   private activeAttachedTabId: TabId | null = null;
@@ -183,6 +202,43 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
   async observePage(tabId: TabId, options?: ObservePageOptions): Promise<PageObservation> {
     this.assertNotDisposed();
     return this.pageObserver.observePage(tabId, options);
+  }
+
+  async click(request: AdapterClickRequest): Promise<AdapterInteractionResult> {
+    this.assertNotDisposed();
+    return this.interactionSessions.withSession(request.target.tabId, this.getWebContents(request.target.tabId), (cdp) =>
+      executeAdapterClick(cdp, request),
+    );
+  }
+
+  async type(request: AdapterTypeRequest): Promise<AdapterInteractionResult> {
+    this.assertNotDisposed();
+    return this.interactionSessions.withSession(request.target.tabId, this.getWebContents(request.target.tabId), (cdp) =>
+      executeAdapterType(cdp, request),
+    );
+  }
+
+  async select(request: AdapterSelectRequest): Promise<AdapterInteractionResult> {
+    this.assertNotDisposed();
+    return this.interactionSessions.withSession(
+      request.selectTarget.tabId,
+      this.getWebContents(request.selectTarget.tabId),
+      (cdp) => executeAdapterSelect(cdp, request),
+    );
+  }
+
+  async scroll(request: AdapterViewportScrollRequest): Promise<AdapterInteractionResult> {
+    this.assertNotDisposed();
+    return this.interactionSessions.withSession(request.tabId, this.getWebContents(request.tabId), (cdp) =>
+      executeAdapterViewportScroll(cdp, request),
+    );
+  }
+
+  async scrollIntoView(request: AdapterScrollIntoViewRequest): Promise<AdapterInteractionResult> {
+    this.assertNotDisposed();
+    return this.interactionSessions.withSession(request.target.tabId, this.getWebContents(request.target.tabId), (cdp) =>
+      executeAdapterScrollIntoView(cdp, request),
+    );
   }
 
   async getPageState(tabId: TabId): Promise<PageState> {
@@ -450,6 +506,20 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     if (publish) {
       this.publishState();
     }
+  }
+
+  private getWebContents(tabId: TabId): WebContents {
+    const view = this.views.get(tabId);
+    if (!view) {
+      throw new TabNotFoundError(tabId);
+    }
+
+    const webContents = view.webContents;
+    if (webContents.isDestroyed()) {
+      throw new TabNotFoundError(tabId);
+    }
+
+    return webContents;
   }
 
   private resolveWebContents(tabId: TabId): WebContents {

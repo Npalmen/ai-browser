@@ -56,6 +56,10 @@ export class ElectronPageObserver implements PageObserver {
     this.disposed = true;
   }
 
+  isObservationInProgress(tabId: TabId): boolean {
+    return this.inFlightTabs.has(tabId);
+  }
+
   async observePage(tabId: TabId, options?: ObservePageOptions): Promise<PageObservation> {
     const includeScreenshot = options?.includeScreenshot ?? true;
 

@@ -398,6 +398,7 @@ function mergeCandidate(
       backendNodeId: dom.backendNodeId,
       axNodeId: ax.axNodeId,
     },
+    parentBackendNodeId: dom.parentBackendNodeId,
     priority: ObservationPriority.StructuralContext,
     documentOrder: dom.documentOrder,
   };
@@ -430,6 +431,7 @@ function buildDomOnlyCandidate(
     bounds: dom.bounds,
     attributes: Object.keys(dom.attributes).length > 0 ? dom.attributes : undefined,
     targetIdentity: { backendNodeId: dom.backendNodeId },
+    parentBackendNodeId: dom.parentBackendNodeId,
     priority: ObservationPriority.StructuralContext,
     documentOrder: dom.documentOrder,
   };

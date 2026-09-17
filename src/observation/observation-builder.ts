@@ -10,6 +10,7 @@ import {
   isSecretCandidate,
   redactCandidateValue,
 } from './redaction';
+import { buildNativeSelectOptionCatalogs } from './native-select-options';
 import type { TargetRecord } from './target-registry';
 import type {
   FrameId,
@@ -67,6 +68,8 @@ export interface ObservationCandidate {
     backendNodeId: number;
     axNodeId?: string;
   };
+
+  parentBackendNodeId?: number;
 
   priority: ObservationPriorityValue;
   documentOrder: number;
@@ -390,6 +393,13 @@ export function buildObservation(input: BuildObservationInput): BuiltObservation
   }
 
   const targets: TargetRecord[] = [];
+  const emittedTargets: Array<{
+    candidate: ObservationCandidate;
+    targetId: TargetId;
+    name: string;
+    selected?: true;
+  }> = [];
+
   const nodes: ObservationNode[] = survivors.map((item) => {
     let targetId: TargetId | undefined;
     const backendNodeId = item.candidate.targetIdentity?.backendNodeId;
@@ -404,6 +414,14 @@ export function buildObservation(input: BuildObservationInput): BuiltObservation
         frameId: item.candidate.frameId,
         backendNodeId,
         axNodeId: item.candidate.targetIdentity?.axNodeId,
+      });
+
+      const displayName = item.name ?? item.text ?? item.value ?? '';
+      emittedTargets.push({
+        candidate: item.candidate,
+        targetId,
+        name: displayName,
+        ...(item.candidate.selected ? { selected: true as const } : {}),
       });
     }
 
@@ -444,6 +462,13 @@ export function buildObservation(input: BuildObservationInput): BuiltObservation
 
     return node;
   });
+
+  const nativeSelectCatalogs = buildNativeSelectOptionCatalogs(emittedTargets, budgets);
+  for (const node of nodes) {
+    if (node.targetId && nativeSelectCatalogs.has(node.targetId)) {
+      node.nativeOptions = nativeSelectCatalogs.get(node.targetId);
+    }
+  }
 
   const observation: PageObservation = {
     observationId: input.observationId,

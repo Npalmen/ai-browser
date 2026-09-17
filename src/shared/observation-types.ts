@@ -17,6 +17,12 @@ export interface ObservationScreenshot {
   data: string;
 }
 
+export interface NativeSelectOption {
+  targetId: TargetId;
+  name: string;
+  selected?: true;
+}
+
 export interface ObservationNode {
   targetId?: TargetId;
   frameId: FrameId;
@@ -49,6 +55,7 @@ export interface ObservationNode {
   };
 
   attributes?: Record<string, string>;
+  nativeOptions?: ReadonlyArray<NativeSelectOption>;
 }
 
 export interface PageObservation {

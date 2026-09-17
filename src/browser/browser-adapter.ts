@@ -1,3 +1,11 @@
+import type {
+  AdapterClickRequest,
+  AdapterInteractionResult,
+  AdapterScrollIntoViewRequest,
+  AdapterSelectRequest,
+  AdapterTypeRequest,
+  AdapterViewportScrollRequest,
+} from './interaction-adapter-types';
 import type { PageState, TabId } from '../shared/browser-types';
 import type { ObservePageOptions, PageObservation } from '../shared/observation-types';
 
@@ -13,4 +21,10 @@ export interface BrowserAdapter {
 
   getPageState(tabId: TabId): Promise<PageState>;
   observePage(tabId: TabId, options?: ObservePageOptions): Promise<PageObservation>;
+
+  click(request: AdapterClickRequest): Promise<AdapterInteractionResult>;
+  type(request: AdapterTypeRequest): Promise<AdapterInteractionResult>;
+  select(request: AdapterSelectRequest): Promise<AdapterInteractionResult>;
+  scroll(request: AdapterViewportScrollRequest): Promise<AdapterInteractionResult>;
+  scrollIntoView(request: AdapterScrollIntoViewRequest): Promise<AdapterInteractionResult>;
 }
