@@ -155,6 +155,7 @@ export function buildModelMessages(input: {
   serializedPageContext: string;
   exportDecision: ModelExportDecision;
   screenshot?: { mimeType: 'image/jpeg'; data: string };
+  priorConversation?: string;
 }): ModelMessage[] {
   if (!input.exportDecision.structuredExportAllowed) {
     throw new ModelError(
@@ -175,11 +176,21 @@ export function buildModelMessages(input: {
     });
   }
 
-  return [
+  const messages: ModelMessage[] = [
     {
       role: 'system',
       content: [{ type: 'text', text: READ_ONLY_SYSTEM_PROMPT }],
     },
+  ];
+
+  if (input.priorConversation) {
+    messages.push({
+      role: 'user',
+      content: [{ type: 'text', text: input.priorConversation }],
+    });
+  }
+
+  messages.push(
     {
       role: 'user',
       content: [{ type: 'text', text: question }],
@@ -188,7 +199,9 @@ export function buildModelMessages(input: {
       role: 'user',
       content: pageContent,
     },
-  ];
+  );
+
+  return messages;
 }
 
 export function wrapUntrustedPageContent(serializedPageContext: string): string {

@@ -342,6 +342,43 @@ describe('buildModelMessages', () => {
     }
   });
 
+  it('places prior conversation between the system prompt and the current question', () => {
+    const built = buildModelPageContext(page);
+    const priorConversation = [
+      '<PRIOR_CONVERSATION>',
+      'Previous completed browser-assistant turns for conversational context.',
+      '[{"question":"Earlier?","answer":"Yes."}]',
+      '</PRIOR_CONVERSATION>',
+    ].join('\n');
+    const messages = buildModelMessages({
+      question: 'Follow up?',
+      serializedPageContext: built.serialized,
+      priorConversation,
+      exportDecision: decideModelExport({
+        privacy: 'remoteAllowed',
+        needsVision: false,
+        allowScreenshotExport: false,
+        profile: visionProfile(true),
+        hasScreenshot: false,
+      }),
+    });
+
+    assert.equal(messages.length, 4);
+    assert.equal(messages[0]?.role, 'system');
+    assert.equal(
+      messages[1]?.content[0]?.type === 'text' && messages[1].content[0].text,
+      priorConversation,
+    );
+    assert.equal(
+      messages[2]?.content[0]?.type === 'text' && messages[2].content[0].text,
+      'Follow up?',
+    );
+    const untrusted = messages[3]?.content[0]?.type === 'text' ? messages[3].content[0].text : '';
+    assert.match(untrusted, /^<UNTRUSTED_PAGE_CONTENT>/);
+    assert.equal(untrusted.includes('PRIOR_CONVERSATION'), false);
+    assert.equal(messages[0]?.content[0]?.type === 'text' && messages[0].content[0].text.includes('Earlier?'), false);
+  });
+
   it('fails closed when structured export is denied', () => {
     assert.throws(
       () =>
