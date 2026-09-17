@@ -1,14 +1,8 @@
+import type { CdpFrameTreeResponse } from './cdp-types';
 import { ObservationError } from '../shared/observation-types';
 import type { DocumentRevision, FrameId } from '../shared/observation-types';
 
-export interface CdpFrameTreeResponse {
-  frameTree: {
-    frame: {
-      id?: string;
-      loaderId?: string;
-    };
-  };
-}
+export type { CdpFrameTreeResponse };
 
 export interface DocumentIdentity {
   mainFrameId: FrameId;

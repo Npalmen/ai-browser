@@ -27,6 +27,7 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
   private readonly targetRegistry = new TargetRegistry();
   private readonly pageObserver = new ElectronPageObserver({
     resolveWebContents: (tabId) => this.resolveWebContents(tabId),
+    targetRegistry: this.targetRegistry,
   });
   private readonly websiteSession = session.fromPartition(WEBSITE_PARTITION);
   private activeAttachedTabId: TabId | null = null;

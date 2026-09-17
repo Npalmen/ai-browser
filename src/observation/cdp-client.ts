@@ -1,7 +1,12 @@
 import type { WebContents } from 'electron';
 
 import { ObservationError } from '../shared/observation-types';
-import type { CdpFrameTreeResponse } from './document-identity';
+import type {
+  CdpAccessibilityTreeResponse,
+  CdpDomSnapshotResponse,
+  CdpFrameTreeResponse,
+  CdpLayoutMetricsResponse,
+} from './cdp-types';
 
 const CDP_PROTOCOL_VERSION = '1.3';
 
@@ -27,16 +32,16 @@ export class ObservationCdpClient {
     await this.sendCommand('Accessibility.enable');
   }
 
-  async getAccessibilityTree(): Promise<unknown> {
-    return this.sendCommand('Accessibility.getFullAXTree');
+  async getAccessibilityTree(): Promise<CdpAccessibilityTreeResponse> {
+    return this.sendCommand('Accessibility.getFullAXTree') as Promise<CdpAccessibilityTreeResponse>;
   }
 
-  async captureDomSnapshot(): Promise<unknown> {
-    return this.sendCommand('DOMSnapshot.captureSnapshot', DOM_SNAPSHOT_CAPTURE_PARAMS);
+  async captureDomSnapshot(): Promise<CdpDomSnapshotResponse> {
+    return this.sendCommand('DOMSnapshot.captureSnapshot', DOM_SNAPSHOT_CAPTURE_PARAMS) as Promise<CdpDomSnapshotResponse>;
   }
 
-  async getLayoutMetrics(): Promise<unknown> {
-    return this.sendCommand('Page.getLayoutMetrics');
+  async getLayoutMetrics(): Promise<CdpLayoutMetricsResponse> {
+    return this.sendCommand('Page.getLayoutMetrics') as Promise<CdpLayoutMetricsResponse>;
   }
 
   async getFrameTree(): Promise<CdpFrameTreeResponse> {

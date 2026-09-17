@@ -1,8 +1,18 @@
+import { randomUUID } from 'node:crypto';
 import type { WebContents } from 'electron';
 
 import { CDP_PROTOCOL_VERSION, ObservationCdpClient } from './cdp-client';
+import type {
+  CdpAccessibilityTreeResponse,
+  CdpDomSnapshotResponse,
+  CdpFrameTreeResponse,
+  CdpLayoutMetricsResponse,
+} from './cdp-types';
 import { extractDocumentIdentity, type DocumentIdentity } from './document-identity';
+import { buildObservation } from './observation-builder';
+import { normalizeCollectedSources } from './observation-normalizer';
 import type { PageObserver } from './page-observer';
+import type { TargetRegistry } from './target-registry';
 import {
   ObservationError,
   type ObservePageOptions,
@@ -12,14 +22,15 @@ import type { TabId } from '../shared/browser-types';
 
 export interface ElectronPageObserverOptions {
   resolveWebContents: (tabId: TabId) => WebContents;
+  targetRegistry: TargetRegistry;
 }
 
 interface CollectedObservationSources {
   documentIdentity: DocumentIdentity;
-  frameTree: unknown;
-  layoutMetrics: unknown;
-  accessibilityTree: unknown;
-  domSnapshot: unknown;
+  frameTree: CdpFrameTreeResponse;
+  layoutMetrics: CdpLayoutMetricsResponse;
+  accessibilityTree: CdpAccessibilityTreeResponse;
+  domSnapshot: CdpDomSnapshotResponse;
 }
 
 interface ObservationSession {
@@ -42,6 +53,7 @@ export class ElectronPageObserver implements PageObserver {
   }
 
   async observePage(tabId: TabId, _options?: ObservePageOptions): Promise<PageObservation> {
+    // Phase 4 consumes includeScreenshot; screenshots are omitted until then.
     if (this.disposed) {
       throw new ObservationError('OBSERVATION_FAILED', 'Page observer has been disposed');
     }
@@ -54,6 +66,8 @@ export class ElectronPageObserver implements PageObserver {
     }
 
     this.inFlightTabs.add(tabId);
+    const observationId = randomUUID();
+    const capturedAt = Date.now();
 
     try {
       const webContents = this.resolveWebContentsForObservation(tabId);
@@ -62,12 +76,36 @@ export class ElectronPageObserver implements PageObserver {
       const session = await this.beginObservationSession(webContents);
 
       try {
-        await this.collectStructuredSources(session, webContents);
-        // Phase 3 replaces this temporary failure with builder normalization into PageObservation.
-        throw new ObservationError(
-          'OBSERVATION_FAILED',
-          'Structured observation normalization is not implemented until V1 Phase 3',
-        );
+        const sources = await this.collectStructuredSources(session, webContents);
+        this.assertSessionValid(session, webContents);
+
+        const normalized = normalizeCollectedSources({
+          frameTree: sources.frameTree,
+          layoutMetrics: sources.layoutMetrics,
+          accessibilityTree: sources.accessibilityTree,
+          domSnapshot: sources.domSnapshot,
+          documentIdentity: sources.documentIdentity,
+          pageMetadata: {
+            url: webContents.getURL(),
+            title: webContents.getTitle(),
+            loading: webContents.isLoading(),
+          },
+        });
+
+        this.assertSessionValid(session, webContents);
+
+        const built = buildObservation({
+          observationId,
+          tabId,
+          capturedAt,
+          document: normalized.document,
+          viewport: normalized.viewport,
+          candidates: normalized.candidates,
+          sourceStats: normalized.sourceStats,
+        });
+
+        this.options.targetRegistry.replaceObservation(tabId, observationId, built.targets);
+        return built.observation;
       } finally {
         await this.endObservationSession(session);
       }
