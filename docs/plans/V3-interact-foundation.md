@@ -1,6 +1,6 @@
 # Plan: V3 — Permissioned INTERACT foundation
 
-**Status:** draft  
+**Status:** locked  
 **Explicit reference:** Implementation tasks must cite `docs/plans/V3-interact-foundation.md` to treat this file as authoritative.
 
 Authoritative architecture:
@@ -30,9 +30,11 @@ Deliver **one model-proposed safe browser interaction per user request**:
 ```text
 User request (interaction mode)
 → fresh observePage
-→ model structured output (answer OR single InteractionProposal)
-→ proposal validation
-→ semantic policy (INTERACT or NAVIGATE for scroll)
+→ model structured output (answer OR single ModelInteractionProposal)
+→ schema validation (no execution identity from the model)
+→ trusted local bind (tabId, observationId, documentRevision, exported-target allowlist)
+→ BoundInteractionProposal
+→ semantic policy (INTERACT or NAVIGATE by effect)
 → grant
 → executor → BrowserAdapter primitive
 → fresh observePage
@@ -43,9 +45,9 @@ Supported primitives:
 
 | Primitive | Authority level |
 |-----------|-----------------|
-| `click` | INTERACT |
+| `click` | INTERACT **or** NAVIGATE, by semantic effect |
 | `type` | INTERACT |
-| `select` (native `<select>`) | INTERACT |
+| `select` (native `<select>` with bounded option catalog) | INTERACT |
 | `scroll` | NAVIGATE |
 
 **Milestone boundary (locked):** includes full single-step loop above. **Excludes** autonomous multi-step observe→act loops, PREPARE_ACTION, APPROVAL, and EXECUTE.
@@ -63,7 +65,9 @@ autonomous agent loops (multiple actions per request)
 AI SDK tool-calling as the proposal mechanism
 window.aiAssistant.click/type/select/scroll IPC
 website preload action hooks
-executeJavaScript / Runtime.evaluate / generic CDP API
+executeJavaScript / Runtime.evaluate / DOM.resolveNode / generic CDP API
+Target.setAutoAttach / Target.attachToTarget / implicit OOPIF session authority
+model-supplied tabId / observationId / documentRevision as execution identity
 credential vault / OS keychain
 fuzzy retargeting / selector fallback
 custom combobox one-shot select (multi-step deferred)
@@ -79,13 +83,19 @@ live internet sites in acceptance harness
 
 | Topic | Decision |
 |-------|----------|
-| Authority boundary | Model → validator → policy → grant → executor → `BrowserAdapter` |
+| Authority boundary | Model → validator → **local binder** → policy → grant → executor → `BrowserAdapter` |
 | Proposal mechanism | Structured output union (`answer` \| `interaction`); not tool-calling |
-| Target identity | `tabId` + `observationId` + `documentRevision` + `targetId`; internal `backendNodeId`/`frameId` |
-| Stale targets | Fail closed; no retargeting |
+| Model proposal identity | `kind` + `targetId` / payload only; model must not supply `tabId` / `observationId` / `documentRevision` |
+| Trusted local binding | Binder copies identity from the exact `PageObservation` used for that inference |
+| Exported-target enforcement | Target IDs must be in that request’s `exportedTargetIds` |
+| Stale targets | Fail closed; no retargeting; registry + revision + live preflight remain |
+| Click classification | Same `click` primitive may be INTERACT or NAVIGATE |
 | Policy | Conservative metadata classifier; uncertain → deny |
 | Sensitive fields | Deny all model-driven typing |
 | Scroll | NAVIGATE authority |
+| CDP allowlist | `Page.getFrameTree`, `DOM.getBoxModel`, `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Input.insertText` |
+| Frames / OOPIF | Attached session only; unsupported/cross-process frames → `UNSUPPORTED_FRAME` |
+| Native select | Bounded select-specific `nativeOptions` catalog; no HTML `value` assumption |
 | Post-action | Mandatory fresh `observePage` after successful mutation |
 | Agent | New `InteractiveAgent`; `ReadOnlyAgent` unchanged |
 | Audit | In-memory metadata-only sink |
@@ -127,7 +137,7 @@ Optional live gateway smoke stays in `src/v3-live/` (or reuse `src/v2-live/` pat
 
 | Phase | Scope | Stop condition |
 |-------|-------|----------------|
-| 1 | Shared interaction types, errors, validator skeleton | Types compile; validator unit tests pass |
+| 1 | Shared types, errors, model-proposal schema, trusted binder | Types compile; binding/validator unit tests pass |
 | 2 | Target resolution, interaction CDP client, `BrowserAdapter` primitives | Executor unit tests + adapter tests with fixtures |
 | 3 | Policy classifier, grants, audit sink | Policy adversarial tests pass |
 | 4 | `InteractiveAgent` + structured model output | Agent unit tests with recording runtime |
@@ -136,39 +146,51 @@ Optional live gateway smoke stays in `src/v3-live/` (or reuse `src/v2-live/` pat
 
 ---
 
-## Phase 1 — Shared types, errors, validator
+## Phase 1 — Shared types, errors, model-proposal schema, trusted binding
 
 ### Scope
 
-- Add `src/shared/interaction-types.ts` — proposals, grants, results, authority levels, bounds constants.
-- Add `src/shared/interaction-errors.ts` — `InteractionErrorCode`, `InteractionError` class.
-- Add `src/interaction/proposal-validator.ts` — schema validation, identity field presence, text/scroll bounds.
-- Add `src/interaction/action-level.ts` — map primitive → `INTERACT` | `NAVIGATE`.
+Phase 1 owns types and binding only. **No browser execution.**
+
+- Add `src/shared/interaction-types.ts` distinguishing:
+  - `ModelInteractionProposal` (model-visible; no execution identity)
+  - `BoundInteractionIdentity` / `BoundInteractionProposal` (local bind result)
+  - grants, results, authority levels, bounds constants
+- Add `src/shared/interaction-errors.ts` — `InteractionErrorCode` including `UNSUPPORTED_FRAME` and `TARGET_NOT_EXPORTED`, `InteractionError` class.
+- Add `src/interaction/proposal-validator.ts` — strict schema for **model** proposals: kinds, bounds, reject unknown fields.
+- Add `src/interaction/proposal-binder.ts` — copy `tabId`, `observationId`, `documentRevision` from the actual `PageObservation`; enforce `exportedTargetIds`.
+- Add `src/interaction/action-level.ts` — primitive defaults plus the rule that **click authority is not assumed INTERACT**.
 
 ### Files likely touched
 
 ```text
-src/shared/interaction-types.ts          (new)
-src/shared/interaction-errors.ts         (new)
-src/interaction/proposal-validator.ts    (new)
-src/interaction/action-level.ts          (new)
+src/shared/interaction-types.ts            (new)
+src/shared/interaction-errors.ts           (new)
+src/interaction/proposal-validator.ts      (new)
+src/interaction/proposal-binder.ts         (new)
+src/interaction/action-level.ts            (new)
 src/interaction/proposal-validator.test.ts (new)
+src/interaction/proposal-binder.test.ts    (new)
 ```
 
 ### Tests
 
-- Valid/invalid proposals per kind.
-- Missing `observationId` / `documentRevision` rejected.
+- Valid/invalid **model** proposals per kind.
+- Model cannot supply `tabId` as authority (extra field rejected).
+- Model cannot supply `observationId` as authority (extra field rejected).
+- Model cannot supply `documentRevision` as authority (extra field rejected).
+- Invented / non-exported `targetId` is rejected during binding.
+- Binding copies identity from the actual `PageObservation` used for that inference.
 - Text length over max rejected.
 - Scroll amount over max rejected.
 
 ### Non-goals
 
-- No CDP, no adapter methods, no policy rules, no model calls.
+- No CDP, no adapter methods, no policy rules, no model calls, no `nativeOptions` observation builder yet.
 
 ### Stop condition
 
-`npm run typecheck` and targeted tests for validator pass.
+`npm run typecheck` and targeted tests for validator + binder pass.
 
 ### Model
 
@@ -180,10 +202,14 @@ Composer 2.5.
 
 ### Scope
 
-- Add `src/interaction/target-resolver.ts` — wraps `TargetRegistry` + observation node lookup + revision preflight interface.
-- Add `src/observation/interaction-cdp-client.ts` — closed V3 allowlist per ADR-004 §12.
+- Add `src/interaction/target-resolver.ts` — wraps `TargetRegistry` + observation node lookup + revision preflight interface. Resolver consumes **bound** identity, never model-supplied IDs.
+- Add `src/observation/interaction-cdp-client.ts` — closed V3 allowlist per ADR-004 §12:
+  `Page.getFrameTree`, `DOM.getBoxModel`, `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Input.insertText`.
+  **Do not** add `DOM.resolveNode`, `Target.*`, or `Runtime.*`.
 - Add `src/browser/interaction-primitives.ts` — internal click/type/select/scroll implementation used by adapter.
 - Extend `src/browser/browser-adapter.ts` + `src/browser/electron-adapter.ts` with four primitive methods (executor-only callers).
+- Frame rule: attached website debugger/session only. Main-frame baseline. Same-process iframe only if `DOM.getBoxModel` + `Input.*` succeed on that session. Otherwise `UNSUPPORTED_FRAME`.
+- Native select: implement against the bounded `nativeOptions` catalog (observation enrichment as needed). Do not read HTML `value` from a widened attribute allowlist. Do not use `Runtime.evaluate`. Missing catalog → `UNSUPPORTED_TARGET`.
 - Extend `TargetRegistry` if needed (e.g. `getCurrentDocumentRevision` helper on tab) — minimal additive API only.
 
 ### Files likely touched
@@ -196,21 +222,28 @@ src/browser/interaction-primitives.ts
 src/browser/browser-adapter.ts
 src/browser/electron-adapter.ts
 src/browser/interaction-primitives.test.ts
+src/observation/observation-builder.ts     (select-only nativeOptions, if required)
+src/shared/observation-types.ts            (optional nativeOptions field)
 ```
 
 ### Tests
 
 - Resolver: happy path, stale `observationId`, missing target, cross-tab rejection.
-- CDP client: allowlist rejects unknown methods (mock debugger).
+- CDP client: allowlist rejects unknown methods including `DOM.resolveNode` and `Runtime.evaluate` (mock debugger).
 - Primitives: mock CDP; verify center-click coordinates, `insertText` sequence, bounded scroll delta.
+- Frames:
+  - main-frame target succeeds
+  - supported same-process iframe target succeeds where the bounded path can preflight it
+  - unresolvable / cross-process / OOPIF target fails closed (`UNSUPPORTED_FRAME`); no coordinate fallback
+- Select: option from `nativeOptions` catalog; missing/unassociated option → `UNSUPPORTED_TARGET`.
 
 ### Non-goals
 
-- No policy classifier, no agent, no IPC.
+- No policy classifier, no agent, no IPC, no `Target.*` child-session machinery.
 
 ### Stop condition
 
-Adapter primitive unit tests pass; resolver tests pass; typecheck clean.
+Adapter primitive unit tests pass; resolver tests pass; frame fail-closed tests pass; typecheck clean.
 
 ### Model
 
@@ -253,7 +286,9 @@ malicious injection strings in node name (still deny consequential controls)
 **Policy allow:**
 
 ```text
-expand/collapse, benign button, non-sensitive textbox, native select metadata
+expand/collapse, benign button, non-sensitive textbox, native select catalog
+safe navigational link (ALLOW_NAVIGATE, not INTERACT)
+bounded scroll (ALLOW_NAVIGATE)
 ```
 
 **Executor:**
@@ -302,13 +337,15 @@ src/v3-acceptance/recording-interaction-runtime.ts (new, optional location)
 ### Behavior
 
 - One proposal per request; if model returns `answer`, no execution (same as V2-style response).
-- If model returns `interaction`, run validator → executor once.
+- If model returns `interaction`, run validator → **binder** → executor once.
 - Tab lock / cancel semantics aligned with `ReadOnlyAgent`.
 - `ReadOnlyAgent` file remains unchanged.
 
 ### Tests
 
-- Recording runtime returns proposal → executor invoked (mock).
+- Recording runtime returns proposal → binder attaches local identity → executor invoked (mock).
+- Model returns `tabId` / `observationId` / `documentRevision` → schema reject, no adapter call.
+- Invented or non-exported `targetId` → binding reject, no adapter call.
 - Model returns answer → executor not invoked.
 - Invalid model output → safe error, no adapter call.
 - Cancel mid-flight → `REQUEST_CANCELLED`.
@@ -410,11 +447,13 @@ docs/plans/V3-interact-foundation.md (status → complete)
 
 | Category | Examples |
 |----------|----------|
-| Positive INTERACT | expand, type non-sensitive, native select, bounded scroll |
-| Stale target | superseded observation, revision change, navigation, cross-tab, removed node |
-| Policy denial | submit, buy, delete, send, payment, sensitive type, injection page |
+| Positive INTERACT | expand, type non-sensitive, native select from catalog |
+| Positive NAVIGATE | bounded scroll; safe non-consequential link classified as NAVIGATE |
+| Stale target | superseded observation, revision change, navigation, cross-tab, removed node, non-exported targetId |
+| Policy denial | submit, buy, delete, send, payment, sensitive type, injection page, suspicious href |
+| Frames | main-frame success; supported iframe where applicable; OOPIF/unresolvable fail closed |
 | Execution | grant before adapter; fresh observation after success |
-| Security | no WebContents to renderer; no executeJavaScript; no website IPC; audit has no secrets |
+| Security | no WebContents to renderer; no executeJavaScript; no website IPC; audit has no secrets; model cannot bind identity |
 
 ### Non-goals
 
@@ -460,10 +499,14 @@ Do not add dependencies unless a phase truly requires it (none anticipated).
 
 ```text
 [ ] Model cannot import BrowserAdapter interaction methods
+[ ] Model proposal schema rejects tabId / observationId / documentRevision
+[ ] Binding copies identity from the inference PageObservation
+[ ] Non-exported targetId cannot execute
 [ ] Website preload unchanged (no action IPC)
 [ ] ipc-security allowlist has no interaction primitives for websites
-[ ] Interaction CDP allowlist is closed
+[ ] Interaction CDP allowlist is closed (no DOM.resolveNode, Target.*, Runtime.*)
 [ ] No Runtime.evaluate / executeJavaScript path
+[ ] Unsupported frames fail closed
 [ ] Audit sink contains no secrets or full page text
 [ ] ReadOnlyAgent tests still pass unchanged
 [ ] V2 acceptance still passes
