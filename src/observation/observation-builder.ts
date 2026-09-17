@@ -86,6 +86,7 @@ export interface BuildObservationInput {
   };
 
   screenshot?: ObservationScreenshot;
+  externallyTruncated?: boolean;
   budgets?: Partial<ObservationBudgetConfig>;
 }
 
@@ -329,7 +330,7 @@ function buildStates(prepared: PreparedCandidate): ObservationNode['states'] {
 
 export function buildObservation(input: BuildObservationInput): BuiltObservation {
   const budgets = resolveBudgets(input.budgets);
-  let truncated = false;
+  let truncated = input.externallyTruncated ?? false;
   let redactedValueCount = 0;
 
   const prepared = input.candidates.map((candidate) => {

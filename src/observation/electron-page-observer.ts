@@ -11,11 +11,13 @@ import type {
 import { extractDocumentIdentity, type DocumentIdentity } from './document-identity';
 import { buildObservation } from './observation-builder';
 import { normalizeCollectedSources } from './observation-normalizer';
+import { captureObservationScreenshot } from './screenshot';
 import type { PageObserver } from './page-observer';
 import type { TargetRegistry } from './target-registry';
 import {
   ObservationError,
   type ObservePageOptions,
+  type ObservationScreenshot,
   type PageObservation,
 } from '../shared/observation-types';
 import type { TabId } from '../shared/browser-types';
@@ -31,6 +33,8 @@ interface CollectedObservationSources {
   layoutMetrics: CdpLayoutMetricsResponse;
   accessibilityTree: CdpAccessibilityTreeResponse;
   domSnapshot: CdpDomSnapshotResponse;
+  screenshot?: ObservationScreenshot;
+  screenshotTruncated: boolean;
 }
 
 interface ObservationSession {
@@ -52,8 +56,9 @@ export class ElectronPageObserver implements PageObserver {
     this.disposed = true;
   }
 
-  async observePage(tabId: TabId, _options?: ObservePageOptions): Promise<PageObservation> {
-    // Phase 4 consumes includeScreenshot; screenshots are omitted until then.
+  async observePage(tabId: TabId, options?: ObservePageOptions): Promise<PageObservation> {
+    const includeScreenshot = options?.includeScreenshot ?? true;
+
     if (this.disposed) {
       throw new ObservationError('OBSERVATION_FAILED', 'Page observer has been disposed');
     }
@@ -76,7 +81,11 @@ export class ElectronPageObserver implements PageObserver {
       const session = await this.beginObservationSession(webContents);
 
       try {
-        const sources = await this.collectStructuredSources(session, webContents);
+        const sources = await this.collectStructuredSources(
+          session,
+          webContents,
+          includeScreenshot,
+        );
         this.assertSessionValid(session, webContents);
 
         const normalized = normalizeCollectedSources({
@@ -102,6 +111,8 @@ export class ElectronPageObserver implements PageObserver {
           viewport: normalized.viewport,
           candidates: normalized.candidates,
           sourceStats: normalized.sourceStats,
+          screenshot: sources.screenshot,
+          externallyTruncated: sources.screenshotTruncated,
         });
 
         this.options.targetRegistry.replaceObservation(tabId, observationId, built.targets);
@@ -191,6 +202,7 @@ export class ElectronPageObserver implements PageObserver {
   private async collectStructuredSources(
     session: ObservationSession,
     expectedWebContents: WebContents,
+    includeScreenshot: boolean,
   ): Promise<CollectedObservationSources> {
     this.assertSessionValid(session, expectedWebContents);
 
@@ -211,6 +223,17 @@ export class ElectronPageObserver implements PageObserver {
     const domSnapshot = await session.cdp.captureDomSnapshot();
     this.assertSessionValid(session, expectedWebContents);
 
+    let screenshot: ObservationScreenshot | undefined;
+    let screenshotTruncated = false;
+
+    if (includeScreenshot) {
+      this.assertSessionValid(session, expectedWebContents);
+      const captureResult = await captureObservationScreenshot(expectedWebContents);
+      this.assertSessionValid(session, expectedWebContents);
+      screenshot = captureResult.screenshot;
+      screenshotTruncated = captureResult.screenshotTruncated;
+    }
+
     const finalFrameTree = await session.cdp.getFrameTree();
     this.assertSessionValid(session, expectedWebContents);
 
@@ -229,6 +252,8 @@ export class ElectronPageObserver implements PageObserver {
       layoutMetrics,
       accessibilityTree,
       domSnapshot,
+      screenshot,
+      screenshotTruncated,
     };
   }
 

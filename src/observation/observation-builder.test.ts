@@ -203,6 +203,66 @@ describe('buildObservation', () => {
     assert.equal(observation.stats.truncated, true);
   });
 
+  it('marks externally truncated observations', () => {
+    const { observation } = buildObservation(
+      baseInput([], {
+        externallyTruncated: true,
+      }),
+    );
+
+    assert.equal(observation.stats.truncated, true);
+  });
+
+  it('does not mark observations truncated when externally truncated is false', () => {
+    const { observation } = buildObservation(
+      baseInput(
+        [
+          candidate({
+            documentOrder: 0,
+            priority: ObservationPriority.VisibleMeaningfulTextInViewport,
+            role: 'text',
+            text: 'Hello',
+          }),
+        ],
+        {
+          externallyTruncated: false,
+        },
+      ),
+    );
+
+    assert.equal(observation.stats.truncated, false);
+  });
+
+  it('serializes screenshot metadata without privileged image objects', () => {
+    const screenshot = {
+      mimeType: 'image/jpeg' as const,
+      width: 800,
+      height: 600,
+      encoding: 'base64' as const,
+      data: 'ZmFrZQ==',
+    };
+
+    const { observation } = buildObservation(
+      baseInput([], {
+        screenshot,
+      }),
+    );
+
+    assert.deepEqual(observation.screenshot, screenshot);
+
+    const serialized = JSON.stringify(observation);
+    assert.equal(serialized.includes('NativeImage'), false);
+    assert.equal(serialized.includes('Buffer'), false);
+    assert.equal(serialized.includes('Electron'), false);
+    assert.deepEqual(Object.keys(observation.screenshot ?? {}), [
+      'mimeType',
+      'width',
+      'height',
+      'encoding',
+      'data',
+    ]);
+  });
+
   it('emits opaque targetIds without exposing backend node ids', () => {
     const { observation, targets } = buildObservation(
       baseInput([
