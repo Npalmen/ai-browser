@@ -1,0 +1,44 @@
+---
+description: Browser action boundaries — classify by semantic effect, not primitive
+alwaysApply: true
+---
+
+# Browser Agent Safety
+
+Architectural guidance for future AI-browser development. Classify actions by **semantic effect**, not solely by the low-level browser primitive.
+
+## Action levels
+
+### OBSERVE
+
+Read-only inspection: DOM, page text/content, screenshots, non-sensitive browser state.
+
+### NAVIGATE
+
+Move within the browser without mutating page content: open URL, scroll, switch tab, back, forward.
+
+### INTERACT
+
+Local UI manipulation without external side effects: click normal controls, select elements, enter or modify form fields, choose options.
+
+Example: clicking "expand details" is INTERACT.
+
+### PREPARE ACTION
+
+Prepare an action that would cause an external side effect, **without executing** that side effect.
+
+### APPROVAL
+
+Deliberate approval boundary before sensitive or externally consequential execution.
+
+### EXECUTE
+
+Actions that may send, submit, book, publish, purchase, place an order, modify or delete external data, modify an account, or create other consequential external side effects.
+
+Example: clicking "confirm purchase" is EXECUTE — same primitive as expand, different authority.
+
+## Principle
+
+Keep OBSERVE, NAVIGATE, INTERACT, PREPARE ACTION, APPROVAL, and EXECUTE **separable** in future architecture.
+
+Do not collapse preparation, approval, and execution into a single unrestricted browser action.

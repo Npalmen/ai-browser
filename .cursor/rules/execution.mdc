@@ -1,0 +1,93 @@
+---
+description: Default execution contract — model policy, subagents, verification, permissions
+alwaysApply: true
+---
+
+# Execution Contract
+
+## Authority
+
+The explicit current prompt and any explicitly referenced authoritative active/locked plan control scope, verification depth, model policy, and permissions.
+
+Do not infer permissions from task size. If something is not authorized, stop before performing it.
+
+## Model policy
+
+```yaml
+model:
+  default: composer
+  escalation_allowed: false
+```
+
+Composer is the normal execution model. A stronger or external model may be used only when:
+
+- the current prompt explicitly requests or allows it, or
+- the authoritative active plan explicitly allows it with a bounded reason.
+
+Valid escalation reasons include: difficult auth/permission design, concurrency or idempotency reasoning, security review, destructive migration design, unusually complex architecture.
+
+**Do not escalate** because a command failed, a test failed, the first attempt was imperfect, or more confidence would be convenient.
+
+**Do not use by default:** automatic model routers, fallback chains, best-of-N, model panels, parallel model opinions, automatic review agents, review/fix/review loops.
+
+## Subagent policy
+
+```yaml
+subagents:
+  allowed: false
+```
+
+Do not use subagents for ordinary mapping, finding files, routine implementation, debugging, review, or verification.
+
+Allow only when explicitly authorized and parallelization has a concrete benefit.
+
+## Verification defaults
+
+```yaml
+verification:
+  mode: targeted
+```
+
+**Small change:** implement → smallest relevant targeted verification → inspect diff → stop.
+
+**Normal feature:** implement → relevant targeted checks → inspect diff → stop per active task/plan.
+
+Do not automatically run full test suites, full lint, full builds, Docker builds, Docker integration, E2E, CI workflows, or broad regression suites unless required by the active prompt/plan or necessary to validate the specific affected area.
+
+A failed targeted check does not authorize broader validation, model escalation, subagents, or autonomous fix loops. Use the narrowest useful diagnostic first.
+
+## Explicit permissions
+
+```yaml
+permissions:
+  commit: false
+  push: false
+  create_pr: false
+  wait_for_ci: false
+  watch_ci: false
+  fix_ci: false
+  merge: false
+  post_merge_verify: false
+  deploy: false
+  deployment_verify: false
+  live_effects: false
+```
+
+- Absent permission fields are `false`.
+- Permissions do not inherit from one another.
+- Permissions do not imply downstream permissions.
+
+```
+commit=true          does not imply push
+push=true            does not imply create_pr
+create_pr=true       does not imply wait_for_ci, watch_ci, fix_ci, merge, post_merge_verify
+wait_for_ci=true     does not imply fix_ci
+watch_ci=true        does not imply fix_ci
+fix_ci=true          does not imply merge
+merge=true           does not imply post_merge_verify
+deploy=true          does not imply deployment_verify
+```
+
+`live_effects` is separate: external state or side effects outside ordinary repository-local development. Do not collapse permissions into a single `git`, `autonomous`, or `release` flag.
+
+The active prompt or authoritative plan may grant individual permissions. Each must be explicit.
