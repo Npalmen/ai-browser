@@ -469,6 +469,8 @@ Application UI never self-authorizes. It can only display a pending approval and
 
 Do not send the full raw DOM to an LLM on every turn.
 
+The V1 observation mechanism, schema, CDP allowlist, targeting IDs, and security constraints are specified in `docs/architecture/ADR-002-page-observation.md` and implemented under `docs/plans/V1-page-observation.md`. This section remains the architectural intent those documents refine.
+
 ### 10.1 V1 observation payload
 
 Assemble one `PageObservation`:
@@ -649,7 +651,7 @@ Do not decide these in Phase 0 beyond “not now”:
 - Cloud sync, account, or remote-hosted browser
 - Encryption of observations to model providers
 - Persistence format for audit logs
-- Exact `PageObservation` JSON schema
+- Exact `PageObservation` JSON schema — **now specified for the observation milestone** in ADR-002 / `docs/plans/V1-page-observation.md`. Remote-model export policy remains deferred.
 - Playwright (or any automation library) as an implementation dependency
 
 ---

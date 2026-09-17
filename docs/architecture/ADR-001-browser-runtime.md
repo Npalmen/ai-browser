@@ -3,7 +3,7 @@
 **Status:** Accepted  
 **Date:** 2026-09-17  
 **Supersedes:** none  
-**See also:** `docs/architecture/browser-architecture.md`
+**See also:** `docs/architecture/browser-architecture.md`, `docs/architecture/ADR-002-page-observation.md`
 
 ## Context
 
