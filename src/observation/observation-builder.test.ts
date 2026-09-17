@@ -145,6 +145,44 @@ describe('buildObservation', () => {
     assert.equal(observation.stats.truncated, true);
   });
 
+  it('does not expose redacted secret text in nativeOptions', () => {
+    const secret = 'fixture-password-secret';
+    const { observation } = buildObservation(
+      baseInput([
+        candidate({
+          documentOrder: 0,
+          priority: ObservationPriority.VisibleInteractiveInViewport,
+          tag: 'select',
+          role: 'combobox',
+          interactive: true,
+          targetIdentity: { backendNodeId: 1 },
+        }),
+        candidate({
+          documentOrder: 1,
+          priority: ObservationPriority.StructuralContext,
+          tag: 'option',
+          role: 'option',
+          text: secret,
+          attributes: { type: 'password' },
+          parentBackendNodeId: 1,
+          targetIdentity: { backendNodeId: 2 },
+        }),
+      ]),
+    );
+
+    const serialized = JSON.stringify(observation);
+    assert.equal(serialized.includes(secret), false);
+
+    const optionNode = observation.nodes.find((node) => node.tag === 'option');
+    assert.equal(optionNode?.name, undefined);
+    assert.equal(optionNode?.text, undefined);
+    assert.equal(optionNode?.value, undefined);
+    assert.equal(optionNode?.states?.secret, true);
+
+    const selectNode = observation.nodes.find((node) => node.tag === 'select');
+    assert.equal(selectNode?.nativeOptions, undefined);
+  });
+
   it('adds bounded nativeOptions catalogs to native select nodes', () => {
     const { observation } = buildObservation(
       baseInput([

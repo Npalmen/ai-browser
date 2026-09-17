@@ -61,4 +61,95 @@ describe('InteractionSessionManager', () => {
 
     await first;
   });
+
+  it('clears in-flight state when debugger attach fails and allows a subsequent interaction', async () => {
+    const manager = new InteractionSessionManager();
+    let attachAttempts = 0;
+    let attached = false;
+    let detachCalled = false;
+
+    const webContents = {
+      isDestroyed: () => false,
+      isDevToolsOpened: () => false,
+      debugger: {
+        isAttached: () => attached,
+        attach: () => {
+          attachAttempts += 1;
+          if (attachAttempts === 1) {
+            throw new Error('attach failed');
+          }
+          attached = true;
+        },
+        detach: () => {
+          attached = false;
+          detachCalled = true;
+        },
+        on: () => undefined,
+        removeListener: () => undefined,
+      },
+      once: () => undefined,
+      removeListener: () => undefined,
+    };
+
+    await assert.rejects(
+      () => manager.withSession('tab-1', webContents as never, async () => 'ok'),
+      (error: unknown) => {
+        assert.ok(error instanceof InteractionError);
+        assert.equal(error.code, 'INTERACTION_FAILED');
+        return true;
+      },
+    );
+    assert.equal(manager.isInteractionInProgress('tab-1'), false);
+    assert.equal(detachCalled, false);
+
+    const result = await manager.withSession('tab-1', webContents as never, async () => 'ok');
+    assert.equal(result, 'ok');
+    assert.equal(manager.isInteractionInProgress('tab-1'), false);
+    assert.equal(detachCalled, true);
+  });
+
+  it('clears in-flight state and detaches owned debugger when action fails', async () => {
+    const manager = new InteractionSessionManager();
+    let attached = false;
+    let detachCalls = 0;
+
+    const webContents = {
+      isDestroyed: () => false,
+      isDevToolsOpened: () => false,
+      debugger: {
+        isAttached: () => attached,
+        attach: () => {
+          attached = true;
+        },
+        detach: () => {
+          attached = false;
+          detachCalls += 1;
+        },
+        on: () => undefined,
+        removeListener: () => undefined,
+      },
+      once: () => undefined,
+      removeListener: () => undefined,
+    };
+
+    await assert.rejects(
+      () =>
+        manager.withSession('tab-1', webContents as never, async () => {
+          throw new Error('action failed');
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, 'action failed');
+        return true;
+      },
+    );
+    assert.equal(manager.isInteractionInProgress('tab-1'), false);
+    assert.equal(attached, false);
+    assert.equal(detachCalls, 1);
+
+    const result = await manager.withSession('tab-1', webContents as never, async () => 'ok');
+    assert.equal(result, 'ok');
+    assert.equal(manager.isInteractionInProgress('tab-1'), false);
+    assert.equal(detachCalls, 2);
+  });
 });

@@ -5,27 +5,8 @@ import type { NativeSelectOption, TargetId } from '../shared/observation-types';
 interface CandidateTargetInfo {
   candidate: ObservationCandidate;
   targetId: TargetId;
-  name: string;
+  displayName: string;
   selected?: true;
-}
-
-function optionDisplayName(candidate: ObservationCandidate): string | undefined {
-  const name = candidate.name?.trim();
-  if (name) {
-    return name;
-  }
-
-  const text = candidate.text?.trim();
-  if (text) {
-    return text;
-  }
-
-  const value = candidate.value?.trim();
-  if (value) {
-    return value;
-  }
-
-  return undefined;
 }
 
 function isNativeSelectCandidate(candidate: ObservationCandidate): boolean {
@@ -40,14 +21,6 @@ export function buildNativeSelectOptionCatalogs(
   emitted: CandidateTargetInfo[],
   budgets: ObservationBudgetConfig,
 ): Map<TargetId, NativeSelectOption[]> {
-  const byBackendId = new Map<number, CandidateTargetInfo>();
-  for (const item of emitted) {
-    const backendNodeId = item.candidate.targetIdentity?.backendNodeId;
-    if (backendNodeId !== undefined) {
-      byBackendId.set(backendNodeId, item);
-    }
-  }
-
   const catalogs = new Map<TargetId, NativeSelectOption[]>();
 
   for (const selectItem of emitted) {
@@ -71,20 +44,22 @@ export function buildNativeSelectOptionCatalogs(
         continue;
       }
 
-      const name = optionDisplayName(optionItem.candidate);
-      if (!name) {
+      const displayName = optionItem.displayName.trim();
+      if (!displayName) {
         continue;
       }
 
       const boundedName =
-        name.length > budgets.maxTextCharsPerNode ? name.slice(0, budgets.maxTextCharsPerNode) : name;
+        displayName.length > budgets.maxTextCharsPerNode
+          ? displayName.slice(0, budgets.maxTextCharsPerNode)
+          : displayName;
 
       const option: NativeSelectOption = {
         targetId: optionItem.targetId,
         name: boundedName,
       };
 
-      if (optionItem.candidate.selected) {
+      if (optionItem.selected) {
         option.selected = true;
       }
 

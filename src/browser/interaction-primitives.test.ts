@@ -5,6 +5,7 @@ import { InteractionError } from '../shared/interaction-errors';
 import { MAX_INTERACTION_SCROLL_AMOUNT_PX } from '../shared/interaction-types';
 import type { InteractionCdpClient } from '../observation/interaction-cdp-client';
 import {
+  assertScrollIntoViewViewport,
   assertViewportScrollRequest,
   executeAdapterClick,
   executeAdapterScrollIntoView,
@@ -230,6 +231,140 @@ describe('interaction primitives', () => {
     assert.equal(
       calls.filter((call) => call.method === 'Input.dispatchMouseEvent' && call.params?.type === 'mouseWheel').length,
       0,
+    );
+  });
+
+  it('rejects cross-tab select requests before dispatching mouse input', async () => {
+    const { cdp, calls } = createCdpStub();
+
+    await assert.rejects(
+      () =>
+        executeAdapterSelect(cdp, {
+          selectTarget: {
+            tabId: 'tab-1',
+            frameId: 'frame-1',
+            backendNodeId: 10,
+            documentRevision: 'frame-1:loader-1',
+          },
+          optionTarget: {
+            tabId: 'tab-2',
+            frameId: 'frame-1',
+            backendNodeId: 11,
+            documentRevision: 'frame-1:loader-1',
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof InteractionError);
+        assert.equal(error.code, 'TARGET_STALE');
+        return true;
+      },
+    );
+
+    assert.equal(calls.filter((call) => call.method === 'Input.dispatchMouseEvent').length, 0);
+  });
+
+  it('rejects select requests with mismatched document revisions before dispatching mouse input', async () => {
+    const { cdp, calls } = createCdpStub();
+
+    await assert.rejects(
+      () =>
+        executeAdapterSelect(cdp, {
+          selectTarget: {
+            tabId: 'tab-1',
+            frameId: 'frame-1',
+            backendNodeId: 10,
+            documentRevision: 'frame-1:loader-1',
+          },
+          optionTarget: {
+            tabId: 'tab-1',
+            frameId: 'frame-1',
+            backendNodeId: 11,
+            documentRevision: 'frame-1:loader-2',
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof InteractionError);
+        assert.equal(error.code, 'TARGET_STALE');
+        return true;
+      },
+    );
+
+    assert.equal(calls.filter((call) => call.method === 'Input.dispatchMouseEvent').length, 0);
+  });
+
+  it('rejects select requests with mismatched frames before dispatching mouse input', async () => {
+    const { cdp, calls } = createCdpStub();
+
+    await assert.rejects(
+      () =>
+        executeAdapterSelect(cdp, {
+          selectTarget: {
+            tabId: 'tab-1',
+            frameId: 'frame-1',
+            backendNodeId: 10,
+            documentRevision: 'frame-1:loader-1',
+          },
+          optionTarget: {
+            tabId: 'tab-1',
+            frameId: 'frame-2',
+            backendNodeId: 11,
+            documentRevision: 'frame-1:loader-1',
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof InteractionError);
+        assert.equal(error.code, 'UNSUPPORTED_FRAME');
+        return true;
+      },
+    );
+
+    assert.equal(calls.filter((call) => call.method === 'Input.dispatchMouseEvent').length, 0);
+  });
+
+  it('rejects invalid scrollIntoView viewport values before dispatching mouse input', async () => {
+    const { cdp, calls } = createCdpStub();
+    const request = {
+      target: {
+        tabId: 'tab-1',
+        frameId: 'frame-1',
+        backendNodeId: 42,
+        documentRevision: 'frame-1:loader-1',
+      },
+      viewport: { width: 800, height: 600, scrollX: 0, scrollY: 0 },
+      observedBounds: { x: 100, y: 100, width: 20, height: 20 },
+    };
+
+    const invalidViewports = [
+      { width: Number.NaN, height: 600, scrollX: 0, scrollY: 0 },
+      { width: 800, height: Number.POSITIVE_INFINITY, scrollX: 0, scrollY: 0 },
+      { width: 0, height: 600, scrollX: 0, scrollY: 0 },
+      { width: 800, height: -1, scrollX: 0, scrollY: 0 },
+      { width: 800, height: 600, scrollX: Number.NaN, scrollY: 0 },
+      { width: 800, height: 600, scrollX: 0, scrollY: Number.NEGATIVE_INFINITY },
+    ];
+
+    for (const viewport of invalidViewports) {
+      await assert.rejects(
+        () => executeAdapterScrollIntoView(cdp, { ...request, viewport }),
+        (error: unknown) => {
+          assert.ok(error instanceof InteractionError);
+          assert.equal(error.code, 'INTERACTION_FAILED');
+          return true;
+        },
+      );
+    }
+
+    assert.equal(calls.filter((call) => call.method === 'Input.dispatchMouseEvent').length, 0);
+  });
+
+  it('validates scrollIntoView viewport dimensions defensively', () => {
+    assert.throws(
+      () => assertScrollIntoViewViewport({ width: 0, height: 600, scrollX: 0, scrollY: 0 }),
+      (error: unknown) => {
+        assert.ok(error instanceof InteractionError);
+        assert.equal(error.code, 'INTERACTION_FAILED');
+        return true;
+      },
     );
   });
 

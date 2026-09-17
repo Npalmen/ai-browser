@@ -396,7 +396,7 @@ export function buildObservation(input: BuildObservationInput): BuiltObservation
   const emittedTargets: Array<{
     candidate: ObservationCandidate;
     targetId: TargetId;
-    name: string;
+    displayName: string;
     selected?: true;
   }> = [];
 
@@ -416,11 +416,10 @@ export function buildObservation(input: BuildObservationInput): BuiltObservation
         axNodeId: item.candidate.targetIdentity?.axNodeId,
       });
 
-      const displayName = item.name ?? item.text ?? item.value ?? '';
       emittedTargets.push({
         candidate: item.candidate,
         targetId,
-        name: displayName,
+        displayName: item.name ?? item.text ?? item.value ?? '',
         ...(item.candidate.selected ? { selected: true as const } : {}),
       });
     }

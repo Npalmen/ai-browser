@@ -126,14 +126,10 @@ export async function executeAdapterSelect(
 ): Promise<AdapterInteractionResult> {
   assertAdapterTarget(request.selectTarget);
   assertAdapterTarget(request.optionTarget);
+  assertSelectTargetPair(request);
   await assertDocumentRevision(cdp, request.selectTarget.documentRevision);
-  await assertDocumentRevision(cdp, request.optionTarget.documentRevision);
   await assertSupportedFrame(cdp, request.selectTarget.frameId);
   await assertSupportedFrame(cdp, request.optionTarget.frameId);
-
-  if (request.selectTarget.frameId !== request.optionTarget.frameId) {
-    throw new InteractionError('UNSUPPORTED_FRAME', 'Select and option targets must share the same frame.');
-  }
 
   const selectBox = await preflightTargetBox(
     cdp,
@@ -208,6 +204,7 @@ export async function executeAdapterScrollIntoView(
   request: AdapterScrollIntoViewRequest,
 ): Promise<AdapterInteractionResult> {
   assertAdapterTarget(request.target);
+  assertScrollIntoViewViewport(request.viewport);
   await assertDocumentRevision(cdp, request.target.documentRevision);
   await assertSupportedFrame(cdp, request.target.frameId);
 
@@ -259,6 +256,42 @@ export function assertViewportScrollRequest(request: AdapterViewportScrollReques
 function assertAdapterTarget(target: AdapterTargetRef): void {
   if (!Number.isInteger(target.backendNodeId) || target.backendNodeId <= 0) {
     throw new InteractionError('INTERACTION_FAILED', 'Target backendNodeId is invalid.');
+  }
+}
+
+function assertSelectTargetPair(request: AdapterSelectRequest): void {
+  const { selectTarget, optionTarget } = request;
+
+  if (selectTarget.tabId !== optionTarget.tabId) {
+    throw new InteractionError('TARGET_STALE', 'Select and option targets must belong to the same tab.');
+  }
+
+  if (selectTarget.documentRevision !== optionTarget.documentRevision) {
+    throw new InteractionError('TARGET_STALE', 'Select and option targets must share the same document revision.');
+  }
+
+  if (selectTarget.frameId !== optionTarget.frameId) {
+    throw new InteractionError('UNSUPPORTED_FRAME', 'Select and option targets must share the same frame.');
+  }
+}
+
+export function assertScrollIntoViewViewport(
+  viewport: AdapterScrollIntoViewRequest['viewport'],
+): void {
+  if (!Number.isFinite(viewport.width) || viewport.width <= 0) {
+    throw new InteractionError('INTERACTION_FAILED', 'Viewport width is invalid for scroll into view.');
+  }
+
+  if (!Number.isFinite(viewport.height) || viewport.height <= 0) {
+    throw new InteractionError('INTERACTION_FAILED', 'Viewport height is invalid for scroll into view.');
+  }
+
+  if (!Number.isFinite(viewport.scrollX)) {
+    throw new InteractionError('INTERACTION_FAILED', 'Viewport scrollX is invalid for scroll into view.');
+  }
+
+  if (!Number.isFinite(viewport.scrollY)) {
+    throw new InteractionError('INTERACTION_FAILED', 'Viewport scrollY is invalid for scroll into view.');
   }
 }
 

@@ -42,12 +42,15 @@ export class InteractionSessionManager {
     this.assertPreflight(webContents);
 
     this.inFlightTabs.add(tabId);
-    const session = await this.beginSession(webContents);
+    let session: InteractionSession | null = null;
 
     try {
+      session = await this.beginSession(webContents);
       return await action(session.cdp);
     } finally {
-      await this.endSession(session);
+      if (session !== null) {
+        await this.endSession(session);
+      }
       this.inFlightTabs.delete(tabId);
     }
   }

@@ -25,7 +25,7 @@ describe('buildNativeSelectOptionCatalogs', () => {
       [
         {
           targetId: 'select-1',
-          name: 'Color',
+          displayName: 'Color',
           candidate: candidate({
             documentOrder: 0,
             tag: 'select',
@@ -35,7 +35,8 @@ describe('buildNativeSelectOptionCatalogs', () => {
         },
         {
           targetId: 'option-1',
-          name: 'Red',
+          displayName: 'Red',
+          selected: true,
           candidate: candidate({
             documentOrder: 1,
             tag: 'option',
@@ -48,7 +49,7 @@ describe('buildNativeSelectOptionCatalogs', () => {
         },
         {
           targetId: 'option-2',
-          name: 'Blue',
+          displayName: 'Blue',
           candidate: candidate({
             documentOrder: 2,
             tag: 'option',
@@ -77,7 +78,7 @@ describe('buildNativeSelectOptionCatalogs', () => {
       [
         {
           targetId: 'combo-1',
-          name: 'Fruit',
+          displayName: 'Fruit',
           candidate: candidate({
             documentOrder: 0,
             tag: 'div',
@@ -87,13 +88,46 @@ describe('buildNativeSelectOptionCatalogs', () => {
         },
         {
           targetId: 'option-orphan',
-          name: 'Apple',
+          displayName: 'Apple',
           candidate: candidate({
             documentOrder: 1,
             tag: 'option',
             role: 'option',
             parentBackendNodeId: 99,
             targetIdentity: { backendNodeId: 11 },
+          }),
+        },
+      ],
+      OBSERVATION_BUDGETS,
+    );
+
+    assert.equal(catalogs.size, 0);
+  });
+
+  it('omits options whose prepared display name was redacted to empty', () => {
+    const catalogs = buildNativeSelectOptionCatalogs(
+      [
+        {
+          targetId: 'select-1',
+          displayName: 'Color',
+          candidate: candidate({
+            documentOrder: 0,
+            tag: 'select',
+            role: 'combobox',
+            targetIdentity: { backendNodeId: 1 },
+          }),
+        },
+        {
+          targetId: 'option-1',
+          displayName: '',
+          candidate: candidate({
+            documentOrder: 1,
+            tag: 'option',
+            role: 'option',
+            text: 'fixture-password-secret',
+            attributes: { type: 'password' },
+            parentBackendNodeId: 1,
+            targetIdentity: { backendNodeId: 2 },
           }),
         },
       ],
