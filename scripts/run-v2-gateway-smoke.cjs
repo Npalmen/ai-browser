@@ -5,7 +5,7 @@ const result = spawnSync(
   process.execPath,
   [
     path.join(__dirname, 'bundle-and-run-electron.cjs'),
-    path.join(__dirname, '..', 'src', 'v2-acceptance', 'electron-observation-harness.ts'),
+    path.join(__dirname, '..', 'src', 'v2-live', 'gateway-smoke-harness.ts'),
   ],
   { stdio: 'inherit', windowsHide: true },
 );

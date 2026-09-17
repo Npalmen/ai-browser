@@ -2,9 +2,7 @@ import assert from 'node:assert/strict';
 
 import { app, BrowserWindow } from 'electron';
 
-import { ModelError } from '../ai/model-errors';
-import { AiSdkGatewayRuntime } from '../ai/providers/ai-sdk-gateway';
-import { ReadOnlyAgent, type PageObservationSource } from '../ai/read-only-agent';
+import { ReadOnlyAgent } from '../ai/read-only-agent';
 import { ElectronPageObserver } from '../observation/electron-page-observer';
 import { TargetRegistry } from '../observation/target-registry';
 import {
@@ -184,54 +182,12 @@ async function run(): Promise<void> {
     assert.equal(tab.entries.find((entry) => entry.role === 'assistant')?.status, 'complete');
     assert.equal(tab.activeAskId, null);
 
-    const liveSmoke = await maybeLiveGatewaySmoke({
-      observePage: async (tabId, options) => {
-        const next = await observer.observePage(tabId, {
-          includeScreenshot: options?.includeScreenshot === true,
-        });
-        assert.equal(webContents.debugger.isAttached(), false);
-        return next;
-      },
-    });
     console.log('[v2-electron-observation] PASS');
-    console.log(`[v2-electron-observation] LIVE_GATEWAY_SMOKE=${liveSmoke}`);
   } finally {
     if (!window.isDestroyed()) {
       window.close();
     }
     await fixture.close();
-  }
-}
-
-async function maybeLiveGatewaySmoke(observationSource: PageObservationSource): Promise<string> {
-  const key = process.env.AI_GATEWAY_API_KEY;
-  if (typeof key !== 'string' || key.trim() === '') {
-    return 'SKIPPED_NO_KEY';
-  }
-
-  const agent = new ReadOnlyAgent({
-    observationSource,
-    modelRuntime: new AiSdkGatewayRuntime(),
-    allowScreenshotExport: false,
-  });
-  try {
-    const answer = await agent.answer({
-      tabId: V2_TAB_ID,
-      question: V2_QUESTION,
-      taskClass: 'page_question',
-      needsVision: false,
-      privacy: 'remoteAllowed',
-    });
-    if (!answer.text.trim()) {
-      return 'FAIL:empty-answer';
-    }
-    return `PASS alias=${answer.alias}`;
-  } catch (error: unknown) {
-    const code = error instanceof ModelError ? error.code : 'UNKNOWN';
-    if (code === 'MODEL_UNAVAILABLE' || code === 'MODEL_RATE_LIMITED' || code === 'MODEL_TIMEOUT') {
-      return `EXTERNAL_${code}`;
-    }
-    throw error;
   }
 }
 

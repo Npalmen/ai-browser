@@ -955,6 +955,8 @@ npm run test:v2-acceptance
 
 **Live Gateway smoke:** skipped — no key
 
+**Post-closure test hygiene:** deterministic acceptance (`npm run test:v2-acceptance`) is network-free. Explicit live checks are `npm run test:v2-catalog-live` (Gateway model-list metadata) and `npm run smoke:v2-gateway` (one optional inference call when a key is present).
+
 ---
 
 ## Dependencies (do not install until the implementing phase)
