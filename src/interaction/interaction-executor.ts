@@ -10,16 +10,13 @@ import { InteractionError } from '../shared/interaction-errors';
 import type {
   BoundInteractionProposal,
   InteractionGrant,
-  InteractionPolicyDecision,
+  InteractionPolicyAllowDecision,
+  InteractionPolicyDenyDecision,
   InteractionResult,
 } from '../shared/interaction-types';
 import type { ObservationNode, PageObservation } from '../shared/observation-types';
 import type { TargetRegistry } from '../observation/target-registry';
-import {
-  buildExecutionAuditEvent,
-  buildPolicyAuditEvent,
-  type InteractionAuditSink,
-} from './interaction-audit';
+import { buildInteractionAuditEvent, type InteractionAuditSink } from './interaction-audit';
 import {
   assertGrantMatchesProposal,
   isAllowPolicyDecision,
@@ -42,6 +39,12 @@ export interface ExecuteInteractionInput {
   signal?: AbortSignal;
 }
 
+interface ExecutionStageState {
+  decision?: InteractionPolicyAllowDecision | InteractionPolicyDenyDecision;
+  grant?: InteractionGrant;
+  adapterPrimitiveInvoked: boolean;
+}
+
 export class InteractionExecutor {
   private readonly inFlightTabs = new Set<string>();
 
@@ -52,15 +55,25 @@ export class InteractionExecutor {
     const actionId = this.deps.generateActionId?.() ?? randomUUID();
     const timestamp = this.deps.now?.() ?? Date.now();
 
-    this.assertNotCancelled(signal);
-
-    if (this.inFlightTabs.has(proposal.tabId)) {
-      return this.finishDenied({
+    try {
+      this.assertNotCancelled(signal);
+    } catch (error: unknown) {
+      return this.finishExecutionFailed({
         actionId,
         timestamp,
         proposal,
-        policyOutcome: 'DENY',
+        error,
+        stage: { adapterPrimitiveInvoked: false },
+      });
+    }
+
+    if (this.inFlightTabs.has(proposal.tabId)) {
+      return this.finishExecutionFailed({
+        actionId,
+        timestamp,
+        proposal,
         errorCode: 'INTERACTION_IN_PROGRESS',
+        stage: { adapterPrimitiveInvoked: false },
       });
     }
 
@@ -81,6 +94,7 @@ export class InteractionExecutor {
     signal?: AbortSignal;
   }): Promise<InteractionResult> {
     const { actionId, timestamp, proposal, observation, signal } = input;
+    const stage: ExecutionStageState = { adapterPrimitiveInvoked: false };
 
     try {
       this.assertNotCancelled(signal);
@@ -90,37 +104,36 @@ export class InteractionExecutor {
         observation,
         target: policyContext,
       });
+      stage.decision = decision;
 
       if (!isAllowPolicyDecision(decision)) {
-        return this.finishDenied({
+        return this.finishPolicyDenied({
           actionId,
           timestamp,
           proposal,
-          policyOutcome: decision.outcome,
-          errorCode: decision.errorCode,
+          decision,
         });
       }
 
       const grant = issueInteractionGrant(decision, proposal, actionId, timestamp);
+      stage.grant = grant;
       assertGrantMatchesProposal(grant, proposal);
 
-      await this.dispatchGrantedAction(proposal, observation, policyContext);
+      stage.adapterPrimitiveInvoked = true;
+      await this.dispatchGrantedAction(grant, proposal, observation, policyContext);
 
       try {
         const freshObservation = await this.deps.adapter.observePage(proposal.tabId);
         const pageState = await this.deps.adapter.getPageState(proposal.tabId);
 
-        this.deps.audit.append(
-          buildExecutionAuditEvent({
-            actionId,
-            timestamp,
-            proposal,
-            policyOutcome: decision.outcome,
-            grantedAuthority: grant.authority,
-            resultStatus: 'succeeded',
-            documentRevisionAfter: freshObservation.document.revision,
-          }),
-        );
+        this.appendAudit({
+          actionId,
+          timestamp,
+          proposal,
+          stage,
+          resultStatus: 'succeeded',
+          documentRevisionAfter: freshObservation.document.revision,
+        });
 
         return {
           actionId,
@@ -132,17 +145,14 @@ export class InteractionExecutor {
         const pageState = await this.safePageState(proposal.tabId);
         const errorCode = mapExecutionError(error);
 
-        this.deps.audit.append(
-          buildExecutionAuditEvent({
-            actionId,
-            timestamp,
-            proposal,
-            policyOutcome: decision.outcome,
-            grantedAuthority: grant.authority,
-            resultStatus: 'failed',
-            errorCode,
-          }),
-        );
+        this.appendAudit({
+          actionId,
+          timestamp,
+          proposal,
+          stage,
+          resultStatus: 'failed',
+          errorCode,
+        });
 
         return {
           actionId,
@@ -152,20 +162,45 @@ export class InteractionExecutor {
         };
       }
     } catch (error: unknown) {
-      return this.finishFailed({
+      if (stage.adapterPrimitiveInvoked && stage.grant && stage.decision && isAllowPolicyDecision(stage.decision)) {
+        const pageState = await this.safePageState(proposal.tabId);
+        const errorCode = mapExecutionError(error);
+
+        this.appendAudit({
+          actionId,
+          timestamp,
+          proposal,
+          stage,
+          resultStatus: 'failed',
+          errorCode,
+        });
+
+        return {
+          actionId,
+          status: 'failed',
+          pageState,
+          errorCode,
+        };
+      }
+
+      return this.finishExecutionFailed({
         actionId,
         timestamp,
         proposal,
         error,
+        stage,
       });
     }
   }
 
   private async dispatchGrantedAction(
+    grant: InteractionGrant,
     proposal: BoundInteractionProposal,
     observation: PageObservation,
     policyContext?: ReturnType<InteractionExecutor['buildPolicyContext']>,
   ): Promise<void> {
+    assertGrantMatchesProposal(grant, proposal);
+
     switch (proposal.kind) {
       case 'click':
         await this.deps.adapter.click({
@@ -272,53 +307,53 @@ export class InteractionExecutor {
     }
   }
 
-  private async finishDenied(input: {
+  private async finishPolicyDenied(input: {
     actionId: string;
     timestamp: number;
     proposal: BoundInteractionProposal;
-    policyOutcome: InteractionPolicyDecision['outcome'];
-    errorCode: InteractionResult['errorCode'];
+    decision: InteractionPolicyDenyDecision;
   }): Promise<InteractionResult> {
     const pageState = await this.safePageState(input.proposal.tabId);
 
-    this.deps.audit.append(
-      buildPolicyAuditEvent({
-        actionId: input.actionId,
-        timestamp: input.timestamp,
-        proposal: input.proposal,
-        policyOutcome: input.policyOutcome,
-        resultStatus: 'denied',
-        errorCode: input.errorCode,
-      }),
-    );
+    this.appendAudit({
+      actionId: input.actionId,
+      timestamp: input.timestamp,
+      proposal: input.proposal,
+      stage: {
+        decision: input.decision,
+        adapterPrimitiveInvoked: false,
+      },
+      resultStatus: 'denied',
+      errorCode: input.decision.errorCode,
+    });
 
     return {
       actionId: input.actionId,
       status: 'denied',
       pageState,
-      errorCode: input.errorCode,
+      errorCode: input.decision.errorCode,
     };
   }
 
-  private async finishFailed(input: {
+  private async finishExecutionFailed(input: {
     actionId: string;
     timestamp: number;
     proposal: BoundInteractionProposal;
-    error: unknown;
+    error?: unknown;
+    errorCode?: InteractionResult['errorCode'];
+    stage: ExecutionStageState;
   }): Promise<InteractionResult> {
     const pageState = await this.safePageState(input.proposal.tabId);
-    const errorCode = mapExecutionError(input.error);
+    const errorCode = input.errorCode ?? mapExecutionError(input.error);
 
-    this.deps.audit.append(
-      buildPolicyAuditEvent({
-        actionId: input.actionId,
-        timestamp: input.timestamp,
-        proposal: input.proposal,
-        policyOutcome: 'DENY',
-        resultStatus: 'failed',
-        errorCode,
-      }),
-    );
+    this.appendAudit({
+      actionId: input.actionId,
+      timestamp: input.timestamp,
+      proposal: input.proposal,
+      stage: input.stage,
+      resultStatus: 'failed',
+      errorCode,
+    });
 
     return {
       actionId: input.actionId,
@@ -326,6 +361,34 @@ export class InteractionExecutor {
       pageState,
       errorCode,
     };
+  }
+
+  private appendAudit(input: {
+    actionId: string;
+    timestamp: number;
+    proposal: BoundInteractionProposal;
+    stage: ExecutionStageState;
+    resultStatus: 'succeeded' | 'failed' | 'denied';
+    errorCode?: InteractionResult['errorCode'];
+    documentRevisionAfter?: string;
+  }): void {
+    const allowDecision =
+      input.stage.decision && isAllowPolicyDecision(input.stage.decision) ? input.stage.decision : undefined;
+
+    this.deps.audit.append(
+      buildInteractionAuditEvent({
+        actionId: input.actionId,
+        timestamp: input.timestamp,
+        proposal: input.proposal,
+        policyOutcome: input.stage.decision?.outcome,
+        grantIssued: input.stage.grant !== undefined,
+        grantedAuthority: allowDecision?.authority,
+        adapterPrimitiveInvoked: input.stage.adapterPrimitiveInvoked,
+        resultStatus: input.resultStatus,
+        errorCode: input.errorCode,
+        documentRevisionAfter: input.documentRevisionAfter,
+      }),
+    );
   }
 
   private async safePageState(tabId: string): Promise<PageState> {

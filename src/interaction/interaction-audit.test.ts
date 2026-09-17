@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import type { BoundInteractionProposal } from '../shared/interaction-types';
-import { buildPolicyAuditEvent, InMemoryInteractionAuditSink } from './interaction-audit';
+import {
+  buildInteractionAuditEvent,
+  InMemoryInteractionAuditSink,
+  validateInteractionAuditEventInput,
+} from './interaction-audit';
 import { InteractionExecutor } from './interaction-executor';
 import { TargetRegistry } from '../observation/target-registry';
 import type { BrowserAdapter } from '../browser/browser-adapter';
@@ -46,23 +50,26 @@ function observation(): PageObservation {
   };
 }
 
+const clickProposal: BoundInteractionProposal = {
+  kind: 'click',
+  targetId: 'target-1',
+  tabId: 'tab-1',
+  observationId: 'obs-1',
+  documentRevision: 'rev-1',
+};
+
 describe('interaction audit', () => {
   it('records metadata-only policy events', () => {
     const sink = new InMemoryInteractionAuditSink();
-    const proposal: BoundInteractionProposal = {
-      kind: 'click',
-      targetId: 'target-1',
-      tabId: 'tab-1',
-      observationId: 'obs-1',
-      documentRevision: 'rev-1',
-    };
 
     sink.append(
-      buildPolicyAuditEvent({
+      buildInteractionAuditEvent({
         actionId: 'action-1',
         timestamp: 1,
-        proposal,
+        proposal: clickProposal,
         policyOutcome: 'DENY',
+        grantIssued: false,
+        adapterPrimitiveInvoked: false,
         resultStatus: 'denied',
         errorCode: 'INTERACTION_DENIED',
       }),
@@ -72,6 +79,50 @@ describe('interaction audit', () => {
     assert.equal(serialized.includes('backendNodeId'), false);
     assert.equal(serialized.includes('frameId'), false);
     assert.equal(serialized.includes('screenshot'), false);
+  });
+
+  it('rejects misleading audit combinations', () => {
+    assert.throws(
+      () =>
+        validateInteractionAuditEventInput({
+          actionId: 'action-1',
+          timestamp: 1,
+          proposal: clickProposal,
+          policyOutcome: 'DENY',
+          grantIssued: true,
+          adapterPrimitiveInvoked: false,
+          resultStatus: 'denied',
+        }),
+      /grantIssued/,
+    );
+
+    assert.throws(
+      () =>
+        validateInteractionAuditEventInput({
+          actionId: 'action-1',
+          timestamp: 1,
+          proposal: clickProposal,
+          grantIssued: false,
+          grantedAuthority: 'INTERACT',
+          adapterPrimitiveInvoked: false,
+          resultStatus: 'failed',
+        }),
+      /grantedAuthority/,
+    );
+
+    assert.throws(
+      () =>
+        validateInteractionAuditEventInput({
+          actionId: 'action-1',
+          timestamp: 1,
+          proposal: clickProposal,
+          policyOutcome: 'DEFER_EXECUTE',
+          grantIssued: false,
+          adapterPrimitiveInvoked: true,
+          resultStatus: 'failed',
+        }),
+      /adapterPrimitiveInvoked/,
+    );
   });
 
   it('does not store typed proposal text in audit events', async () => {

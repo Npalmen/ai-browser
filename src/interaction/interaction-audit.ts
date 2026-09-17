@@ -18,8 +18,10 @@ export interface InteractionAuditEvent {
   tabId: TabId;
   observationId: ObservationId;
   documentRevision: DocumentRevision;
-  policyOutcome: InteractionPolicyOutcome;
+  policyOutcome?: InteractionPolicyOutcome;
+  grantIssued: boolean;
   grantedAuthority?: InteractionAuthority;
+  adapterPrimitiveInvoked: boolean;
   resultStatus: InteractionAuditResultStatus;
   errorCode?: InteractionErrorCode;
   documentRevisionAfter?: DocumentRevision;
@@ -47,15 +49,22 @@ export class InMemoryInteractionAuditSink implements InteractionAuditSink {
   }
 }
 
-export function buildPolicyAuditEvent(input: {
+export interface BuildInteractionAuditEventInput {
   actionId: string;
   timestamp: number;
   proposal: BoundInteractionProposal;
-  policyOutcome: InteractionPolicyOutcome;
-  grantedAuthority?: InteractionAuthority;
   resultStatus: InteractionAuditResultStatus;
+  grantIssued: boolean;
+  adapterPrimitiveInvoked: boolean;
+  policyOutcome?: InteractionPolicyOutcome;
+  grantedAuthority?: InteractionAuthority;
   errorCode?: InteractionErrorCode;
-}): InteractionAuditEvent {
+  documentRevisionAfter?: DocumentRevision;
+}
+
+export function buildInteractionAuditEvent(input: BuildInteractionAuditEventInput): InteractionAuditEvent {
+  validateInteractionAuditEventInput(input);
+
   const { proposal } = input;
   const targetIds = collectAuditTargetIds(proposal);
 
@@ -67,27 +76,46 @@ export function buildPolicyAuditEvent(input: {
     observationId: proposal.observationId,
     documentRevision: proposal.documentRevision,
     policyOutcome: input.policyOutcome,
+    grantIssued: input.grantIssued,
     grantedAuthority: input.grantedAuthority,
+    adapterPrimitiveInvoked: input.adapterPrimitiveInvoked,
     resultStatus: input.resultStatus,
     errorCode: input.errorCode,
+    documentRevisionAfter: input.documentRevisionAfter,
     ...targetIds,
   };
 }
 
-export function buildExecutionAuditEvent(input: {
-  actionId: string;
-  timestamp: number;
-  proposal: BoundInteractionProposal;
-  policyOutcome: InteractionPolicyOutcome;
-  grantedAuthority: InteractionAuthority;
-  resultStatus: InteractionAuditResultStatus;
-  errorCode?: InteractionErrorCode;
-  documentRevisionAfter?: DocumentRevision;
-}): InteractionAuditEvent {
-  return {
-    ...buildPolicyAuditEvent(input),
-    documentRevisionAfter: input.documentRevisionAfter,
-  };
+export function validateInteractionAuditEventInput(input: BuildInteractionAuditEventInput): void {
+  if (!input.grantIssued && input.grantedAuthority !== undefined) {
+    throw new Error('Audit event cannot include grantedAuthority when grantIssued is false.');
+  }
+
+  if (!input.grantIssued && input.adapterPrimitiveInvoked) {
+    throw new Error('Audit event cannot mark adapterPrimitiveInvoked without an issued grant.');
+  }
+
+  if (input.grantIssued && input.policyOutcome !== 'ALLOW_INTERACT' && input.policyOutcome !== 'ALLOW_NAVIGATE') {
+    throw new Error('Audit event cannot mark grantIssued without an allow policy outcome.');
+  }
+
+  if (
+    (input.policyOutcome === 'DENY' || input.policyOutcome === 'DEFER_EXECUTE') &&
+    input.grantIssued
+  ) {
+    throw new Error('Audit event cannot mark grantIssued for a deny or defer policy outcome.');
+  }
+
+  if (
+    (input.policyOutcome === 'DENY' || input.policyOutcome === 'DEFER_EXECUTE') &&
+    input.adapterPrimitiveInvoked
+  ) {
+    throw new Error('Audit event cannot mark adapterPrimitiveInvoked for a deny or defer policy outcome.');
+  }
+
+  if (input.resultStatus === 'denied' && input.policyOutcome !== 'DENY' && input.policyOutcome !== 'DEFER_EXECUTE') {
+    throw new Error('Audit event resultStatus denied requires a policy deny or defer outcome.');
+  }
 }
 
 function collectAuditTargetIds(

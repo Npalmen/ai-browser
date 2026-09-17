@@ -6,6 +6,7 @@ import { describe, it } from 'node:test';
 import type { BrowserAdapter } from '../browser/browser-adapter';
 import { TargetRegistry } from '../observation/target-registry';
 import type { PageState } from '../shared/browser-types';
+import { InteractionError } from '../shared/interaction-errors';
 import type { BoundInteractionProposal } from '../shared/interaction-types';
 import type { ObservationNode, PageObservation } from '../shared/observation-types';
 import { InMemoryInteractionAuditSink } from './interaction-audit';
@@ -154,10 +155,16 @@ function createExecutor(adapter: BrowserAdapter, registry = new TargetRegistry()
   return { executor, audit, registry };
 }
 
+function lastAuditEvent(audit: InMemoryInteractionAuditSink) {
+  const events = audit.getEvents();
+  assert.ok(events.length > 0);
+  return events[events.length - 1];
+}
+
 describe('InteractionExecutor', () => {
   it('executes a safe click once and returns a fresh observation', async () => {
     const { adapter, counts } = createFakeAdapter();
-    const { executor, registry } = createExecutor(adapter);
+    const { executor, audit, registry } = createExecutor(adapter);
     registry.replaceObservation('tab-1', 'obs-1', [record('target-1', 1)]);
 
     const result = await executor.execute({
@@ -184,11 +191,19 @@ describe('InteractionExecutor', () => {
     assert.equal(result.observation?.document.revision, 'rev-2');
     assert.equal(counts.click, 1);
     assert.equal(counts.observePage, 1);
+
+    const event = lastAuditEvent(audit);
+    assert.equal(event.policyOutcome, 'ALLOW_INTERACT');
+    assert.equal(event.grantIssued, true);
+    assert.equal(event.grantedAuthority, 'INTERACT');
+    assert.equal(event.adapterPrimitiveInvoked, true);
+    assert.equal(event.resultStatus, 'succeeded');
+    assert.equal(event.documentRevisionAfter, 'rev-2');
   });
 
   it('denies consequential clicks without calling adapter primitives', async () => {
     const { adapter, counts } = createFakeAdapter();
-    const { executor, registry } = createExecutor(adapter);
+    const { executor, audit, registry } = createExecutor(adapter);
     registry.replaceObservation('tab-1', 'obs-1', [record('target-1', 1)]);
 
     const result = await executor.execute({
@@ -218,6 +233,46 @@ describe('InteractionExecutor', () => {
     assert.equal(counts.scroll, 0);
     assert.equal(counts.scrollIntoView, 0);
     assert.equal(counts.observePage, 0);
+
+    const event = lastAuditEvent(audit);
+    assert.equal(event.policyOutcome, 'DEFER_EXECUTE');
+    assert.equal(event.grantIssued, false);
+    assert.equal(event.adapterPrimitiveInvoked, false);
+    assert.equal(event.resultStatus, 'denied');
+  });
+
+  it('denies ambiguous unsupported controls with policy DENY', async () => {
+    const { adapter, counts } = createFakeAdapter();
+    const { executor, audit, registry } = createExecutor(adapter);
+    registry.replaceObservation('tab-1', 'obs-1', [record('target-1', 1)]);
+
+    const result = await executor.execute({
+      proposal: {
+        kind: 'click',
+        targetId: 'target-1',
+        tabId: 'tab-1',
+        observationId: 'obs-1',
+        documentRevision: 'rev-1',
+      },
+      observation: observation([
+        node({
+          role: 'button',
+          tag: 'button',
+          targetId: 'target-1',
+          name: 'Continue',
+        }),
+      ]),
+    });
+
+    assert.equal(result.status, 'denied');
+    assert.equal(result.errorCode, 'INTERACTION_DENIED');
+    assert.equal(counts.click, 0);
+
+    const event = lastAuditEvent(audit);
+    assert.equal(event.policyOutcome, 'DENY');
+    assert.equal(event.grantIssued, false);
+    assert.equal(event.adapterPrimitiveInvoked, false);
+    assert.equal(event.resultStatus, 'denied');
   });
 
   it('denies sensitive type proposals without calling adapter.type', async () => {
@@ -252,7 +307,7 @@ describe('InteractionExecutor', () => {
 
   it('fails stale targets before adapter invocation', async () => {
     const { adapter, counts } = createFakeAdapter();
-    const { executor, registry } = createExecutor(adapter);
+    const { executor, audit, registry } = createExecutor(adapter);
     registry.replaceObservation('tab-1', 'obs-2', [record('target-1', 1)]);
 
     const result = await executor.execute({
@@ -277,6 +332,12 @@ describe('InteractionExecutor', () => {
     assert.equal(result.status, 'failed');
     assert.equal(result.errorCode, 'TARGET_STALE');
     assert.equal(counts.click, 0);
+
+    const event = lastAuditEvent(audit);
+    assert.equal(event.policyOutcome, undefined);
+    assert.equal(event.grantIssued, false);
+    assert.equal(event.adapterPrimitiveInvoked, false);
+    assert.equal(event.resultStatus, 'failed');
   });
 
   it('denies select when option is not in the select nativeOptions catalog', async () => {
@@ -398,7 +459,7 @@ describe('InteractionExecutor', () => {
         throw new Error('observe failed');
       },
     });
-    const { executor, registry } = createExecutor(adapter);
+    const { executor, audit, registry } = createExecutor(adapter);
     registry.replaceObservation('tab-1', 'obs-1', [record('target-1', 1)]);
 
     await executor.execute({
@@ -421,11 +482,93 @@ describe('InteractionExecutor', () => {
     });
 
     assert.equal(counts.click, 1);
+    assert.equal(counts.observePage, 1);
+
+    const event = lastAuditEvent(audit);
+    assert.equal(event.policyOutcome, 'ALLOW_INTERACT');
+    assert.equal(event.grantIssued, true);
+    assert.equal(event.grantedAuthority, 'INTERACT');
+    assert.equal(event.adapterPrimitiveInvoked, true);
+    assert.equal(event.resultStatus, 'failed');
+  });
+
+  it('records adapter failure after allow without rewriting policy to DENY', async () => {
+    const { adapter, counts } = createFakeAdapter();
+    adapter.click = async () => {
+      counts.click += 1;
+      throw new InteractionError('INTERACTION_FAILED', 'Adapter click failed.');
+    };
+    const { executor, audit, registry } = createExecutor(adapter);
+    registry.replaceObservation('tab-1', 'obs-1', [record('target-1', 1)]);
+
+    const result = await executor.execute({
+      proposal: {
+        kind: 'click',
+        targetId: 'target-1',
+        tabId: 'tab-1',
+        observationId: 'obs-1',
+        documentRevision: 'rev-1',
+      },
+      observation: observation([
+        node({
+          role: 'button',
+          tag: 'button',
+          targetId: 'target-1',
+          name: 'Expand',
+          attributes: { type: 'button' },
+        }),
+      ]),
+    });
+
+    assert.equal(result.status, 'failed');
+    assert.equal(result.errorCode, 'INTERACTION_FAILED');
+    assert.equal(counts.click, 1);
+    assert.equal(counts.observePage, 0);
+
+    const event = lastAuditEvent(audit);
+    assert.equal(event.policyOutcome, 'ALLOW_INTERACT');
+    assert.equal(event.grantIssued, true);
+    assert.equal(event.grantedAuthority, 'INTERACT');
+    assert.equal(event.adapterPrimitiveInvoked, true);
+    assert.equal(event.resultStatus, 'failed');
+  });
+
+  it('records NAVIGATE adapter failure after allow', async () => {
+    const { adapter, counts } = createFakeAdapter();
+    adapter.scroll = async () => {
+      counts.scroll += 1;
+      throw new InteractionError('INTERACTION_FAILED', 'Adapter scroll failed.');
+    };
+    const { executor, audit } = createExecutor(adapter);
+
+    const result = await executor.execute({
+      proposal: {
+        kind: 'scroll',
+        mode: 'viewport',
+        direction: 'down',
+        amountPx: 120,
+        tabId: 'tab-1',
+        observationId: 'obs-1',
+        documentRevision: 'rev-1',
+      },
+      observation: observation([]),
+    });
+
+    assert.equal(result.status, 'failed');
+    assert.equal(counts.scroll, 1);
+    assert.equal(counts.observePage, 0);
+
+    const event = lastAuditEvent(audit);
+    assert.equal(event.policyOutcome, 'ALLOW_NAVIGATE');
+    assert.equal(event.grantIssued, true);
+    assert.equal(event.grantedAuthority, 'NAVIGATE');
+    assert.equal(event.adapterPrimitiveInvoked, true);
+    assert.equal(event.resultStatus, 'failed');
   });
 
   it('rejects concurrent execution on the same tab', async () => {
     const { adapter } = createFakeAdapter();
-    const { executor, registry } = createExecutor(adapter);
+    const { executor, audit, registry } = createExecutor(adapter);
     registry.replaceObservation('tab-1', 'obs-1', [record('target-1', 1)]);
 
     let releaseFirst: (() => void) | undefined;
@@ -470,10 +613,17 @@ describe('InteractionExecutor', () => {
       observation: obs,
     });
 
-    assert.equal(second.status, 'denied');
+    assert.equal(second.status, 'failed');
     assert.equal(second.errorCode, 'INTERACTION_IN_PROGRESS');
     releaseFirst?.();
     await first;
+
+    const concurrentEvent = audit.getEvents().find((event) => event.errorCode === 'INTERACTION_IN_PROGRESS');
+    assert.ok(concurrentEvent);
+    assert.equal(concurrentEvent.policyOutcome, undefined);
+    assert.equal(concurrentEvent.grantIssued, false);
+    assert.equal(concurrentEvent.adapterPrimitiveInvoked, false);
+    assert.equal(concurrentEvent.resultStatus, 'failed');
   });
 });
 
