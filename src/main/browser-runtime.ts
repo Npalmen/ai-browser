@@ -44,7 +44,10 @@ export function publishBrowserState(): void {
   }
 }
 
-export async function initializeBrowserRuntime(window: BrowserWindow): Promise<ElectronBrowserAdapter> {
+export async function initializeBrowserRuntime(
+  window: BrowserWindow,
+  options?: { onBeforeDispose?: () => void },
+): Promise<ElectronBrowserAdapter> {
   mainWindow = window;
   adapter = new ElectronBrowserAdapter(window, {
     onStateChange: () => {
@@ -57,6 +60,7 @@ export async function initializeBrowserRuntime(window: BrowserWindow): Promise<E
   });
 
   window.on('closed', () => {
+    options?.onBeforeDispose?.();
     disposeBrowserRuntime();
   });
 

@@ -1,28 +1,26 @@
 import { BrowserWindow, session } from 'electron';
 
 import { APP_UI_PARTITION } from './sessions';
+import { calculateWebsiteViewBounds, CHROME_HEIGHT } from './website-view-bounds';
 
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
 declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
 
-export const CHROME_HEIGHT = 88;
+export { CHROME_HEIGHT };
 
 let mainWindow: BrowserWindow | null = null;
 
-export function getWebsiteViewBounds(window: BrowserWindow): {
+export function getWebsiteViewBounds(
+  window: BrowserWindow,
+  rightInsetPx = 0,
+): {
   x: number;
   y: number;
   width: number;
   height: number;
 } {
   const [width, height] = window.getContentSize();
-
-  return {
-    x: 0,
-    y: CHROME_HEIGHT,
-    width,
-    height: Math.max(0, height - CHROME_HEIGHT),
-  };
+  return calculateWebsiteViewBounds(width, height, rightInsetPx);
 }
 
 function isTrustedAppNavigation(targetUrl: string, trustedEntryUrl: URL): boolean {

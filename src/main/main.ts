@@ -1,21 +1,30 @@
 import { app, BrowserWindow } from 'electron';
 
+import { disposeAiRuntime, initializeAiRuntime } from './ai-runtime';
 import { initializeBrowserRuntime } from './browser-runtime';
 import { registerBrowserShellIpc } from './ipc';
 import { initializeSecurity } from './security';
 import { createMainWindow } from './window';
 
+async function startBrowserWindow(): Promise<void> {
+  const mainWindow = createMainWindow();
+  const adapter = await initializeBrowserRuntime(mainWindow, {
+    onBeforeDispose: () => {
+      disposeAiRuntime();
+    },
+  });
+  initializeAiRuntime(adapter);
+}
+
 void app.whenReady().then(async () => {
   initializeSecurity();
   registerBrowserShellIpc();
 
-  const mainWindow = createMainWindow();
-  await initializeBrowserRuntime(mainWindow);
+  await startBrowserWindow();
 
   app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      const window = createMainWindow();
-      await initializeBrowserRuntime(window);
+      await startBrowserWindow();
     }
   });
 });

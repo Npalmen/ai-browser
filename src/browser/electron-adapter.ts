@@ -16,6 +16,7 @@ import {
 } from '../shared/navigation-url';
 import { getWebsiteViewBounds } from '../main/window';
 import { WEBSITE_PARTITION } from '../main/sessions';
+import { normalizeRightInset } from '../main/website-view-bounds';
 
 export interface ElectronBrowserAdapterOptions {
   onStateChange?: (state: BrowserState) => void;
@@ -31,6 +32,7 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
   });
   private readonly websiteSession = session.fromPartition(WEBSITE_PARTITION);
   private activeAttachedTabId: TabId | null = null;
+  private websiteRightInsetPx = 0;
   private disposed = false;
 
   constructor(
@@ -212,7 +214,13 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
       return;
     }
 
-    view.setBounds(getWebsiteViewBounds(this.mainWindow));
+    view.setBounds(getWebsiteViewBounds(this.mainWindow, this.websiteRightInsetPx));
+  }
+
+  setWebsiteRightInset(rightInsetPx: number): void {
+    this.assertNotDisposed();
+    this.websiteRightInsetPx = normalizeRightInset(rightInsetPx);
+    this.layoutActiveView();
   }
 
   dispose(): void {
@@ -238,7 +246,7 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
 
   private attachView(tabId: TabId): void {
     const view = this.getView(tabId);
-    const bounds = getWebsiteViewBounds(this.mainWindow);
+    const bounds = getWebsiteViewBounds(this.mainWindow, this.websiteRightInsetPx);
 
     this.mainWindow.contentView.addChildView(view);
     view.setBounds(bounds);

@@ -1,3 +1,12 @@
+import type {
+  AiAnswerEvent,
+  AiAskCurrentPageInput,
+  AiAskStartResult,
+  AiCancelAskInput,
+  AiCancelAskResult,
+  AiClearConversationResult,
+  AiSetPanelOpenResult,
+} from './ai-types';
 import type { BrowserState, TabId } from './browser-types';
 
 export const BROWSER_IPC_CHANNELS = {
@@ -10,6 +19,14 @@ export const BROWSER_IPC_CHANNELS = {
   forward: 'browser:forward',
   reload: 'browser:reload',
   stateChanged: 'browser:state-changed',
+} as const;
+
+export const AI_IPC_CHANNELS = {
+  askCurrentPage: 'ai:ask-current-page',
+  cancelAsk: 'ai:cancel-ask',
+  clearConversation: 'ai:clear-conversation',
+  setPanelOpen: 'ai:set-panel-open',
+  answerEvent: 'ai:answer-event',
 } as const;
 
 export interface BrowserShellApi {
@@ -25,4 +42,12 @@ export interface BrowserShellApi {
   reload(tabId: TabId): Promise<void>;
 
   onStateChanged(listener: (state: BrowserState) => void): () => void;
+}
+
+export interface AiAssistantApi {
+  askCurrentPage(input: AiAskCurrentPageInput): Promise<AiAskStartResult>;
+  cancelAsk(input: AiCancelAskInput): Promise<AiCancelAskResult>;
+  clearConversation(tabId: TabId): Promise<AiClearConversationResult>;
+  setPanelOpen(open: boolean): Promise<AiSetPanelOpenResult>;
+  onAnswerEvent(listener: (event: AiAnswerEvent) => void): () => void;
 }

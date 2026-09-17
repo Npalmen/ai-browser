@@ -1,7 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
-import { BROWSER_IPC_CHANNELS, type BrowserShellApi } from '../shared/ipc-contract';
-import type { BrowserState } from '../shared/browser-types';
+import type { AiAnswerEvent, AiAskCurrentPageInput, AiCancelAskInput } from '../shared/ai-types';
+import type { BrowserState, TabId } from '../shared/browser-types';
+import {
+  AI_IPC_CHANNELS,
+  BROWSER_IPC_CHANNELS,
+  type AiAssistantApi,
+  type BrowserShellApi,
+} from '../shared/ipc-contract';
 
 const browserShell: BrowserShellApi = {
   getBrowserState: () => ipcRenderer.invoke(BROWSER_IPC_CHANNELS.getState),
@@ -33,4 +39,28 @@ const browserShell: BrowserShellApi = {
   },
 };
 
+const aiAssistant: AiAssistantApi = {
+  askCurrentPage: (input: AiAskCurrentPageInput) =>
+    ipcRenderer.invoke(AI_IPC_CHANNELS.askCurrentPage, input),
+
+  cancelAsk: (input: AiCancelAskInput) => ipcRenderer.invoke(AI_IPC_CHANNELS.cancelAsk, input),
+
+  clearConversation: (tabId: TabId) => ipcRenderer.invoke(AI_IPC_CHANNELS.clearConversation, tabId),
+
+  setPanelOpen: (open: boolean) => ipcRenderer.invoke(AI_IPC_CHANNELS.setPanelOpen, open),
+
+  onAnswerEvent: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: AiAnswerEvent) => {
+      listener(payload);
+    };
+
+    ipcRenderer.on(AI_IPC_CHANNELS.answerEvent, wrapped);
+
+    return () => {
+      ipcRenderer.removeListener(AI_IPC_CHANNELS.answerEvent, wrapped);
+    };
+  },
+};
+
 contextBridge.exposeInMainWorld('browserShell', browserShell);
+contextBridge.exposeInMainWorld('aiAssistant', aiAssistant);

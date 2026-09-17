@@ -1,34 +1,13 @@
-import { ipcMain, type IpcMainInvokeEvent } from 'electron';
+import { ipcMain } from 'electron';
 
-import { BROWSER_IPC_CHANNELS } from '../shared/ipc-contract';
-import { getBrowserAdapter, getMainBrowserWindow, whenBrowserReady } from './browser-runtime';
+import { AI_IPC_CHANNELS, BROWSER_IPC_CHANNELS } from '../shared/ipc-contract';
+import { isAiSafeError, parseAskId, parsePanelOpen, parseQuestion, parseTabId } from './ai-ipc-guards';
+import { getAiController, setAiPanelOpen } from './ai-runtime';
+import { aiSafeError, toAiSafeError } from './ai-safe-error';
+import { getBrowserAdapter, whenBrowserReady } from './browser-runtime';
+import { assertTrustedAppSender } from './ipc-security';
 
 let handlersRegistered = false;
-
-function isTrustedAppSender(event: IpcMainInvokeEvent): boolean {
-  const mainWindow = getMainBrowserWindow();
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return false;
-  }
-
-  if (event.sender !== mainWindow.webContents) {
-    return false;
-  }
-
-  const mainFrame = mainWindow.webContents.mainFrame;
-  if (!event.senderFrame || !mainFrame || event.senderFrame !== mainFrame) {
-    return false;
-  }
-
-  return true;
-}
-
-function assertTrustedSender(event: IpcMainInvokeEvent): void {
-  if (!isTrustedAppSender(event)) {
-    console.warn('[ipc] rejected browser-shell request from untrusted sender');
-    throw new Error('Unauthorized IPC sender');
-  }
-}
 
 function assertTabId(tabId: unknown): string {
   if (typeof tabId !== 'string' || tabId.length === 0) {
@@ -52,50 +31,157 @@ export function registerBrowserShellIpc(): void {
   handlersRegistered = true;
 
   ipcMain.handle(BROWSER_IPC_CHANNELS.getState, async (event) => {
-    assertTrustedSender(event);
+    assertTrustedAppSender(event);
     await whenBrowserReady();
     return getBrowserAdapter().getBrowserState();
   });
 
   ipcMain.handle(BROWSER_IPC_CHANNELS.createTab, async (event) => {
-    assertTrustedSender(event);
+    assertTrustedAppSender(event);
     await whenBrowserReady();
     return getBrowserAdapter().createTab({ url: 'about:blank' });
   });
 
   ipcMain.handle(BROWSER_IPC_CHANNELS.closeTab, async (event, tabId: unknown) => {
-    assertTrustedSender(event);
+    assertTrustedAppSender(event);
     await whenBrowserReady();
-    await getBrowserAdapter().closeTab(assertTabId(tabId));
+    const trustedTabId = assertTabId(tabId);
+    getAiController()?.handleTabClosed(trustedTabId);
+    await getBrowserAdapter().closeTab(trustedTabId);
   });
 
   ipcMain.handle(BROWSER_IPC_CHANNELS.activateTab, async (event, tabId: unknown) => {
-    assertTrustedSender(event);
+    assertTrustedAppSender(event);
     await whenBrowserReady();
     await getBrowserAdapter().activateTab(assertTabId(tabId));
   });
 
   ipcMain.handle(BROWSER_IPC_CHANNELS.navigate, async (event, tabId: unknown, url: unknown) => {
-    assertTrustedSender(event);
+    assertTrustedAppSender(event);
     await whenBrowserReady();
     await getBrowserAdapter().navigate(assertTabId(tabId), assertUrl(url));
   });
 
   ipcMain.handle(BROWSER_IPC_CHANNELS.back, async (event, tabId: unknown) => {
-    assertTrustedSender(event);
+    assertTrustedAppSender(event);
     await whenBrowserReady();
     await getBrowserAdapter().back(assertTabId(tabId));
   });
 
   ipcMain.handle(BROWSER_IPC_CHANNELS.forward, async (event, tabId: unknown) => {
-    assertTrustedSender(event);
+    assertTrustedAppSender(event);
     await whenBrowserReady();
     await getBrowserAdapter().forward(assertTabId(tabId));
   });
 
   ipcMain.handle(BROWSER_IPC_CHANNELS.reload, async (event, tabId: unknown) => {
-    assertTrustedSender(event);
+    assertTrustedAppSender(event);
     await whenBrowserReady();
     await getBrowserAdapter().reload(assertTabId(tabId));
   });
+
+  ipcMain.handle(AI_IPC_CHANNELS.askCurrentPage, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    try {
+      await whenBrowserReady();
+      const parsed = parseAskCurrentPageInput(input);
+      if (!parsed.ok) {
+        return parsed;
+      }
+      const controller = getAiController();
+      if (!controller) {
+        return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };
+      }
+      return controller.startAsk(parsed.tabId, parsed.question);
+    } catch (error) {
+      return { ok: false, error: toAiSafeError(error) };
+    }
+  });
+
+  ipcMain.handle(AI_IPC_CHANNELS.cancelAsk, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    try {
+      await whenBrowserReady();
+      const parsed = parseCancelAskInput(input);
+      if (!parsed.ok) {
+        return { cancelled: false };
+      }
+      return getAiController()?.cancelAsk(parsed.tabId, parsed.askId) ?? { cancelled: false };
+    } catch {
+      return { cancelled: false };
+    }
+  });
+
+  ipcMain.handle(AI_IPC_CHANNELS.clearConversation, async (event, tabId: unknown) => {
+    assertTrustedAppSender(event);
+    try {
+      await whenBrowserReady();
+      const parsedTabId = parseTabId(tabId);
+      if (isAiSafeError(parsedTabId)) {
+        return { ok: false, error: parsedTabId };
+      }
+      const controller = getAiController();
+      if (!controller) {
+        return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };
+      }
+      return controller.clearConversation(parsedTabId);
+    } catch (error) {
+      return { ok: false, error: toAiSafeError(error) };
+    }
+  });
+
+  ipcMain.handle(AI_IPC_CHANNELS.setPanelOpen, async (event, open: unknown) => {
+    assertTrustedAppSender(event);
+    try {
+      await whenBrowserReady();
+      const parsed = parsePanelOpen(open);
+      if (isAiSafeError(parsed)) {
+        return { ok: false, error: parsed };
+      }
+      setAiPanelOpen(parsed);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: toAiSafeError(error) };
+    }
+  });
+}
+
+function parseAskCurrentPageInput(input: unknown):
+  | { ok: true; tabId: string; question: string }
+  | { ok: false; error: ReturnType<typeof aiSafeError> } {
+  if (typeof input !== 'object' || input === null) {
+    return { ok: false, error: aiSafeError('INVALID_REQUEST') };
+  }
+  const record = input as Record<string, unknown>;
+  const tabId = parseTabId(record.tabId);
+  if (isAiSafeError(tabId)) {
+    return { ok: false, error: tabId };
+  }
+  const question = parseQuestion(record.question);
+  if (isAiSafeError(question)) {
+    return { ok: false, error: question };
+  }
+
+  const state = getBrowserAdapter().getBrowserState();
+  const tabExists = state.tabs.some((tab) => tab.id === tabId);
+  if (!tabExists || state.activeTabId !== tabId) {
+    return { ok: false, error: aiSafeError('INVALID_REQUEST') };
+  }
+
+  return { ok: true, tabId, question };
+}
+
+function parseCancelAskInput(input: unknown):
+  | { ok: true; tabId: string; askId: string }
+  | { ok: false } {
+  if (typeof input !== 'object' || input === null) {
+    return { ok: false };
+  }
+  const record = input as Record<string, unknown>;
+  const tabId = parseTabId(record.tabId);
+  const askId = parseAskId(record.askId);
+  if (isAiSafeError(tabId) || isAiSafeError(askId)) {
+    return { ok: false };
+  }
+  return { ok: true, tabId, askId };
 }
