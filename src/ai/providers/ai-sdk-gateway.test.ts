@@ -386,6 +386,198 @@ describe('AiSdkGatewayRuntime', () => {
   });
 });
 
+function interactionStreamResult(
+  overrides: Partial<GatewayStreamTextResult> = {},
+): GatewayStreamTextResult {
+  return {
+    partialOutputStream: (async function* () {})(),
+    output: settled({
+      kind: 'answer',
+      text: 'Example answer',
+      referencedTargets: ['target-1'],
+    }),
+    usage: settled({
+      inputTokens: 10,
+      outputTokens: 4,
+    }),
+    providerMetadata: settled({ gateway: { cost: 0.002 } }),
+    response: settled({ modelId: 'openai/gpt-5-nano' }),
+    ...overrides,
+  };
+}
+
+describe('AiSdkGatewayRuntime.generateInteraction', () => {
+  it('returns a validated answer output', async () => {
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: new ModelRequestLog(),
+      streamText: () => interactionStreamResult(),
+    });
+
+    const response = await runtime.generateInteraction(request());
+
+    assert.equal(response.output.kind, 'answer');
+    if (response.output.kind === 'answer') {
+      assert.equal(response.output.text, 'Example answer');
+      assert.deepEqual(response.output.referencedTargets, ['target-1']);
+    }
+  });
+
+  it('returns a validated interaction click output', async () => {
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: new ModelRequestLog(),
+      streamText: () =>
+        interactionStreamResult({
+          output: settled({
+            kind: 'interaction',
+            proposal: { kind: 'click', targetId: 'target-1' },
+          }),
+        }),
+    });
+
+    const response = await runtime.generateInteraction(request());
+
+    assert.equal(response.output.kind, 'interaction');
+    if (response.output.kind === 'interaction') {
+      assert.equal(response.output.proposal.kind, 'click');
+      assert.equal(response.output.proposal.targetId, 'target-1');
+    }
+  });
+
+  it('returns a validated interaction type output', async () => {
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: new ModelRequestLog(),
+      streamText: () =>
+        interactionStreamResult({
+          output: settled({
+            kind: 'interaction',
+            proposal: { kind: 'type', targetId: 'target-1', text: 'hello' },
+          }),
+        }),
+    });
+
+    const response = await runtime.generateInteraction(request());
+
+    assert.equal(response.output.kind, 'interaction');
+    if (response.output.kind === 'interaction') {
+      assert.equal(response.output.proposal.kind, 'type');
+      assert.equal(response.output.proposal.text, 'hello');
+    }
+  });
+
+  it('rejects proposal authority fields as MODEL_OUTPUT_INVALID', async () => {
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: new ModelRequestLog(),
+      streamText: () =>
+        interactionStreamResult({
+          output: settled({
+            kind: 'interaction',
+            proposal: { kind: 'click', targetId: 'target-1', tabId: 'tab-1' },
+          }),
+        }),
+    });
+
+    await assert.rejects(
+      () => runtime.generateInteraction(request()),
+      (error: unknown) =>
+        error instanceof ModelError && error.code === 'MODEL_OUTPUT_INVALID',
+    );
+  });
+
+  it('rejects unknown top-level fields as MODEL_OUTPUT_INVALID', async () => {
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: new ModelRequestLog(),
+      streamText: () =>
+        interactionStreamResult({
+          output: settled({
+            kind: 'answer',
+            text: 'x',
+            referencedTargets: [],
+            extra: true,
+          }),
+        }),
+    });
+
+    await assert.rejects(
+      () => runtime.generateInteraction(request()),
+      (error: unknown) =>
+        error instanceof ModelError && error.code === 'MODEL_OUTPUT_INVALID',
+    );
+  });
+
+  it('streams answer text deltas only for answer partials', async () => {
+    const deltas: string[] = [];
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: new ModelRequestLog(),
+      streamText: () =>
+        interactionStreamResult({
+          partialOutputStream: (async function* () {
+            yield { kind: 'answer', text: 'A', referencedTargets: [] };
+            yield { kind: 'answer', text: 'AB', referencedTargets: [] };
+            yield { kind: 'answer', text: 'ABC', referencedTargets: [] };
+          })(),
+        }),
+    });
+
+    await runtime.generateInteraction(request(), {
+      onAnswerTextDelta: (text) => deltas.push(text),
+    });
+
+    assert.deepEqual(deltas, ['A', 'B', 'C']);
+  });
+
+  it('does not stream interaction proposal contents through onAnswerTextDelta', async () => {
+    const deltas: string[] = [];
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: new ModelRequestLog(),
+      streamText: () =>
+        interactionStreamResult({
+          partialOutputStream: (async function* () {
+            yield {
+              kind: 'interaction',
+              proposal: { kind: 'click', targetId: 'target-1' },
+            };
+            yield {
+              kind: 'interaction',
+              proposal: { kind: 'type', targetId: 'target-1', text: 'secret' },
+            };
+          })(),
+          output: settled({
+            kind: 'interaction',
+            proposal: { kind: 'click', targetId: 'target-1' },
+          }),
+        }),
+    });
+
+    await runtime.generateInteraction(request(), {
+      onAnswerTextDelta: (text) => deltas.push(text),
+    });
+
+    assert.deepEqual(deltas, []);
+  });
+
+  it('requests the agent model output schema', async () => {
+    const seen: GatewayStreamTextArgs[] = [];
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: new ModelRequestLog(),
+      streamText: (args) => {
+        seen.push(args);
+        return interactionStreamResult();
+      },
+    });
+
+    await runtime.generateInteraction(request());
+    assert.equal(seen[0]?.outputSchema, 'agentModelOutput');
+  });
+});
+
 describe('mapRuntimeError', () => {
   const idle = { callerAborted: false, timedOut: false };
 

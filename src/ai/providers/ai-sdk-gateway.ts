@@ -12,6 +12,15 @@ import {
   type ModelMessage as SdkModelMessage,
 } from 'ai';
 
+import {
+  AGENT_MODEL_OUTPUT_JSON_SCHEMA,
+  parseAgentModelOutput,
+  type AgentModelOutput,
+} from '../interaction-output-schema';
+import type {
+  InteractionModelResponse,
+  InteractionModelRuntime,
+} from '../interaction-model-runtime';
 import { getGatewayCatalogMetadata } from '../model-catalog';
 import { ModelError } from '../model-errors';
 import type { ModelRuntime } from '../model-runtime';
@@ -76,6 +85,21 @@ const PAGE_ANSWER_SCHEMA = jsonSchema<PageAnswer>(PAGE_ANSWER_JSON_SCHEMA, {
   validate: validatePageAnswer,
 });
 
+const AGENT_MODEL_OUTPUT_SCHEMA = jsonSchema<AgentModelOutput>(
+  AGENT_MODEL_OUTPUT_JSON_SCHEMA as unknown as JSONSchema7,
+  {
+    validate: (value: unknown) => {
+      try {
+        const parsed = parseAgentModelOutput(value);
+        return { success: true as const, value: parsed };
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'Invalid model output.';
+        return { success: false as const, error: new Error(message) };
+      }
+    },
+  },
+);
+
 export interface GatewayStreamTextArgs {
   model: string;
   messages: SdkModelMessage[];
@@ -86,6 +110,7 @@ export interface GatewayStreamTextArgs {
       sort: 'cost' | 'ttft' | 'tps';
     };
   };
+  outputSchema?: 'pageAnswer' | 'agentModelOutput';
 }
 
 export interface GatewayStreamTextResult {
@@ -107,6 +132,13 @@ export interface AiSdkGatewayRuntimeOptions {
 }
 
 function defaultStreamText(args: GatewayStreamTextArgs): GatewayStreamTextResult {
+  if (args.outputSchema === 'agentModelOutput') {
+    return defaultAgentModelOutputStreamText(args);
+  }
+  return defaultPageAnswerStreamText(args);
+}
+
+function defaultPageAnswerStreamText(args: GatewayStreamTextArgs): GatewayStreamTextResult {
   const result = streamText({
     model: args.model,
     messages: args.messages,
@@ -130,6 +162,30 @@ function defaultStreamText(args: GatewayStreamTextArgs): GatewayStreamTextResult
   };
 }
 
+function defaultAgentModelOutputStreamText(args: GatewayStreamTextArgs): GatewayStreamTextResult {
+  const result = streamText({
+    model: args.model,
+    messages: args.messages,
+    maxOutputTokens: args.maxOutputTokens,
+    abortSignal: args.abortSignal,
+    providerOptions: args.providerOptions,
+    output: Output.object({
+      schema: AGENT_MODEL_OUTPUT_SCHEMA,
+      name: 'agentModelOutput',
+    }),
+    allowSystemInMessages: true,
+    maxRetries: 0,
+  });
+
+  return {
+    partialOutputStream: result.partialOutputStream,
+    output: result.output,
+    usage: result.usage,
+    providerMetadata: result.providerMetadata,
+    response: result.response,
+  };
+}
+
 function readProcessGatewayApiKey(): string | undefined {
   return process.env.AI_GATEWAY_API_KEY;
 }
@@ -138,7 +194,7 @@ function isUsableApiKey(value: string | undefined): value is string {
   return typeof value === 'string' && value.trim() !== '';
 }
 
-export class AiSdkGatewayRuntime implements ModelRuntime {
+export class AiSdkGatewayRuntime implements ModelRuntime, InteractionModelRuntime {
   private readonly streamText: GatewayStreamText;
   private readonly readGatewayApiKey: () => string | undefined;
   private readonly createTimeoutSignal: (ms: number) => AbortSignal;
@@ -245,6 +301,99 @@ export class AiSdkGatewayRuntime implements ModelRuntime {
       throw mapped;
     }
   }
+
+  async generateInteraction(
+    request: ModelRequest,
+    options?: {
+      signal?: AbortSignal;
+      onAnswerTextDelta?: (text: string) => void;
+    },
+  ): Promise<InteractionModelResponse> {
+    const startedAt = this.now();
+    const alias = request.profile.alias;
+    let modelStartedAt: number | undefined;
+    let timeoutSignal: AbortSignal | undefined;
+
+    try {
+      if (!isUsableApiKey(this.readGatewayApiKey())) {
+        throw new ModelError(
+          'MODEL_NOT_CONFIGURED',
+          'AI Gateway is not configured.',
+        );
+      }
+
+      if (options?.signal?.aborted) {
+        throw new ModelError(
+          'REQUEST_CANCELLED',
+          'The model request was cancelled.',
+        );
+      }
+
+      const messages = toSdkMessages(request.messages);
+      timeoutSignal = this.createTimeoutSignal(request.profile.requestTimeoutMs);
+      const abortSignal = combineAbortSignals(options?.signal, timeoutSignal);
+      const providerOptions = gatewayProviderOptions(request.profile);
+
+      modelStartedAt = this.now();
+      const result = this.streamText({
+        model: request.profile.providerModelId,
+        messages,
+        maxOutputTokens: request.profile.maxOutputTokens,
+        abortSignal,
+        providerOptions,
+        outputSchema: 'agentModelOutput',
+      });
+
+      await emitAnswerTextDeltas(result.partialOutputStream, options?.onAnswerTextDelta);
+
+      const output = asAgentModelOutput(await result.output);
+      const usage = normalizeModelUsage(await result.usage);
+      const cost = normalizeGatewayCost(await result.providerMetadata);
+      const resolvedProviderModelId = resolveProviderModelId(
+        await result.response,
+        request.profile.providerModelId,
+      );
+      const latencyMs = elapsedMs(modelStartedAt, this.now());
+
+      this.requestLog.append({
+        requestId: request.requestId,
+        startedAt,
+        alias,
+        resolvedProviderModelId,
+        latencyMs,
+        usage,
+        cost,
+        success: true,
+      });
+
+      return {
+        output,
+        usage,
+        cost,
+        resolvedProviderModelId,
+        latencyMs,
+      };
+    } catch (error) {
+      const mapped = mapRuntimeError(error, {
+        callerAborted: Boolean(options?.signal?.aborted),
+        timedOut: Boolean(timeoutSignal?.aborted && !options?.signal?.aborted),
+      });
+
+      const latencyMs =
+        modelStartedAt === undefined ? undefined : elapsedMs(modelStartedAt, this.now());
+
+      this.requestLog.append({
+        requestId: request.requestId,
+        startedAt,
+        alias,
+        latencyMs,
+        success: false,
+        errorCode: mapped.code,
+      });
+
+      throw mapped;
+    }
+  }
 }
 
 function gatewayProviderOptions(
@@ -319,6 +468,31 @@ async function emitTextDeltas(
   }
 }
 
+async function emitAnswerTextDeltas(
+  partials: AsyncIterable<unknown>,
+  onAnswerTextDelta: ((text: string) => void) | undefined,
+): Promise<void> {
+  let previous = '';
+  for await (const partial of partials) {
+    if (onAnswerTextDelta === undefined) {
+      continue;
+    }
+    const record = asRecord(partial);
+    if (record?.kind !== 'answer') {
+      continue;
+    }
+    const current = record.text;
+    if (typeof current !== 'string' || !current.startsWith(previous)) {
+      continue;
+    }
+    const delta = current.slice(previous.length);
+    if (delta.length > 0) {
+      onAnswerTextDelta(delta);
+    }
+    previous = current;
+  }
+}
+
 function asPageAnswer(value: unknown): PageAnswer {
   const validated = validatePageAnswer(value);
   if (!validated.success) {
@@ -329,6 +503,10 @@ function asPageAnswer(value: unknown): PageAnswer {
     );
   }
   return validated.value;
+}
+
+function asAgentModelOutput(value: unknown): AgentModelOutput {
+  return parseAgentModelOutput(value);
 }
 
 function resolveProviderModelId(response: unknown, fallback: string): string {
