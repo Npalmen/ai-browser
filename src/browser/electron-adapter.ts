@@ -4,6 +4,11 @@ import type { BrowserAdapter } from './browser-adapter';
 import { TabNotFoundError, TabRegistry } from './tab-registry';
 import type { BrowserState, PageState, TabId } from '../shared/browser-types';
 import {
+  ObservationError,
+  type ObservePageOptions,
+  type PageObservation,
+} from '../shared/observation-types';
+import {
   isAllowedWebsiteNavigation,
   normalizeNavigationUrl,
 } from '../shared/navigation-url';
@@ -162,6 +167,17 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     }
 
     return this.registry.serialize();
+  }
+
+  async observePage(
+    _tabId: TabId,
+    _options?: ObservePageOptions,
+  ): Promise<PageObservation> {
+    // Phase 2 replaces this stub with ElectronPageObserver delegation.
+    throw new ObservationError(
+      'OBSERVATION_FAILED',
+      'Page observation transport is not implemented yet',
+    );
   }
 
   async getPageState(tabId: TabId): Promise<PageState> {

@@ -1,4 +1,5 @@
 import type { PageState, TabId } from '../shared/browser-types';
+import type { ObservePageOptions, PageObservation } from '../shared/observation-types';
 
 export interface BrowserAdapter {
   createTab(input?: { url?: string }): Promise<TabId>;
@@ -11,4 +12,5 @@ export interface BrowserAdapter {
   reload(tabId: TabId): Promise<void>;
 
   getPageState(tabId: TabId): Promise<PageState>;
+  observePage(tabId: TabId, options?: ObservePageOptions): Promise<PageObservation>;
 }
