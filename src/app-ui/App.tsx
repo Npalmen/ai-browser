@@ -1,16 +1,19 @@
-import { useCallback, useEffect, useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 
-import type { AiAnswerEvent } from '../shared/ai-types';
-import type { BrowserState, BrowserTab, TabId } from '../shared/browser-types';
-import { AiSidePanel, type AiTranscriptEntry } from './AiSidePanel';
+import type { BrowserState, BrowserTab } from '../shared/browser-types';
+import { AiSidePanel } from './AiSidePanel';
+import {
+  acknowledgeAsk,
+  appendUserQuestion,
+  applyAiAnswerEvent,
+  applyAskStartFailure,
+  emptyTabAiState,
+  purgeClosedTabs,
+  type AiUiState,
+  type TabAiUiState,
+} from './ai-ui-state';
 
 const NAV_ERROR = 'Invalid or unsupported address';
-
-interface TabAiUiState {
-  entries: AiTranscriptEntry[];
-  activeAskId: string | null;
-  draft: string;
-}
 
 function tabLabel(tab: BrowserTab): string {
   if (tab.title) {
@@ -33,17 +36,13 @@ function addressBarValue(url: string): string {
   return url === 'about:blank' ? '' : url;
 }
 
-function emptyTabAiState(): TabAiUiState {
-  return { entries: [], activeAskId: null, draft: '' };
-}
-
 export function App() {
   const [browserState, setBrowserState] = useState<BrowserState | null>(null);
   const [addressDraft, setAddressDraft] = useState('');
   const [isEditingAddress, setIsEditingAddress] = useState(false);
   const [navError, setNavError] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
-  const [tabAiState, setTabAiState] = useState<Record<TabId, TabAiUiState>>({});
+  const [tabAiState, setTabAiState] = useState<AiUiState>({});
   const lastSyncedUrlRef = useRef('');
 
   const activeTab =
@@ -79,7 +78,7 @@ export function App() {
 
   useEffect(() => {
     const unsubscribe = window.aiAssistant.onAnswerEvent((event) => {
-      applyAiEvent(event, setTabAiState);
+      setTabAiState((current) => applyAiAnswerEvent(current, event));
     });
     return unsubscribe;
   }, []);
@@ -89,18 +88,7 @@ export function App() {
       return;
     }
     const liveIds = new Set(browserState.tabs.map((tab) => tab.id));
-    setTabAiState((current) => {
-      const next: Record<TabId, TabAiUiState> = {};
-      let changed = false;
-      for (const [tabId, state] of Object.entries(current)) {
-        if (liveIds.has(tabId)) {
-          next[tabId] = state;
-        } else {
-          changed = true;
-        }
-      }
-      return changed ? next : current;
-    });
+    setTabAiState((current) => purgeClosedTabs(current, liveIds));
   }, [browserState]);
 
   useEffect(() => {
@@ -228,60 +216,16 @@ export function App() {
       return;
     }
 
-    const userEntry: AiTranscriptEntry = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      text: question,
-    };
-    updateActiveTabAi((current) => ({
-      ...current,
-      draft: '',
-      entries: [...current.entries, userEntry],
-    }));
+    setTabAiState((current) => appendUserQuestion(current, tabId, question));
 
     void window.aiAssistant
       .askCurrentPage({ tabId, question })
       .then((result) => {
         if (!result.ok) {
-          const errorEntry: AiTranscriptEntry = {
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            text: '',
-            status: 'error',
-            errorMessage: result.error.message,
-          };
-          setTabAiState((current) => {
-            const tabState = current[tabId] ?? emptyTabAiState();
-            return {
-              ...current,
-              [tabId]: {
-                ...tabState,
-                activeAskId: null,
-                entries: [...tabState.entries, errorEntry],
-              },
-            };
-          });
+          setTabAiState((current) => applyAskStartFailure(current, tabId, result.error));
           return;
         }
-
-        const assistantEntry: AiTranscriptEntry = {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          text: '',
-          status: 'streaming',
-          askId: result.askId,
-        };
-        setTabAiState((current) => {
-          const tabState = current[tabId] ?? emptyTabAiState();
-          return {
-            ...current,
-            [tabId]: {
-              ...tabState,
-              activeAskId: result.askId,
-              entries: [...tabState.entries, assistantEntry],
-            },
-          };
-        });
+        setTabAiState((current) => acknowledgeAsk(current, tabId, result.askId));
       })
       .catch((error: unknown) => {
         console.error('[app-ui] failed to start AI ask:', error);
@@ -311,10 +255,13 @@ export function App() {
           console.error('[app-ui] failed to clear conversation:', result.error.message);
           return;
         }
-        setTabAiState((current) => ({
-          ...current,
-          [tabId]: emptyTabAiState(),
-        }));
+        setTabAiState((current) =>
+          applyAiAnswerEvent(current, {
+            type: 'conversation-cleared',
+            tabId,
+            reason: 'user',
+          }),
+        );
       })
       .catch((error: unknown) => {
         console.error('[app-ui] failed to clear conversation:', error);
@@ -443,82 +390,4 @@ export function App() {
       ) : null}
     </div>
   );
-}
-
-function applyAiEvent(
-  event: AiAnswerEvent,
-  setTabAiState: Dispatch<SetStateAction<Record<TabId, TabAiUiState>>>,
-): void {
-  if (event.type === 'conversation-cleared') {
-    setTabAiState((current) => ({
-      ...current,
-      [event.tabId]: emptyTabAiState(),
-    }));
-    return;
-  }
-
-  setTabAiState((current) => {
-    const tabState = current[event.tabId] ?? emptyTabAiState();
-    if (tabState.activeAskId && tabState.activeAskId !== event.askId) {
-      return current;
-    }
-
-    if (event.type === 'answer-started') {
-      return {
-        ...current,
-        [event.tabId]: {
-          ...tabState,
-          activeAskId: event.askId,
-        },
-      };
-    }
-
-    const entries = tabState.entries.map((entry) => {
-      if (entry.role !== 'assistant' || entry.askId !== event.askId) {
-        return entry;
-      }
-      if (event.type === 'answer-text') {
-        return {
-          ...entry,
-          status: 'streaming' as const,
-          text: `${entry.text}${event.delta}`,
-        };
-      }
-      if (event.type === 'answer-finished') {
-        return {
-          ...entry,
-          status: 'complete' as const,
-          text: event.answer.text,
-          truncatedContext: event.answer.truncatedContext,
-        };
-      }
-      if (event.type === 'answer-cancelled') {
-        return {
-          ...entry,
-          status: 'cancelled' as const,
-        };
-      }
-      return {
-        ...entry,
-        status: 'error' as const,
-        errorMessage: event.error.message,
-      };
-    });
-
-    const activeAskId =
-      event.type === 'answer-finished' ||
-      event.type === 'answer-cancelled' ||
-      event.type === 'answer-error'
-        ? null
-        : tabState.activeAskId;
-
-    return {
-      ...current,
-      [event.tabId]: {
-        ...tabState,
-        entries,
-        activeAskId,
-      },
-    };
-  });
 }

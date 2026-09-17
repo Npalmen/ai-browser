@@ -2,15 +2,7 @@ import type { FormEvent, KeyboardEvent } from 'react';
 
 import { AI_SIDE_PANEL_WIDTH_PX } from '../shared/ai-types';
 
-export interface AiTranscriptEntry {
-  id: string;
-  role: 'user' | 'assistant';
-  text: string;
-  status?: 'streaming' | 'complete' | 'cancelled' | 'error';
-  truncatedContext?: boolean;
-  errorMessage?: string;
-  askId?: string;
-}
+import type { AiTranscriptEntry } from './ai-ui-state';
 
 export function AiSidePanel(props: {
   hasActiveTab: boolean;
