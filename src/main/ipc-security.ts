@@ -2,22 +2,27 @@ import type { IpcMainInvokeEvent } from 'electron';
 
 import { getMainBrowserWindow } from './browser-runtime';
 
+export function isExactTrustedAppSender(
+  sender: object,
+  senderFrame: object | null | undefined,
+  mainWebContents: object,
+  mainFrame: object | null | undefined,
+): boolean {
+  return sender === mainWebContents && senderFrame != null && senderFrame === mainFrame;
+}
+
 export function isTrustedAppSender(event: IpcMainInvokeEvent): boolean {
   const mainWindow = getMainBrowserWindow();
   if (!mainWindow || mainWindow.isDestroyed()) {
     return false;
   }
 
-  if (event.sender !== mainWindow.webContents) {
-    return false;
-  }
-
-  const mainFrame = mainWindow.webContents.mainFrame;
-  if (!event.senderFrame || !mainFrame || event.senderFrame !== mainFrame) {
-    return false;
-  }
-
-  return true;
+  return isExactTrustedAppSender(
+    event.sender,
+    event.senderFrame ?? null,
+    mainWindow.webContents,
+    mainWindow.webContents.mainFrame,
+  );
 }
 
 export function assertTrustedAppSender(event: IpcMainInvokeEvent): void {

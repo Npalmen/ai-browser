@@ -17,6 +17,11 @@ describe('resolveObservationFixtureRoute', () => {
     const iframe = resolveObservationFixtureRoute('/iframe.html');
     assert.ok(iframe);
     assert.equal(iframe.absolutePath, path.join(OBSERVATION_FIXTURE_DIR, 'iframe.html'));
+
+    const aiReadonly = resolveObservationFixtureRoute('/ai-readonly.html');
+    assert.ok(aiReadonly);
+    assert.equal(aiReadonly.absolutePath, path.join(OBSERVATION_FIXTURE_DIR, 'ai-readonly.html'));
+    assert.equal(aiReadonly.contentType, 'text/html; charset=utf-8');
   });
 
   it('rejects unknown and traversal paths', () => {

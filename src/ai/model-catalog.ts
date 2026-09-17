@@ -10,6 +10,7 @@ import {
  * Retrieved 2026-09-17 from GET https://ai-gateway.vercel.sh/v1/models
  * (unauthenticated OpenAI-style list). Catalog slugs and context windows
  * come from that response; they are not fetched at app runtime.
+ * Phase 6 re-verified 2026-09-17: current slugs and context windows still present.
  */
 export type GatewayProviderSort = 'cost' | 'ttft' | 'tps';
 

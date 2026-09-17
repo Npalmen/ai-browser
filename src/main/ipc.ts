@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron';
 
 import { AI_IPC_CHANNELS, BROWSER_IPC_CHANNELS } from '../shared/ipc-contract';
-import { isAiSafeError, parseAskId, parsePanelOpen, parseQuestion, parseTabId } from './ai-ipc-guards';
+import { isAiSafeError, parseAskCurrentPageRequest, parseAskId, parsePanelOpen, parseTabId } from './ai-ipc-guards';
 import { getAiController, setAiPanelOpen } from './ai-runtime';
 import { aiSafeError, toAiSafeError } from './ai-safe-error';
 import { getBrowserAdapter, whenBrowserReady } from './browser-runtime';
@@ -84,7 +84,7 @@ export function registerBrowserShellIpc(): void {
     assertTrustedAppSender(event);
     try {
       await whenBrowserReady();
-      const parsed = parseAskCurrentPageInput(input);
+      const parsed = parseAskCurrentPageRequest(input, getBrowserAdapter().getBrowserState());
       if (!parsed.ok) {
         return parsed;
       }
@@ -144,31 +144,6 @@ export function registerBrowserShellIpc(): void {
       return { ok: false, error: toAiSafeError(error) };
     }
   });
-}
-
-function parseAskCurrentPageInput(input: unknown):
-  | { ok: true; tabId: string; question: string }
-  | { ok: false; error: ReturnType<typeof aiSafeError> } {
-  if (typeof input !== 'object' || input === null) {
-    return { ok: false, error: aiSafeError('INVALID_REQUEST') };
-  }
-  const record = input as Record<string, unknown>;
-  const tabId = parseTabId(record.tabId);
-  if (isAiSafeError(tabId)) {
-    return { ok: false, error: tabId };
-  }
-  const question = parseQuestion(record.question);
-  if (isAiSafeError(question)) {
-    return { ok: false, error: question };
-  }
-
-  const state = getBrowserAdapter().getBrowserState();
-  const tabExists = state.tabs.some((tab) => tab.id === tabId);
-  if (!tabExists || state.activeTabId !== tabId) {
-    return { ok: false, error: aiSafeError('INVALID_REQUEST') };
-  }
-
-  return { ok: true, tabId, question };
 }
 
 function parseCancelAskInput(input: unknown):

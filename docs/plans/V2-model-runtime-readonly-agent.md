@@ -1,6 +1,6 @@
 # Plan: V2 — Model Runtime + Read-only Agent
 
-**Status:** locked  
+**Status:** complete  
 **Explicit reference:** Implementation tasks must cite `docs/plans/V2-model-runtime-readonly-agent.md` to treat this file as authoritative.
 
 This plan is implementation-ready for Composer. It does not reopen accepted runtime or observation architecture. Authoritative documents:
@@ -923,9 +923,37 @@ V2 is complete when:
 - Debugger still detaches after observe
 - Catalog aliases resolve to **verified-at-implementation** Gateway slugs
 - `src/browser` and `src/observation` have no `ai` dependency
-- Plan status is `locked` for implementation; move to `complete` only after Phase 6 acceptance
+- Plan status is `complete` after Phase 6 acceptance
 
 Do **not** mark complete solely because unit tests pass if IPC/UI was in scope for that implementation prompt.
+
+---
+
+## Phase 6 closure evidence
+
+**Completion date:** 2026-09-17
+
+**Acceptance commands run:**
+
+```text
+npm run typecheck
+npm run test:ai
+npm run test:observation
+npm run test:url
+npm run test:tabs
+npm run test:fixture
+npm run test:v2-acceptance
+```
+
+**Deterministic acceptance:** pass. `npm run test:v2-acceptance` covers node layers plus a real Electron observation of `fixtures/observation/ai-readonly.html` through `ElectronPageObserver`, production `ReadOnlyAgent` / export / router / `AiRequestController` / renderer state, with a test-only `RecordingModelRuntime`. Debugger detached after observe. Live inference was not required.
+
+**Security-gate result:** pass. Trusted sender still requires `event.sender === mainWindow.webContents` and `event.senderFrame === mainWindow.webContents.mainFrame`. Website WebContents has no preload and cannot satisfy that identity. Preload exposes only `browserShell` and `aiAssistant`. Screenshot export remains disabled for the initial panel. Request logs stay operational-only. `src/browser` and `src/observation` do not import `ai`.
+
+**Catalog freshness result:** pass. Re-fetched `GET https://ai-gateway.vercel.sh/v1/models` on 2026-09-17. All four catalog slugs remain present with compatible context windows. No catalog behavior change.
+
+**Electron sanity result:** pass. `npm start` compiled with no TypeScript errors and launched the window without `AI_GATEWAY_API_KEY`. Initial `https://example.com/` failed with `ERR_NAME_NOT_RESOLVED` (local DNS), which is not an AI defect. Intentionally stopping Electron is not an application failure.
+
+**Live Gateway smoke:** skipped — no key
 
 ---
 

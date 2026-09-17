@@ -1,11 +1,12 @@
 import path from 'node:path';
 
-export const OBSERVATION_FIXTURE_DIR = path.resolve(__dirname, '..', 'fixtures', 'observation');
+export const OBSERVATION_FIXTURE_DIR = path.resolve(process.cwd(), 'fixtures', 'observation');
 
 const ROUTE_MAP: Record<string, { fileName: string; contentType: string }> = {
   '/': { fileName: 'index.html', contentType: 'text/html; charset=utf-8' },
   '/index.html': { fileName: 'index.html', contentType: 'text/html; charset=utf-8' },
   '/iframe.html': { fileName: 'iframe.html', contentType: 'text/html; charset=utf-8' },
+  '/ai-readonly.html': { fileName: 'ai-readonly.html', contentType: 'text/html; charset=utf-8' },
 };
 
 export interface ResolvedFixtureFile {
