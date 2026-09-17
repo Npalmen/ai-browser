@@ -2,13 +2,17 @@ import { BrowserWindow, session, WebContentsView } from 'electron';
 
 import type { BrowserAdapter } from './browser-adapter';
 import { TabNotFoundError, TabRegistry } from './tab-registry';
-import type { PageState, TabId } from '../shared/browser-types';
+import type { BrowserState, PageState, TabId } from '../shared/browser-types';
 import {
   isAllowedWebsiteNavigation,
   normalizeNavigationUrl,
 } from '../shared/navigation-url';
 import { getWebsiteViewBounds } from '../main/window';
 import { WEBSITE_PARTITION } from '../main/sessions';
+
+export interface ElectronBrowserAdapterOptions {
+  onStateChange?: (state: BrowserState) => void;
+}
 
 export class ElectronBrowserAdapter implements BrowserAdapter {
   private readonly registry = new TabRegistry();
@@ -17,7 +21,10 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
   private activeAttachedTabId: TabId | null = null;
   private disposed = false;
 
-  constructor(private readonly mainWindow: BrowserWindow) {}
+  constructor(
+    private readonly mainWindow: BrowserWindow,
+    private readonly options: ElectronBrowserAdapterOptions = {},
+  ) {}
 
   async createTab(input?: { url?: string }): Promise<TabId> {
     this.assertNotDisposed();
@@ -57,9 +64,10 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
       await view.webContents.loadURL(normalized.url);
     } catch (error) {
       console.error(`[adapter] failed to load ${normalized.url}:`, error);
-      this.syncMetadata(tabId);
+      this.syncMetadata(tabId, true);
     }
 
+    this.publishState();
     return tabId;
   }
 
@@ -90,6 +98,8 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     if (this.registry.getActiveTabId() !== this.activeAttachedTabId) {
       await this.activateTab(this.registry.getActiveTabId());
     }
+
+    this.publishState();
   }
 
   async activateTab(tabId: TabId): Promise<void> {
@@ -101,12 +111,14 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
 
     if (this.activeAttachedTabId === tabId) {
       this.registry.activateTab(tabId);
+      this.publishState();
       return;
     }
 
     this.detachActiveView();
     this.registry.activateTab(tabId);
     this.attachView(tabId);
+    this.publishState();
   }
 
   async navigate(tabId: TabId, url: string): Promise<void> {
@@ -123,7 +135,7 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
       await view.webContents.loadURL(normalized.url);
     } catch (error) {
       console.error(`[adapter] failed to navigate to ${normalized.url}:`, error);
-      this.syncMetadata(tabId);
+      this.syncMetadata(tabId, true);
     }
   }
 
@@ -150,6 +162,16 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     this.getView(tabId).webContents.reload();
   }
 
+  getBrowserState(): BrowserState {
+    this.assertNotDisposed();
+
+    for (const tabId of this.views.keys()) {
+      this.syncMetadata(tabId, false);
+    }
+
+    return this.registry.serialize();
+  }
+
   async getPageState(tabId: TabId): Promise<PageState> {
     this.assertNotDisposed();
 
@@ -157,7 +179,7 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
       throw new TabNotFoundError(tabId);
     }
 
-    this.syncMetadata(tabId);
+    this.syncMetadata(tabId, false);
     const tab = this.registry.getTab(tabId);
     return {
       tabId: tab.id,
@@ -254,7 +276,7 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     });
 
     const sync = (): void => {
-      this.syncMetadata(tabId);
+      this.syncMetadata(tabId, true);
     };
 
     webContents.on('did-start-navigation', sync);
@@ -269,11 +291,23 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
         `[adapter] page load failed (${errorCode}) ${validatedURL}: ${errorDescription}`,
       );
       this.registry.updateTab(tabId, { loading: false });
-      sync();
+      this.syncMetadata(tabId, true);
     });
   }
 
-  private syncMetadata(tabId: TabId): void {
+  private publishState(): void {
+    if (!this.options.onStateChange) {
+      return;
+    }
+
+    try {
+      this.options.onStateChange(this.getBrowserState());
+    } catch {
+      // Skip publishing transient invalid states.
+    }
+  }
+
+  private syncMetadata(tabId: TabId, publish: boolean): void {
     const view = this.views.get(tabId);
     if (!view) {
       return;
@@ -292,6 +326,10 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
       canGoBack: history.canGoBack(),
       canGoForward: history.canGoForward(),
     });
+
+    if (publish) {
+      this.publishState();
+    }
   }
 
   private getView(tabId: TabId): WebContentsView {
