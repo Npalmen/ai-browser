@@ -9,7 +9,7 @@
     "start": "electron-forge start",
     "package": "electron-forge package",
     "typecheck": "tsc --noEmit",
-    "test:ai": "tsx --test src/ai/model-catalog.test.ts src/ai/model-router.test.ts src/ai/usage.test.ts src/ai/request-log.test.ts src/ai/providers/ai-sdk-gateway.test.ts",
+    "test:ai": "tsx --test src/ai/model-catalog.test.ts src/ai/model-router.test.ts src/ai/usage.test.ts src/ai/request-log.test.ts src/ai/providers/ai-sdk-gateway.test.ts src/ai/export-policy.test.ts src/ai/context-builder.test.ts",
     "test:url": "tsx --test src/shared/navigation-url.test.ts",
     "test:tabs": "tsx --test src/browser/tab-registry.test.ts",
     "test:observation": "tsx --test src/observation/redaction.test.ts src/observation/target-registry.test.ts src/observation/observation-builder.test.ts src/observation/document-identity.test.ts src/observation/observation-normalizer.test.ts src/observation/screenshot.test.ts",

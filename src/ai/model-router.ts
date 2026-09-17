@@ -45,7 +45,7 @@ export function routeModelRequest(
   const profile = getModelProfile(alias, catalog);
   assertRequiredCapabilities(profile, input.needsVision);
 
-  if (profileFitsContext(profile, input.estimatedInputTokens)) {
+  if (modelProfileFitsContext(profile, input.estimatedInputTokens)) {
     return { alias: profile.alias, profile };
   }
 
@@ -60,7 +60,7 @@ export function routeModelRequest(
   const fallback = getModelProfile(fallbackAlias, catalog);
   if (
     !profileHasRequiredCapabilities(fallback, input.needsVision) ||
-    !profileFitsContext(fallback, input.estimatedInputTokens)
+    !modelProfileFitsContext(fallback, input.estimatedInputTokens)
   ) {
     throw new ModelError(
       'CONTEXT_TOO_LARGE',
@@ -88,7 +88,10 @@ function aliasForTaskClass(taskClass: TaskClass): ModelAlias {
   }
 }
 
-function profileFitsContext(profile: ModelProfile, estimatedInputTokens: number): boolean {
+export function modelProfileFitsContext(
+  profile: ModelProfile,
+  estimatedInputTokens: number,
+): boolean {
   return estimatedInputTokens + profile.maxOutputTokens <= profile.contextWindowTokens;
 }
 
