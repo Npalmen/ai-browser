@@ -578,6 +578,179 @@ describe('AiSdkGatewayRuntime.generateInteraction', () => {
   });
 });
 
+function autonomousTaskDecisionStreamResult(
+  overrides: Partial<GatewayStreamTextResult> = {},
+): GatewayStreamTextResult {
+  return {
+    partialOutputStream: (async function* () {})(),
+    output: settled({
+      kind: 'delegate-subgoal',
+      taskTabAlias: 'task-tab-1',
+      instruction: 'Compare refundable prices',
+    }),
+    usage: settled({
+      inputTokens: 10,
+      outputTokens: 4,
+    }),
+    providerMetadata: settled({ gateway: { cost: 0.002 } }),
+    response: settled({ modelId: 'openai/gpt-5-nano' }),
+    ...overrides,
+  };
+}
+
+describe('AiSdkGatewayRuntime.generateAutonomousTaskDecision', () => {
+  it('returns a validated autonomous task decision', async () => {
+    const log = new ModelRequestLog();
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: log,
+      streamText: () => autonomousTaskDecisionStreamResult(),
+    });
+
+    const response = await runtime.generateAutonomousTaskDecision(request());
+
+    assert.equal(response.decision.kind, 'delegate-subgoal');
+    if (response.decision.kind === 'delegate-subgoal') {
+      assert.equal(response.decision.taskTabAlias, 'task-tab-1');
+      assert.equal(response.decision.instruction, 'Compare refundable prices');
+    }
+    assert.deepEqual(response.usage, { inputTokens: 10, outputTokens: 4 });
+    assert.deepEqual(response.cost, {
+      knowledge: 'known',
+      amountUsd: 0.002,
+      currency: 'USD',
+    });
+    assert.equal(response.resolvedProviderModelId, 'openai/gpt-5-nano');
+    assert.ok(response.latencyMs >= 0);
+    assert.equal(log.list()[0]?.success, true);
+  });
+
+  it('requests the autonomous task decision schema', async () => {
+    const seen: GatewayStreamTextArgs[] = [];
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: new ModelRequestLog(),
+      streamText: (args) => {
+        seen.push(args);
+        return autonomousTaskDecisionStreamResult();
+      },
+    });
+
+    await runtime.generateAutonomousTaskDecision(request());
+    assert.equal(seen[0]?.outputSchema, 'autonomousTaskDecision');
+  });
+
+  it('rejects authority fields as MODEL_OUTPUT_INVALID', async () => {
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: new ModelRequestLog(),
+      streamText: () =>
+        autonomousTaskDecisionStreamResult({
+          output: settled({
+            kind: 'delegate-subgoal',
+            taskTabAlias: 'task-tab-1',
+            instruction: 'Continue',
+            approved: true,
+          }),
+        }),
+    });
+
+    await assert.rejects(
+      () => runtime.generateAutonomousTaskDecision(request()),
+      (error: unknown) =>
+        error instanceof ModelError && error.code === 'MODEL_OUTPUT_INVALID',
+    );
+  });
+
+  it('fails MODEL_NOT_CONFIGURED without calling the SDK when the key is missing', async () => {
+    let called = false;
+    const previous = process.env.AI_GATEWAY_API_KEY;
+    delete process.env.AI_GATEWAY_API_KEY;
+
+    try {
+      const runtime = new AiSdkGatewayRuntime({
+        requestLog: new ModelRequestLog(),
+        streamText: () => {
+          called = true;
+          return autonomousTaskDecisionStreamResult();
+        },
+      });
+
+      await assert.rejects(
+        () => runtime.generateAutonomousTaskDecision(request()),
+        (error: unknown) =>
+          error instanceof ModelError && error.code === 'MODEL_NOT_CONFIGURED',
+      );
+      assert.equal(called, false);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.AI_GATEWAY_API_KEY;
+      } else {
+        process.env.AI_GATEWAY_API_KEY = previous;
+      }
+    }
+  });
+
+  it('fails REQUEST_CANCELLED without an SDK call when the caller signal is already aborted', async () => {
+    let called = false;
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: new ModelRequestLog(),
+      streamText: () => {
+        called = true;
+        return autonomousTaskDecisionStreamResult();
+      },
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(
+      () =>
+        runtime.generateAutonomousTaskDecision(request(), {
+          signal: controller.signal,
+        }),
+      (error: unknown) =>
+        error instanceof ModelError && error.code === 'REQUEST_CANCELLED',
+    );
+    assert.equal(called, false);
+  });
+
+  it('maps abort during generation to REQUEST_CANCELLED without retrying', async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: new ModelRequestLog(),
+      streamText: ({ abortSignal }) => {
+        calls += 1;
+        controller.abort();
+        return autonomousTaskDecisionStreamResult({
+          output: Promise.resolve().then(() => {
+            if (abortSignal?.aborted) {
+              throw abortError();
+            }
+            return {
+              kind: 'delegate-subgoal',
+              taskTabAlias: 'task-tab-1',
+              instruction: 'Compare refundable prices',
+            };
+          }),
+        });
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        runtime.generateAutonomousTaskDecision(request(), {
+          signal: controller.signal,
+        }),
+      (error: unknown) =>
+        error instanceof ModelError && error.code === 'REQUEST_CANCELLED',
+    );
+    assert.equal(calls, 1);
+  });
+});
+
 describe('mapRuntimeError', () => {
   const idle = { callerAborted: false, timedOut: false };
 
