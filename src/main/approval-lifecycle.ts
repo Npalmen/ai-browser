@@ -12,6 +12,7 @@ export interface ApprovalLifecycleDependencies {
   auditRecorder: ApprovalAuditRecorder;
   emit: (event: ApprovalEvent) => void;
   now?: () => number;
+  notifyAgentRunOutcome?: (approvalId: string, outcome: 'stale' | 'expired') => void;
 }
 
 export class ApprovalLifecycle {
@@ -65,6 +66,7 @@ export class ApprovalLifecycle {
         approvalId: snapshot.action.approvalId,
         tabId: snapshot.action.tabId,
       });
+      this.notifyAgentRunSafely(snapshot.action.approvalId, 'stale');
     }
   }
 
@@ -77,6 +79,18 @@ export class ApprovalLifecycle {
         approvalId: snapshot.action.approvalId,
         tabId: snapshot.action.tabId,
       });
+      this.notifyAgentRunSafely(snapshot.action.approvalId, 'expired');
+    }
+  }
+
+  private notifyAgentRunSafely(approvalId: string, outcome: 'stale' | 'expired'): void {
+    if (this.deps.notifyAgentRunOutcome === undefined) {
+      return;
+    }
+    try {
+      this.deps.notifyAgentRunOutcome(approvalId, outcome);
+    } catch {
+      // AgentRun notification is orchestration and must not roll back V4 authority.
     }
   }
 

@@ -5,6 +5,8 @@ import { ApprovalAuditRecorder } from '../approval/approval-audit-recorder';
 import { InMemoryApprovalAuditSink } from '../approval/approval-audit';
 import { ApprovalManager } from '../approval/approval-manager';
 import { PREPARED_ACTION_TTL_MS, type ApprovalEvent } from '../shared/approval-types';
+import { AgentRunCoordinator } from '../agent-run/agent-run-coordinator';
+import { toAgentRunRef } from '../agent-run/agent-run-types';
 import { ApprovalLifecycle } from './approval-lifecycle';
 
 const FORBIDDEN = [
@@ -212,5 +214,104 @@ describe('ApprovalLifecycle', () => {
       harness.events.some((event) => event.type === 'approval-stale'),
       false,
     );
+  });
+
+  it('notifies stale and expiry for actually changed approvals', () => {
+    const harness = createHarness();
+    const coordinator = new AgentRunCoordinator();
+    const run = coordinator.startRun('tab-1', 'task');
+    coordinator.presentApproval(toAgentRunRef(run), 'appr-1');
+    const lifecycle = new ApprovalLifecycle({
+      manager: harness.manager,
+      auditRecorder: new ApprovalAuditRecorder({
+        manager: harness.manager,
+        audit: harness.audit,
+        now: () => harness.clock.now,
+      }),
+      emit: (event) => {
+        harness.events.push(event);
+      },
+      now: () => harness.clock.now,
+      notifyAgentRunOutcome: (approvalId, outcome) => {
+        coordinator.notifyApprovalOutcome(approvalId, outcome);
+      },
+    });
+    const action = prepare(harness.manager);
+    assert.equal(action.approvalId, 'appr-1');
+    lifecycle.invalidateTab('tab-1');
+    assert.equal(coordinator.getRun(run.runId)?.terminalReason, 'ACTION_STALE');
+    assert.equal(harness.manager.getByApprovalId(action.approvalId)?.state, 'stale');
+  });
+
+  it('notifies expiry when a due approval is expired during present', () => {
+    const harness = createHarness();
+    const coordinator = new AgentRunCoordinator();
+    const run = coordinator.startRun('tab-1', 'task');
+    coordinator.presentApproval(toAgentRunRef(run), 'appr-1');
+    const action = prepare(harness.manager);
+    const lifecycle = new ApprovalLifecycle({
+      manager: harness.manager,
+      auditRecorder: new ApprovalAuditRecorder({
+        manager: harness.manager,
+        audit: harness.audit,
+        now: () => harness.clock.now,
+      }),
+      emit: (event) => {
+        harness.events.push(event);
+      },
+      now: () => harness.clock.now,
+      notifyAgentRunOutcome: (approvalId, outcome) => {
+        coordinator.notifyApprovalOutcome(approvalId, outcome);
+      },
+    });
+    harness.clock.now = 1_000 + PREPARED_ACTION_TTL_MS;
+    assert.equal(lifecycle.present(action), false);
+    assert.equal(coordinator.getRun(run.runId)?.terminalReason, 'APPROVAL_EXPIRED');
+    assert.equal(harness.manager.getByApprovalId(action.approvalId)?.state, 'expired');
+  });
+
+  it('does not roll back V4 stale when AgentRun notification throws', () => {
+    const harness = createHarness();
+    const action = prepare(harness.manager);
+    const lifecycle = new ApprovalLifecycle({
+      manager: harness.manager,
+      auditRecorder: new ApprovalAuditRecorder({
+        manager: harness.manager,
+        audit: harness.audit,
+        now: () => harness.clock.now,
+      }),
+      emit: (event) => {
+        harness.events.push(event);
+      },
+      now: () => harness.clock.now,
+      notifyAgentRunOutcome() {
+        throw new Error('run notifier failed');
+      },
+    });
+    lifecycle.invalidateTab('tab-1');
+    assert.equal(harness.manager.getByApprovalId(action.approvalId)?.state, 'stale');
+    assert.equal(harness.events.some((event) => event.type === 'approval-stale'), true);
+  });
+
+  it('does not notify when invalidation changes nothing', () => {
+    const harness = createHarness();
+    let notifyCount = 0;
+    const lifecycle = new ApprovalLifecycle({
+      manager: harness.manager,
+      auditRecorder: new ApprovalAuditRecorder({
+        manager: harness.manager,
+        audit: harness.audit,
+        now: () => harness.clock.now,
+      }),
+      emit: (event) => {
+        harness.events.push(event);
+      },
+      now: () => harness.clock.now,
+      notifyAgentRunOutcome() {
+        notifyCount += 1;
+      },
+    });
+    lifecycle.invalidateTab('tab-missing');
+    assert.equal(notifyCount, 0);
   });
 });

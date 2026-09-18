@@ -6,6 +6,8 @@ import { describe, it } from 'node:test';
 import { ApprovalAuditRecorder } from '../approval/approval-audit-recorder';
 import { InMemoryApprovalAuditSink } from '../approval/approval-audit';
 import { ApprovalManager } from '../approval/approval-manager';
+import { AgentRunCoordinator } from '../agent-run/agent-run-coordinator';
+import { toAgentRunRef } from '../agent-run/agent-run-types';
 import { ExecuteExecutor } from '../approval/execute-executor';
 import type { BrowserAdapter } from '../browser/browser-adapter';
 import { TargetRegistry } from '../observation/target-registry';
@@ -505,3 +507,301 @@ describe('ApprovalWorkflowController', () => {
     assert.equal(ui.includes('dangerouslySetInnerHTML'), false);
   });
 });
+
+describe('ApprovalWorkflowController AgentRun hooks', () => {
+  it('leaves ordinary V4 approvals unchanged when no AgentRun is correlated', async () => {
+    const manager = createManager({ now: 1_000 });
+    const audit = new InMemoryApprovalAuditSink();
+    const events: ApprovalEvent[] = [];
+    const fake = createFakeAdapter();
+    const registry = new TargetRegistry();
+    registry.replaceObservation('tab-1', 'obs-1', [targetRecord()]);
+    const action = prepare(manager);
+    const coordinator = new AgentRunCoordinator();
+    const workflow = new ApprovalWorkflowController({
+      decisionController: createDecisionController(manager, audit, events),
+      manager,
+      executeExecutor: new ExecuteExecutor({
+        adapter: fake.adapter,
+        targetRegistry: registry,
+        manager,
+        auditRecorder: new ApprovalAuditRecorder({ manager, audit }),
+      }),
+      auditRecorder: new ApprovalAuditRecorder({ manager, audit }),
+      emit: (event) => {
+        events.push(event);
+      },
+      agentRun: coordinator,
+    });
+
+    const result = await workflow.decide({ approvalId: action.approvalId, decision: 'approve' });
+    assert.equal(result.ok, true);
+    assert.equal(fake.counts.click, 1);
+    assert.equal(manager.getByApprovalId(action.approvalId)?.state, 'executed');
+    assert.equal(coordinator.getActiveRunForTab('tab-1'), undefined);
+  });
+
+  it('notifies reject without claiming', async () => {
+    const manager = createManager({ now: 1_000 });
+    const audit = new InMemoryApprovalAuditSink();
+    const events: ApprovalEvent[] = [];
+    const coordinator = new AgentRunCoordinator();
+    const run = coordinator.startRun('tab-1', 'task');
+    requireAppliedRun(coordinator.presentApproval(toAgentRunRef(run), 'appr-1'));
+    const action = prepare(manager);
+    assert.equal(action.approvalId, 'appr-1');
+    const workflow = new ApprovalWorkflowController({
+      decisionController: createDecisionController(manager, audit, events),
+      manager,
+      executeExecutor: {
+        async execute() {
+          throw new Error('must not execute');
+        },
+      },
+      auditRecorder: new ApprovalAuditRecorder({ manager, audit }),
+      emit: (event) => {
+        events.push(event);
+      },
+      agentRun: coordinator,
+    });
+
+    const result = await workflow.decide({ approvalId: action.approvalId, decision: 'reject' });
+    assert.equal(result.ok, true);
+    assert.equal(manager.getByApprovalId(action.approvalId)?.state, 'rejected');
+    assert.equal(coordinator.getRun(run.runId)?.terminalReason, 'APPROVAL_REJECTED');
+  });
+
+  it('counts a V4 execution attempt and notifies executed', async () => {
+    const manager = createManager({ now: 1_000 });
+    const audit = new InMemoryApprovalAuditSink();
+    const events: ApprovalEvent[] = [];
+    const coordinator = new AgentRunCoordinator();
+    const run = coordinator.startRun('tab-1', 'task');
+    requireAppliedRun(coordinator.presentApproval(toAgentRunRef(run), 'appr-1'));
+    const action = prepare(manager);
+    const workflow = new ApprovalWorkflowController({
+      decisionController: createDecisionController(manager, audit, events),
+      manager,
+      executeExecutor: {
+        async execute(grant) {
+          return { executionId: grant.executionId, status: 'executed' };
+        },
+      },
+      auditRecorder: new ApprovalAuditRecorder({ manager, audit }),
+      emit: (event) => {
+        events.push(event);
+      },
+      agentRun: coordinator,
+    });
+
+    const result = await workflow.decide({ approvalId: action.approvalId, decision: 'approve' });
+    assert.equal(result.ok, true);
+    assert.equal(coordinator.getRun(run.runId)?.state, 'running');
+    assert.equal(coordinator.getRun(run.runId)?.actionAttemptCount, 1);
+  });
+
+  it('does not execute when the correlated run is superseded before claim', async () => {
+    const manager = createManager({ now: 1_000 });
+    const audit = new InMemoryApprovalAuditSink();
+    const events: ApprovalEvent[] = [];
+    const coordinator = new AgentRunCoordinator();
+    const run = coordinator.startRun('tab-1', 'task');
+    requireAppliedRun(coordinator.presentApproval(toAgentRunRef(run), 'appr-1'));
+    const action = prepare(manager);
+    let executeCount = 0;
+    const workflow = new ApprovalWorkflowController({
+      decisionController: createDecisionController(manager, audit, events),
+      manager,
+      executeExecutor: {
+        async execute() {
+          executeCount += 1;
+          return { executionId: 'exec-1', status: 'executed' };
+        },
+      },
+      auditRecorder: new ApprovalAuditRecorder({ manager, audit }),
+      emit: (event) => {
+        events.push(event);
+      },
+      beforeClaim: () => {
+        coordinator.startRun('tab-1', 'newer');
+      },
+      agentRun: coordinator,
+    });
+
+    const result = await workflow.decide({ approvalId: action.approvalId, decision: 'approve' });
+    assert.equal(result.ok, true);
+    assert.equal(executeCount, 0);
+    assert.equal(manager.getByApprovalId(action.approvalId)?.state, 'stale');
+    assert.equal(coordinator.getRun(run.runId)?.terminalReason, 'SUPERSEDED');
+    assert.equal(coordinator.getActiveRunForTab('tab-1')?.instruction, 'newer');
+  });
+
+  it('notifies expiry and stale from claim failures', async () => {
+    const clock = { now: 1_000 };
+    const expiredManager = createManager(clock);
+    const expiredAudit = new InMemoryApprovalAuditSink();
+    const expiredEvents: ApprovalEvent[] = [];
+    const expiredCoordinator = new AgentRunCoordinator();
+    const expiredRun = expiredCoordinator.startRun('tab-1', 'task');
+    requireAppliedRun(expiredCoordinator.presentApproval(toAgentRunRef(expiredRun), 'appr-1'));
+    const expiredAction = prepare(expiredManager);
+    const expiredWorkflow = new ApprovalWorkflowController({
+      decisionController: createDecisionController(expiredManager, expiredAudit, expiredEvents),
+      manager: expiredManager,
+      executeExecutor: {
+        async execute() {
+          throw new Error('must not execute');
+        },
+      },
+      auditRecorder: new ApprovalAuditRecorder({ manager: expiredManager, audit: expiredAudit }),
+      emit: (event) => {
+        expiredEvents.push(event);
+      },
+      beforeClaim: () => {
+        clock.now = 1_000 + PREPARED_ACTION_TTL_MS;
+      },
+      agentRun: expiredCoordinator,
+    });
+    await expiredWorkflow.decide({ approvalId: expiredAction.approvalId, decision: 'approve' });
+    assert.equal(expiredCoordinator.getRun(expiredRun.runId)?.terminalReason, 'APPROVAL_EXPIRED');
+
+    const staleManager = createManager({ now: 1_000 });
+    const staleAudit = new InMemoryApprovalAuditSink();
+    const staleEvents: ApprovalEvent[] = [];
+    const staleCoordinator = new AgentRunCoordinator();
+    const staleRun = staleCoordinator.startRun('tab-1', 'task');
+    requireAppliedRun(staleCoordinator.presentApproval(toAgentRunRef(staleRun), 'appr-1'));
+    const staleAction = prepare(staleManager);
+    const lifecycle = new ApprovalLifecycle({
+      manager: staleManager,
+      auditRecorder: new ApprovalAuditRecorder({ manager: staleManager, audit: staleAudit }),
+      emit: (event) => {
+        staleEvents.push(event);
+      },
+    });
+    const staleWorkflow = new ApprovalWorkflowController({
+      decisionController: createDecisionController(staleManager, staleAudit, staleEvents),
+      manager: staleManager,
+      executeExecutor: {
+        async execute() {
+          throw new Error('must not execute');
+        },
+      },
+      auditRecorder: new ApprovalAuditRecorder({ manager: staleManager, audit: staleAudit }),
+      emit: (event) => {
+        staleEvents.push(event);
+      },
+      beforeClaim: () => {
+        lifecycle.invalidateTab('tab-1');
+      },
+      agentRun: staleCoordinator,
+    });
+    await staleWorkflow.decide({ approvalId: staleAction.approvalId, decision: 'approve' });
+    assert.equal(staleCoordinator.getRun(staleRun.runId)?.terminalReason, 'ACTION_STALE');
+  });
+
+  it('notifies failed and unknown execute results', async () => {
+    for (const testCase of [
+      { status: 'failed' as const, reason: 'ACTION_FAILED', state: 'failed' },
+      {
+        status: 'execution-attempted-state-unknown' as const,
+        reason: 'EXECUTION_STATE_UNKNOWN',
+        state: 'execution-state-unknown',
+      },
+    ]) {
+      const manager = createManager({ now: 1_000 });
+      const audit = new InMemoryApprovalAuditSink();
+      const events: ApprovalEvent[] = [];
+      const coordinator = new AgentRunCoordinator();
+      const run = coordinator.startRun('tab-1', 'task');
+      requireAppliedRun(coordinator.presentApproval(toAgentRunRef(run), 'appr-1'));
+      const action = prepare(manager);
+      const workflow = new ApprovalWorkflowController({
+        decisionController: createDecisionController(manager, audit, events),
+        manager,
+        executeExecutor: {
+          async execute(grant) {
+            return { executionId: grant.executionId, status: testCase.status };
+          },
+        },
+        auditRecorder: new ApprovalAuditRecorder({ manager, audit }),
+        emit: (event) => {
+          events.push(event);
+        },
+        agentRun: coordinator,
+      });
+      await workflow.decide({ approvalId: action.approvalId, decision: 'approve' });
+      assert.equal(coordinator.getRun(run.runId)?.state, testCase.state);
+      assert.equal(coordinator.getRun(run.runId)?.terminalReason, testCase.reason);
+    }
+  });
+
+  it('does not roll back V4 execution when AgentRun notification throws', async () => {
+    const manager = createManager({ now: 1_000 });
+    const audit = new InMemoryApprovalAuditSink();
+    const events: ApprovalEvent[] = [];
+    const fake = createFakeAdapter();
+    const registry = new TargetRegistry();
+    registry.replaceObservation('tab-1', 'obs-1', [targetRecord()]);
+    const action = prepare(manager);
+    const workflow = new ApprovalWorkflowController({
+      decisionController: createDecisionController(manager, audit, events),
+      manager,
+      executeExecutor: new ExecuteExecutor({
+        adapter: fake.adapter,
+        targetRegistry: registry,
+        manager,
+        auditRecorder: new ApprovalAuditRecorder({ manager, audit }),
+      }),
+      auditRecorder: new ApprovalAuditRecorder({ manager, audit }),
+      emit: (event) => {
+        events.push(event);
+      },
+      agentRun: {
+        beginApprovedExecution: () => 'unrelated',
+        notifyApprovalOutcome() {
+          throw new Error('run notifier failed');
+        },
+      },
+    });
+
+    const result = await workflow.decide({ approvalId: action.approvalId, decision: 'approve' });
+    assert.equal(result.ok, true);
+    assert.equal(fake.counts.click, 1);
+    assert.equal(manager.getByApprovalId(action.approvalId)?.state, 'executed');
+  });
+
+  it('does not resume an old run if V4 finishes after dispatch and supersede', async () => {
+    const manager = createManager({ now: 1_000 });
+    const audit = new InMemoryApprovalAuditSink();
+    const events: ApprovalEvent[] = [];
+    const coordinator = new AgentRunCoordinator();
+    const run = coordinator.startRun('tab-1', 'task');
+    requireAppliedRun(coordinator.presentApproval(toAgentRunRef(run), 'appr-1'));
+    const action = prepare(manager);
+    const workflow = new ApprovalWorkflowController({
+      decisionController: createDecisionController(manager, audit, events),
+      manager,
+      executeExecutor: {
+        async execute(grant) {
+          coordinator.startRun('tab-1', 'newer');
+          return { executionId: grant.executionId, status: 'executed' };
+        },
+      },
+      auditRecorder: new ApprovalAuditRecorder({ manager, audit }),
+      emit: (event) => {
+        events.push(event);
+      },
+      agentRun: coordinator,
+    });
+
+    await workflow.decide({ approvalId: action.approvalId, decision: 'approve' });
+    assert.equal(coordinator.getRun(run.runId)?.terminalReason, 'SUPERSEDED');
+    assert.equal(coordinator.getActiveRunForTab('tab-1')?.instruction, 'newer');
+    assert.equal(coordinator.getActiveRunForTab('tab-1')?.modelStepCount, 0);
+  });
+});
+
+function requireAppliedRun(result: { status: string }): void {
+  assert.equal(result.status, 'applied');
+}

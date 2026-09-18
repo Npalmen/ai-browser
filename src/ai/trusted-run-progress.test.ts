@@ -42,6 +42,18 @@ describe('trusted run progress', () => {
     );
   });
 
+  it('omits page-change claims when approved-execution pageChanged is unknown', () => {
+    const serialized = serializeTrustedRunProgress([
+      { kind: 'approved-execution-succeeded' },
+    ]);
+    assert.ok(serialized);
+    assert.match(
+      serialized,
+      /The previously presented consequential click was approved and executed successfully\./,
+    );
+    assert.equal(serialized.includes('the page changed'), false);
+  });
+
   it('keeps only the latest eight entries', () => {
     const entries: TrustedRunProgressEntry[] = [
       { kind: 'safe-interaction-succeeded', actionKind: 'type', pageChanged: false },

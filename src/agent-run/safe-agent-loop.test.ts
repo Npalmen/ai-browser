@@ -30,6 +30,7 @@ import {
   type AgentRunSnapshot,
 } from './agent-run-types';
 import { SafeAgentLoop, type SafeV3InteractionExecutionPort } from './safe-agent-loop';
+import type { AgentRunApprovalPort } from './approval-pause-port';
 import type {
   InteractiveStepOptions,
   InteractiveStepRequest,
@@ -258,12 +259,14 @@ function createLoop(input: {
   coordinator?: AgentRunCoordinator;
   stepAgent: FakeStepAgent;
   executor: FakeV3Executor;
+  approvalPort?: AgentRunApprovalPort;
 }) {
   const coordinator = input.coordinator ?? new AgentRunCoordinator();
   const loop = new SafeAgentLoop({
     coordinator,
     stepAgent: input.stepAgent,
     interactionExecutor: input.executor,
+    ...(input.approvalPort !== undefined ? { approvalPort: input.approvalPort } : {}),
   });
   return { coordinator, loop };
 }
@@ -803,3 +806,393 @@ describe('SafeAgentLoop source isolation', () => {
     }
   });
 });
+
+class FakeApprovalPort implements AgentRunApprovalPort {
+  readonly calls: Array<{
+    ref: AgentRunRef;
+    proposal: BoundInteractionProposal;
+    observation: PageObservation;
+    signal?: AbortSignal;
+  }> = [];
+  lastApprovalId?: string;
+  private serial = 0;
+  private readonly impl?: AgentRunApprovalPort['prepareAndPresent'];
+
+  constructor(
+    private readonly coordinator: AgentRunCoordinator,
+    impl?: AgentRunApprovalPort['prepareAndPresent'],
+  ) {
+    this.impl = impl;
+  }
+
+  prepareAndPresent(input: {
+    ref: AgentRunRef;
+    proposal: BoundInteractionProposal;
+    observation: PageObservation;
+    signal?: AbortSignal;
+  }) {
+    this.calls.push(input);
+    if (this.impl) {
+      return this.impl(input);
+    }
+    this.lastApprovalId = `appr-${++this.serial}`;
+    const presented = this.coordinator.presentApproval(input.ref, this.lastApprovalId);
+    if (presented.status === 'ignored' || presented.snapshot.state !== 'awaiting-approval') {
+      return { status: 'ignored' as const };
+    }
+    return { status: 'awaiting-approval' as const, approvalId: this.lastApprovalId };
+  }
+}
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 200; i += 1) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error('Timed out waiting for condition');
+}
+
+function completeApprovedExecution(coordinator: AgentRunCoordinator, approvalId: string): void {
+  assert.equal(coordinator.beginApprovedExecution(approvalId), 'proceed');
+  const notified = coordinator.notifyApprovalOutcome(approvalId, 'executed');
+  assert.equal(notified.status, 'applied');
+}
+
+describe('SafeAgentLoop approval pause and resume', () => {
+  it('pauses on deferred click, resumes after executed, then answers', async () => {
+    const obs = observation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), obs),
+      answerStep('Booked', obs),
+    ]);
+    const executor = new FakeV3Executor([denied('DEFERRED_TO_EXECUTE')]);
+    const coordinator = new AgentRunCoordinator();
+    const approvalPort = new FakeApprovalPort(coordinator);
+    const loop = new SafeAgentLoop({
+      coordinator,
+      stepAgent,
+      interactionExecutor: executor,
+      approvalPort,
+    });
+    const run = start(coordinator);
+    const pending = loop.run(refOf(run));
+
+    await waitUntil(() => coordinator.getRun(run.runId)?.state === 'awaiting-approval');
+    assert.equal(stepAgent.calls.length, 1);
+    assert.equal(executor.calls.length, 1);
+    assert.equal(approvalPort.calls.length, 1);
+    assert.equal(coordinator.getRun(run.runId)?.modelStepCount, 1);
+    assert.equal(coordinator.getRun(run.runId)?.actionAttemptCount, 1);
+    assert.equal(coordinator.getRun(run.runId)?.approvalCount, 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(stepAgent.calls.length, 1);
+    assert.equal(executor.calls.length, 1);
+
+    completeApprovedExecution(coordinator, approvalPort.lastApprovalId ?? '');
+    const result = await pending;
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Booked');
+      assert.equal(result.run.modelStepCount, 2);
+      assert.equal(result.run.actionAttemptCount, 2);
+      assert.equal(result.run.approvalCount, 1);
+    }
+    assert.equal(stepAgent.calls.length, 2);
+    assert.equal(stepAgent.calls[1]?.options?.trustedObservation, undefined);
+    assert.equal(stepAgent.calls[1]?.options?.trustedProgress?.[0]?.kind, 'approved-execution-succeeded');
+  });
+
+  it('requires two independent approvals for two consequential clicks', async () => {
+    const obs = observation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick('rev-a', 'target-a'), obs),
+      proposalStep(boundClick('rev-b', 'target-b'), observation({ document: { ...obs.document, revision: 'rev-b' } })),
+      answerStep('Done', obs),
+    ]);
+    const executor = new FakeV3Executor([
+      denied('DEFERRED_TO_EXECUTE'),
+      denied('DEFERRED_TO_EXECUTE'),
+    ]);
+    const coordinator = new AgentRunCoordinator();
+    const approvalPort = new FakeApprovalPort(coordinator);
+    const loop = new SafeAgentLoop({
+      coordinator,
+      stepAgent,
+      interactionExecutor: executor,
+      approvalPort,
+    });
+    const run = start(coordinator);
+    const pending = loop.run(refOf(run));
+
+    await waitUntil(() => coordinator.getRun(run.runId)?.state === 'awaiting-approval');
+    const firstApproval = approvalPort.lastApprovalId;
+    completeApprovedExecution(coordinator, firstApproval ?? '');
+    await waitUntil(
+      () =>
+        coordinator.getRun(run.runId)?.state === 'awaiting-approval' &&
+        approvalPort.calls.length === 2,
+    );
+    const secondApproval = approvalPort.lastApprovalId;
+    assert.notEqual(secondApproval, firstApproval);
+    completeApprovedExecution(coordinator, secondApproval ?? '');
+    const result = await pending;
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.run.approvalCount, 2);
+      assert.equal(result.run.actionAttemptCount, 4);
+      assert.equal(result.run.modelStepCount, 3);
+    }
+  });
+
+  it('blocks a third approval before prepareAndPresent', async () => {
+    const obs = observation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick('rev-1', 't1'), obs),
+      proposalStep(boundClick('rev-2', 't2'), obs),
+      proposalStep(boundClick('rev-3', 't3'), obs),
+      answerStep('late', obs),
+    ]);
+    const executor = new FakeV3Executor([
+      denied('DEFERRED_TO_EXECUTE'),
+      denied('DEFERRED_TO_EXECUTE'),
+      denied('DEFERRED_TO_EXECUTE'),
+    ]);
+    const coordinator = new AgentRunCoordinator();
+    const approvalPort = new FakeApprovalPort(coordinator);
+    const loop = new SafeAgentLoop({
+      coordinator,
+      stepAgent,
+      interactionExecutor: executor,
+      approvalPort,
+    });
+    const run = start(coordinator);
+    const pending = loop.run(refOf(run));
+    await waitUntil(() => approvalPort.calls.length === 1);
+    completeApprovedExecution(coordinator, approvalPort.lastApprovalId ?? '');
+    await waitUntil(() => approvalPort.calls.length === 2);
+    completeApprovedExecution(coordinator, approvalPort.lastApprovalId ?? '');
+    const result = await pending;
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'STEP_LIMIT_REACHED');
+      assert.equal(result.run.approvalCount, 2);
+    }
+    assert.equal(approvalPort.calls.length, 2);
+    assert.equal(executor.calls.length, 3);
+  });
+
+  it('blocks reject, expiry, stale, failed, and unknown without another model step', async () => {
+    const cases = [
+      { outcome: 'rejected' as const, reason: 'APPROVAL_REJECTED', state: 'blocked' },
+      { outcome: 'expired' as const, reason: 'APPROVAL_EXPIRED', state: 'blocked' },
+      { outcome: 'stale' as const, reason: 'ACTION_STALE', state: 'blocked' },
+      { outcome: 'failed' as const, reason: 'ACTION_FAILED', state: 'failed' },
+      {
+        outcome: 'execution-state-unknown' as const,
+        reason: 'EXECUTION_STATE_UNKNOWN',
+        state: 'execution-state-unknown',
+      },
+    ];
+    for (const testCase of cases) {
+      const obs = observation();
+      const stepAgent = new FakeStepAgent([
+        proposalStep(boundClick(), obs),
+        answerStep('never', obs),
+      ]);
+      const executor = new FakeV3Executor([denied('DEFERRED_TO_EXECUTE')]);
+      const coordinator = new AgentRunCoordinator();
+      const approvalPort = new FakeApprovalPort(coordinator);
+      const loop = new SafeAgentLoop({
+        coordinator,
+        stepAgent,
+        interactionExecutor: executor,
+        approvalPort,
+      });
+      const run = start(coordinator);
+      const pending = loop.run(refOf(run));
+      await waitUntil(() => coordinator.getRun(run.runId)?.state === 'awaiting-approval');
+      coordinator.notifyApprovalOutcome(approvalPort.lastApprovalId ?? '', testCase.outcome);
+      const result = await pending;
+      assert.equal(result.status, 'terminal');
+      if (result.status === 'terminal') {
+        assert.equal(result.run.state, testCase.state);
+        assert.equal(result.run.terminalReason, testCase.reason);
+      }
+      assert.equal(stepAgent.calls.length, 1);
+    }
+  });
+
+  it('does not prepare approval for DENY or deferred select', async () => {
+    const coordinator = new AgentRunCoordinator();
+    const approvalPort = new FakeApprovalPort(coordinator);
+    const denyLoop = new SafeAgentLoop({
+      coordinator,
+      stepAgent: new FakeStepAgent([proposalStep(boundClick(), observation())]),
+      interactionExecutor: new FakeV3Executor([denied('INTERACTION_DENIED')]),
+      approvalPort,
+    });
+    const denyResult = await denyLoop.run(refOf(start(coordinator)));
+    assert.equal(denyResult.status, 'terminal');
+    if (denyResult.status === 'terminal') {
+      assert.equal(denyResult.run.terminalReason, 'POLICY_BLOCKED');
+    }
+    assert.equal(approvalPort.calls.length, 0);
+
+    const selectPort = new FakeApprovalPort(coordinator);
+    const selectLoop = new SafeAgentLoop({
+      coordinator,
+      stepAgent: new FakeStepAgent([
+        proposalStep(
+          {
+            kind: 'select',
+            targetId: 'target-1',
+            optionTargetId: 'opt-1',
+            tabId: TAB,
+            observationId: 'obs-1',
+            documentRevision: 'rev-a',
+          },
+          observation(),
+        ),
+      ]),
+      interactionExecutor: new FakeV3Executor([denied('DEFERRED_TO_EXECUTE')]),
+      approvalPort: selectPort,
+    });
+    const selectResult = await selectLoop.run(refOf(start(coordinator, 'select it')));
+    assert.equal(selectResult.status, 'terminal');
+    if (selectResult.status === 'terminal') {
+      assert.equal(selectResult.run.terminalReason, 'UNSUPPORTED_ACTION');
+      assert.equal(selectResult.run.approvalCount, 0);
+    }
+    assert.equal(selectPort.calls.length, 0);
+  });
+
+  it('does not resume a superseded awaiting run', async () => {
+    const obs = observation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), obs),
+      answerStep('never', obs),
+    ]);
+    const executor = new FakeV3Executor([denied('DEFERRED_TO_EXECUTE')]);
+    const coordinator = new AgentRunCoordinator();
+    const approvalPort = new FakeApprovalPort(coordinator);
+    const loop = new SafeAgentLoop({
+      coordinator,
+      stepAgent,
+      interactionExecutor: executor,
+      approvalPort,
+    });
+    const run = start(coordinator);
+    const pending = loop.run(refOf(run));
+    await waitUntil(() => coordinator.getRun(run.runId)?.state === 'awaiting-approval');
+    const approvalId = approvalPort.lastApprovalId ?? '';
+    const newer = start(coordinator, 'newer task');
+    coordinator.notifyApprovalOutcome(approvalId, 'executed');
+    const result = await pending;
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'SUPERSEDED');
+    }
+    assert.equal(coordinator.getRun(newer.runId)?.state, 'running');
+    assert.equal(coordinator.getRun(newer.runId)?.modelStepCount, 0);
+    assert.equal(stepAgent.calls.length, 1);
+  });
+
+  it('cancels while awaiting approval without resuming later', async () => {
+    const controller = new AbortController();
+    const obs = observation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), obs),
+      answerStep('never', obs),
+    ]);
+    const executor = new FakeV3Executor([denied('DEFERRED_TO_EXECUTE')]);
+    const coordinator = new AgentRunCoordinator();
+    const approvalPort = new FakeApprovalPort(coordinator);
+    const loop = new SafeAgentLoop({
+      coordinator,
+      stepAgent,
+      interactionExecutor: executor,
+      approvalPort,
+    });
+    const run = start(coordinator);
+    const pending = loop.run(refOf(run), { signal: controller.signal });
+    await waitUntil(() => coordinator.getRun(run.runId)?.state === 'awaiting-approval');
+    const approvalId = approvalPort.lastApprovalId ?? '';
+    controller.abort();
+    const result = await pending;
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'USER_CANCELLED');
+    }
+    assertIgnoredOutcome(coordinator.notifyApprovalOutcome(approvalId, 'executed'));
+    assert.equal(coordinator.getRun(run.runId)?.terminalReason, 'USER_CANCELLED');
+    assert.equal(stepAgent.calls.length, 1);
+  });
+
+  it('blocks no-progress when the next proposal repeats the approved click', async () => {
+    const obs = observation({ document: { ...observation().document, revision: 'rev-1' } });
+    const click = boundClick('rev-1');
+    const stepAgent = new FakeStepAgent([
+      proposalStep(click, obs),
+      proposalStep(click, obs),
+      answerStep('late', obs),
+    ]);
+    const executor = new FakeV3Executor([denied('DEFERRED_TO_EXECUTE')]);
+    const coordinator = new AgentRunCoordinator();
+    const approvalPort = new FakeApprovalPort(coordinator);
+    const loop = new SafeAgentLoop({
+      coordinator,
+      stepAgent,
+      interactionExecutor: executor,
+      approvalPort,
+    });
+    const run = start(coordinator);
+    const pending = loop.run(refOf(run));
+    await waitUntil(() => coordinator.getRun(run.runId)?.state === 'awaiting-approval');
+    completeApprovedExecution(coordinator, approvalPort.lastApprovalId ?? '');
+    const result = await pending;
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'AGENT_LOOP_NO_PROGRESS');
+    }
+    assert.equal(executor.calls.length, 1);
+  });
+
+  it('does not put approval identifiers into trusted progress', async () => {
+    const obs = observation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), obs),
+      answerStep('Done', obs),
+    ]);
+    const executor = new FakeV3Executor([denied('DEFERRED_TO_EXECUTE')]);
+    const coordinator = new AgentRunCoordinator();
+    const approvalPort = new FakeApprovalPort(coordinator);
+    const loop = new SafeAgentLoop({
+      coordinator,
+      stepAgent,
+      interactionExecutor: executor,
+      approvalPort,
+    });
+    const run = start(coordinator);
+    const pending = loop.run(refOf(run));
+    await waitUntil(() => coordinator.getRun(run.runId)?.state === 'awaiting-approval');
+    completeApprovedExecution(coordinator, approvalPort.lastApprovalId ?? '');
+    await pending;
+    const progress = JSON.stringify(stepAgent.calls[1]?.options?.trustedProgress ?? []);
+    assert.match(progress, /approved-execution-succeeded/);
+    for (const needle of [
+      'appr-',
+      'approvalId',
+      'preparedActionId',
+      'executionId',
+      run.runId,
+    ]) {
+      assert.equal(progress.includes(needle), false, needle);
+    }
+  });
+});
+
+function assertIgnoredOutcome(result: { status: string }): void {
+  assert.equal(result.status, 'ignored');
+}

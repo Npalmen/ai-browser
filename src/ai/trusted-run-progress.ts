@@ -13,7 +13,7 @@ export type TrustedRunProgressEntry =
     }
   | {
       readonly kind: 'approved-execution-succeeded';
-      readonly pageChanged: boolean;
+      readonly pageChanged?: boolean;
     };
 
 const TRUSTED_PROGRESS_DISCLAIMER = [
@@ -41,7 +41,7 @@ export function serializeTrustedRunProgress(
 
 function summarizeTrustedProgressEntry(entry: TrustedRunProgressEntry): string {
   if (entry.kind === 'approved-execution-succeeded') {
-    return entry.pageChanged
+    return entry.pageChanged === true
       ? 'The previously presented consequential click was approved and executed successfully and the page changed.'
       : 'The previously presented consequential click was approved and executed successfully.';
   }

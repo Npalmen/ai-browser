@@ -679,6 +679,129 @@ describe('AgentRunCoordinator audit and lifecycle', () => {
   });
 });
 
+describe('AgentRunCoordinator approval waiters and trusted outcomes', () => {
+  it('wakes the exact waiter when executed and ignores a duplicate outcome', async () => {
+    const harness = createHarness();
+    const run = start(harness);
+    requireApplied(harness.coordinator.presentApproval(refOf(run), 'appr-1'));
+    const pending = harness.coordinator.waitForApprovalOutcome('appr-1', run.generation);
+    const first = requireApplied(harness.coordinator.notifyApprovalOutcome('appr-1', 'executed'));
+    assert.equal(first.state, 'running');
+    const waited = await pending;
+    assert.equal(waited.status, 'resolved');
+    if (waited.status === 'resolved') {
+      assert.equal(waited.snapshot.state, 'running');
+    }
+    assertIgnored(harness.coordinator.notifyApprovalOutcome('appr-1', 'stale'));
+    assert.equal(harness.coordinator.getRun(run.runId)?.state, 'running');
+  });
+
+  it('maps reject, expiry, stale, failed, and unknown outcomes', () => {
+    const cases: Array<{
+      outcome: 'rejected' | 'expired' | 'stale' | 'failed' | 'execution-state-unknown';
+      state: AgentRunSnapshot['state'];
+      reason: string;
+    }> = [
+      { outcome: 'rejected', state: 'blocked', reason: 'APPROVAL_REJECTED' },
+      { outcome: 'expired', state: 'blocked', reason: 'APPROVAL_EXPIRED' },
+      { outcome: 'stale', state: 'blocked', reason: 'ACTION_STALE' },
+      { outcome: 'failed', state: 'failed', reason: 'ACTION_FAILED' },
+      {
+        outcome: 'execution-state-unknown',
+        state: 'execution-state-unknown',
+        reason: 'EXECUTION_STATE_UNKNOWN',
+      },
+    ];
+    for (const testCase of cases) {
+      const harness = createHarness();
+      const run = start(harness);
+      requireApplied(harness.coordinator.presentApproval(refOf(run), 'appr-1'));
+      const snapshot = requireApplied(
+        harness.coordinator.notifyApprovalOutcome('appr-1', testCase.outcome),
+      );
+      assert.equal(snapshot.state, testCase.state);
+      assert.equal(snapshot.terminalReason, testCase.reason);
+      assertIgnored(harness.coordinator.notifyApprovalOutcome('appr-1', 'executed'));
+    }
+  });
+
+  it('does not resume a superseded run from a late executed outcome', async () => {
+    const harness = createHarness();
+    const first = start(harness);
+    requireApplied(harness.coordinator.presentApproval(refOf(first), 'appr-old'));
+    const pending = harness.coordinator.waitForApprovalOutcome('appr-old', first.generation);
+    const second = start(harness, 'tab-1', 'newer');
+    const waited = await pending;
+    assert.equal(waited.status, 'resolved');
+    if (waited.status === 'resolved') {
+      assert.equal(waited.snapshot.terminalReason, 'SUPERSEDED');
+    }
+    assertIgnored(harness.coordinator.notifyApprovalOutcome('appr-old', 'executed'));
+    assert.equal(harness.coordinator.getRun(first.runId)?.state, 'cancelled');
+    assert.equal(harness.coordinator.getRun(second.runId)?.state, 'running');
+    assert.equal(harness.coordinator.getRun(second.runId)?.actionAttemptCount, 0);
+  });
+
+  it('beginApprovedExecution proceeds only for the correlated awaiting run', () => {
+    const harness = createHarness();
+    assert.equal(harness.coordinator.beginApprovedExecution('missing'), 'unrelated');
+    const run = start(harness);
+    requireApplied(harness.coordinator.presentApproval(refOf(run), 'appr-1'));
+    assert.equal(harness.coordinator.beginApprovedExecution('appr-1'), 'proceed');
+    assert.equal(harness.coordinator.getRun(run.runId)?.actionAttemptCount, 1);
+    assert.equal(harness.coordinator.getRun(run.runId)?.state, 'awaiting-approval');
+
+    const blockedHarness = createHarness();
+    const blockedRun = start(blockedHarness);
+    for (let i = 0; i < MAX_AGENT_LOOP_ACTION_ATTEMPTS - 1; i += 1) {
+      requireApplied(blockedHarness.coordinator.beginActionAttempt(refOf(blockedRun)));
+    }
+    requireApplied(blockedHarness.coordinator.presentApproval(refOf(blockedRun), 'appr-full'));
+    requireApplied(blockedHarness.coordinator.beginActionAttempt(refOf(blockedRun)));
+    assert.equal(blockedHarness.coordinator.beginApprovedExecution('appr-full'), 'blocked');
+    assert.equal(blockedHarness.coordinator.getRun(blockedRun.runId)?.state, 'blocked');
+    assert.equal(
+      blockedHarness.coordinator.getRun(blockedRun.runId)?.terminalReason,
+      'STEP_LIMIT_REACHED',
+    );
+    assert.equal(
+      blockedHarness.coordinator.getRun(blockedRun.runId)?.actionAttemptCount,
+      MAX_AGENT_LOOP_ACTION_ATTEMPTS,
+    );
+  });
+
+  it('returns ignored from beginApprovedExecution after the run is superseded', () => {
+    const harness = createHarness();
+    const first = start(harness);
+    requireApplied(harness.coordinator.presentApproval(refOf(first), 'appr-1'));
+    start(harness, 'tab-1', 'newer');
+    assert.equal(harness.coordinator.beginApprovedExecution('appr-1'), 'ignored');
+  });
+
+  it('waitForApprovalOutcome ignores unknown or generation-mismatched approvals', async () => {
+    const harness = createHarness();
+    const run = start(harness);
+    requireApplied(harness.coordinator.presentApproval(refOf(run), 'appr-1'));
+    const ignoredUnknown = await harness.coordinator.waitForApprovalOutcome('missing', run.generation);
+    const ignoredGeneration = await harness.coordinator.waitForApprovalOutcome('appr-1', run.generation + 1);
+    assert.equal(ignoredUnknown.status, 'ignored');
+    assert.equal(ignoredGeneration.status, 'ignored');
+  });
+
+  it('resolves a waiter when the awaiting run is cancelled', async () => {
+    const harness = createHarness();
+    const run = start(harness);
+    requireApplied(harness.coordinator.presentApproval(refOf(run), 'appr-1'));
+    const pending = harness.coordinator.waitForApprovalOutcome('appr-1', run.generation);
+    requireApplied(harness.coordinator.cancelRun(refOf(run), 'USER_CANCELLED'));
+    const waited = await pending;
+    assert.equal(waited.status, 'resolved');
+    if (waited.status === 'resolved') {
+      assert.equal(waited.snapshot.terminalReason, 'USER_CANCELLED');
+    }
+  });
+});
+
 describe('AgentRunCoordinator source isolation', () => {
   it('does not import browser, approval, model, Electron, React, or IPC surfaces', () => {
     const dir = path.join(__dirname);

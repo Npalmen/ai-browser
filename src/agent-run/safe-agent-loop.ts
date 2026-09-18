@@ -12,6 +12,7 @@ import type { DocumentRevision, PageObservation, TargetId } from '../shared/obse
 import { ObservationError, type ObservationErrorCode } from '../shared/observation-types';
 import { fingerprintBoundProposal } from './bound-proposal-fingerprint';
 import type { AgentRunCoordinator } from './agent-run-coordinator';
+import type { AgentRunApprovalPort } from './approval-pause-port';
 import {
   isTerminalAgentRunState,
   type AgentRunBlockedReason,
@@ -32,6 +33,7 @@ export interface SafeAgentLoopDependencies {
   coordinator: AgentRunCoordinator;
   stepAgent: Pick<InteractiveStepAgent, 'step'>;
   interactionExecutor: SafeV3InteractionExecutionPort;
+  approvalPort?: AgentRunApprovalPort;
 }
 
 export interface SafeAgentLoopOptions {
@@ -70,11 +72,13 @@ export class SafeAgentLoop {
   private readonly coordinator: AgentRunCoordinator;
   private readonly stepAgent: Pick<InteractiveStepAgent, 'step'>;
   private readonly interactionExecutor: SafeV3InteractionExecutionPort;
+  private readonly approvalPort: AgentRunApprovalPort | undefined;
 
   constructor(deps: SafeAgentLoopDependencies) {
     this.coordinator = deps.coordinator;
     this.stepAgent = deps.stepAgent;
     this.interactionExecutor = deps.interactionExecutor;
+    this.approvalPort = deps.approvalPort;
   }
 
   async run(ref: AgentRunRef, options: SafeAgentLoopOptions = {}): Promise<SafeAgentLoopResult> {
@@ -173,7 +177,13 @@ export class SafeAgentLoop {
         return { status: 'ignored' };
       }
 
-      const actionOutcome = this.handleInteractionResult(ref, step, result, trustedProgress);
+      const actionOutcome = await this.handleInteractionResult(
+        ref,
+        step,
+        result,
+        trustedProgress,
+        options.signal,
+      );
       if (actionOutcome !== undefined) {
         return actionOutcome;
       }
@@ -248,17 +258,18 @@ export class SafeAgentLoop {
     return this.failTerminal(ref, 'ACTION_FAILED');
   }
 
-  private handleInteractionResult(
+  private async handleInteractionResult(
     ref: AgentRunRef,
     step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'proposal' }>,
     result: InteractionResult,
     trustedProgress: TrustedRunProgressEntry[],
-  ): SafeAgentLoopResult | undefined {
+    signal?: AbortSignal,
+  ): Promise<SafeAgentLoopResult | undefined> {
     if (result.status === 'succeeded') {
       return this.handleSucceededAction(ref, step, result, trustedProgress);
     }
     if (result.status === 'denied') {
-      return this.handleDeniedAction(ref, result.errorCode);
+      return this.handleDeniedAction(ref, step, result.errorCode, trustedProgress, signal);
     }
     return this.handleFailedAction(ref, result.errorCode);
   }
@@ -296,17 +307,127 @@ export class SafeAgentLoop {
     return undefined;
   }
 
-  private handleDeniedAction(
+  private async handleDeniedAction(
     ref: AgentRunRef,
-    errorCode?: InteractionErrorCode,
-  ): SafeAgentLoopResult {
-    if (errorCode === 'DEFERRED_TO_EXECUTE' || errorCode === 'UNSUPPORTED_TARGET') {
+    step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'proposal' }>,
+    errorCode: InteractionErrorCode | undefined,
+    trustedProgress: TrustedRunProgressEntry[],
+    signal?: AbortSignal,
+  ): Promise<SafeAgentLoopResult | undefined> {
+    if (errorCode === 'DEFERRED_TO_EXECUTE') {
+      return this.handleDeferredExecute(ref, step, trustedProgress, signal);
+    }
+    if (errorCode === 'UNSUPPORTED_TARGET') {
       return this.blockTerminal(ref, 'UNSUPPORTED_ACTION');
     }
     if (isPolicyDenial(errorCode)) {
       return this.blockTerminal(ref, 'POLICY_BLOCKED');
     }
     return this.blockTerminal(ref, 'POLICY_BLOCKED');
+  }
+
+  private async handleDeferredExecute(
+    ref: AgentRunRef,
+    step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'proposal' }>,
+    trustedProgress: TrustedRunProgressEntry[],
+    signal?: AbortSignal,
+  ): Promise<SafeAgentLoopResult | undefined> {
+    if (this.approvalPort === undefined || step.proposal.kind !== 'click') {
+      return this.blockTerminal(ref, 'UNSUPPORTED_ACTION');
+    }
+    if (!this.coordinator.isCurrentRun(ref)) {
+      return { status: 'ignored' };
+    }
+    if (signal?.aborted) {
+      return this.cancelIfAborted(ref, signal) ?? { status: 'ignored' };
+    }
+    if (!this.coordinator.canPrepareAnotherAction(ref)) {
+      return this.blockTerminal(ref, 'STEP_LIMIT_REACHED');
+    }
+
+    let prepared;
+    try {
+      prepared = this.approvalPort.prepareAndPresent({
+        ref,
+        proposal: step.proposal,
+        observation: step.observation,
+        signal,
+      });
+    } catch {
+      return this.failTerminal(ref, 'ACTION_FAILED');
+    }
+
+    if (prepared.status === 'awaiting-approval') {
+      return this.waitForApprovedResume(
+        ref,
+        step,
+        prepared.approvalId,
+        trustedProgress,
+        signal,
+      );
+    }
+    if (prepared.status === 'expired') {
+      return this.blockTerminal(ref, 'APPROVAL_EXPIRED');
+    }
+    if (prepared.status === 'stale') {
+      return this.blockTerminal(ref, 'ACTION_STALE');
+    }
+    if (prepared.status === 'failed') {
+      return this.failTerminal(ref, 'ACTION_FAILED');
+    }
+
+    const inspected = this.coordinator.inspectRun(ref);
+    if (inspected.status === 'terminal' || inspected.status === 'superseded') {
+      return { status: 'terminal', run: inspected.snapshot };
+    }
+    return { status: 'ignored' };
+  }
+
+  private async waitForApprovedResume(
+    ref: AgentRunRef,
+    step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'proposal' }>,
+    approvalId: string,
+    trustedProgress: TrustedRunProgressEntry[],
+    signal?: AbortSignal,
+  ): Promise<SafeAgentLoopResult | undefined> {
+    const onAbort = () => {
+      this.cancelIfAborted(ref, signal);
+    };
+    signal?.addEventListener('abort', onAbort);
+    try {
+      if (signal?.aborted) {
+        const cancelled = this.cancelIfAborted(ref, signal);
+        if (cancelled !== undefined) {
+          return cancelled;
+        }
+      }
+
+      const waited = await this.coordinator.waitForApprovalOutcome(approvalId, ref.generation);
+      if (waited.status === 'ignored') {
+        return { status: 'ignored' };
+      }
+      if (waited.snapshot.state === 'running') {
+        if (!this.coordinator.isCurrentRun(ref)) {
+          return { status: 'ignored' };
+        }
+        const fingerprint = fingerprintBoundProposal(step.proposal);
+        const recorded = this.coordinator.recordSuccessfulActionFingerprint(ref, fingerprint);
+        const fingerprintStop = this.terminalFromMutation(recorded);
+        if (fingerprintStop !== undefined) {
+          return fingerprintStop;
+        }
+        trustedProgress.push({
+          kind: 'approved-execution-succeeded',
+        });
+        return undefined;
+      }
+      if (isTerminalAgentRunState(waited.snapshot.state)) {
+        return { status: 'terminal', run: waited.snapshot };
+      }
+      return { status: 'ignored' };
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+    }
   }
 
   private handleFailedAction(

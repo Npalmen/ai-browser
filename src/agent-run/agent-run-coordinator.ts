@@ -7,6 +7,11 @@ import {
   type AgentRunAuditSink,
 } from './agent-run-audit';
 import { AgentRunError } from './agent-run-errors';
+import type {
+  AgentRunApprovalWaitResult,
+  BeginApprovedExecutionResult,
+  TrustedAgentApprovalOutcome,
+} from './approval-outcome';
 import {
   isTerminalAgentRunState,
   MAX_AGENT_LOOP_ACTION_ATTEMPTS,
@@ -46,6 +51,13 @@ interface InternalAgentRun {
   pendingApprovalId?: string;
 }
 
+interface ApprovalWaiter {
+  readonly ref: AgentRunRef;
+  readonly promise: Promise<AgentRunApprovalWaitResult>;
+  readonly resolve: (result: AgentRunApprovalWaitResult) => void;
+  settled?: AgentRunApprovalWaitResult;
+}
+
 export class AgentRunCoordinator {
   private readonly now: () => number;
   private readonly generateRunId: () => string;
@@ -55,6 +67,7 @@ export class AgentRunCoordinator {
   private readonly activeByTab = new Map<TabId, AgentRunId>();
   private readonly tabGenerations = new Map<TabId, number>();
   private readonly approvalBindings = new Map<string, AgentRunRef>();
+  private readonly approvalWaiters = new Map<string, ApprovalWaiter>();
 
   constructor(deps: AgentRunCoordinatorDependencies = {}) {
     this.now = deps.now ?? Date.now;
@@ -240,7 +253,9 @@ export class AgentRunCoordinator {
     record.approvalCount += 1;
     record.state = 'awaiting-approval';
     record.pendingApprovalId = validatedApprovalId;
-    this.approvalBindings.set(validatedApprovalId, toAgentRunRef(toSnapshot(record)));
+    const boundRef = toAgentRunRef(toSnapshot(record));
+    this.approvalBindings.set(validatedApprovalId, boundRef);
+    this.installWaiter(validatedApprovalId, boundRef);
     this.audit('state-transition', record);
     this.audit('approval-presented', record);
     return applied(record);
@@ -269,7 +284,100 @@ export class AgentRunCoordinator {
     this.clearApprovalCorrelation(record);
     record.state = 'running';
     this.audit('state-transition', record);
-    return applied(record);
+    const snapshot = toSnapshot(record);
+    this.settleWaiter(approvalId, { status: 'resolved', snapshot });
+    return { status: 'applied', snapshot };
+  }
+
+  beginApprovedExecution(approvalId: string): BeginApprovedExecutionResult {
+    if (typeof approvalId !== 'string' || approvalId.trim().length === 0) {
+      return 'unrelated';
+    }
+    const binding = this.approvalBindings.get(approvalId);
+    if (binding === undefined) {
+      return this.approvalWaiters.has(approvalId) ? 'ignored' : 'unrelated';
+    }
+    const record = this.byRunId.get(binding.runId);
+    if (
+      record === undefined ||
+      record.tabId !== binding.tabId ||
+      record.generation !== binding.generation ||
+      this.tabGenerations.get(record.tabId) !== record.generation
+    ) {
+      return 'ignored';
+    }
+    if (isTerminalAgentRunState(record.state) || this.activeByTab.get(record.tabId) !== record.runId) {
+      return 'ignored';
+    }
+    if (record.state !== 'awaiting-approval' || record.pendingApprovalId !== approvalId) {
+      return 'ignored';
+    }
+    if (record.actionAttemptCount >= MAX_AGENT_LOOP_ACTION_ATTEMPTS) {
+      this.blockForBudget(record);
+      return 'blocked';
+    }
+    record.actionAttemptCount += 1;
+    this.audit('action-attempt-started', record);
+    return 'proceed';
+  }
+
+  notifyApprovalOutcome(
+    approvalId: string,
+    outcome: TrustedAgentApprovalOutcome,
+  ): AgentRunMutationResult {
+    if (typeof approvalId !== 'string' || approvalId.trim().length === 0) {
+      return ignored();
+    }
+    const binding = this.approvalBindings.get(approvalId);
+    if (binding === undefined) {
+      return ignored();
+    }
+    const record = this.byRunId.get(binding.runId);
+    if (
+      record === undefined ||
+      record.tabId !== binding.tabId ||
+      record.generation !== binding.generation ||
+      this.tabGenerations.get(record.tabId) !== record.generation
+    ) {
+      return ignored();
+    }
+    if (isTerminalAgentRunState(record.state) || this.activeByTab.get(record.tabId) !== record.runId) {
+      return ignored();
+    }
+    if (record.state !== 'awaiting-approval' || record.pendingApprovalId !== approvalId) {
+      return ignored();
+    }
+
+    switch (outcome) {
+      case 'executed':
+        return this.resumeAfterApprovedExecution(approvalId, record.generation);
+      case 'rejected':
+        return this.transitionRecord(record, 'blocked', 'APPROVAL_REJECTED');
+      case 'expired':
+        return this.transitionRecord(record, 'blocked', 'APPROVAL_EXPIRED');
+      case 'stale':
+        return this.transitionRecord(record, 'blocked', 'ACTION_STALE');
+      case 'failed':
+        return this.transitionRecord(record, 'failed', 'ACTION_FAILED');
+      case 'execution-state-unknown':
+        return this.transitionRecord(record, 'execution-state-unknown', 'EXECUTION_STATE_UNKNOWN');
+      default:
+        return ignored();
+    }
+  }
+
+  waitForApprovalOutcome(
+    approvalId: string,
+    expectedGeneration: number,
+  ): Promise<AgentRunApprovalWaitResult> {
+    if (typeof approvalId !== 'string' || approvalId.trim().length === 0) {
+      return Promise.resolve({ status: 'ignored' });
+    }
+    const waiter = this.approvalWaiters.get(approvalId);
+    if (waiter === undefined || waiter.ref.generation !== expectedGeneration) {
+      return Promise.resolve({ status: 'ignored' });
+    }
+    return waiter.promise;
   }
 
   recordSuccessfulActionFingerprint(
@@ -322,10 +430,14 @@ export class AgentRunCoordinator {
   }
 
   clearAll(): void {
+    for (const waiter of this.approvalWaiters.values()) {
+      this.finishWaiter(waiter, { status: 'ignored' });
+    }
     this.byRunId.clear();
     this.activeByTab.clear();
     this.tabGenerations.clear();
     this.approvalBindings.clear();
+    this.approvalWaiters.clear();
   }
 
   private supersedeActiveRun(tabId: TabId): void {
@@ -370,10 +482,13 @@ export class AgentRunCoordinator {
       }
       record.terminalReason = reason;
       this.detachActive(record);
+      const approvalId = record.pendingApprovalId;
       this.clearApprovalCorrelation(record);
       this.audit('state-transition', record);
       this.audit('run-terminal', record);
-      return applied(record);
+      const snapshot = toSnapshot(record);
+      this.settleWaiter(approvalId, { status: 'resolved', snapshot });
+      return { status: 'applied', snapshot };
     }
     if (reason !== undefined) {
       record.terminalReason = undefined;
@@ -458,6 +573,40 @@ export class AgentRunCoordinator {
       this.approvalBindings.delete(approvalId);
     }
     record.pendingApprovalId = undefined;
+  }
+
+  private installWaiter(approvalId: string, ref: AgentRunRef): void {
+    const existing = this.approvalWaiters.get(approvalId);
+    if (existing !== undefined) {
+      this.finishWaiter(existing, { status: 'ignored' });
+    }
+    let resolve!: (result: AgentRunApprovalWaitResult) => void;
+    const promise = new Promise<AgentRunApprovalWaitResult>((res) => {
+      resolve = res;
+    });
+    this.approvalWaiters.set(approvalId, { ref, promise, resolve });
+  }
+
+  private settleWaiter(
+    approvalId: string | undefined,
+    result: AgentRunApprovalWaitResult,
+  ): void {
+    if (approvalId === undefined) {
+      return;
+    }
+    const waiter = this.approvalWaiters.get(approvalId);
+    if (waiter === undefined) {
+      return;
+    }
+    this.finishWaiter(waiter, result);
+  }
+
+  private finishWaiter(waiter: ApprovalWaiter, result: AgentRunApprovalWaitResult): void {
+    if (waiter.settled !== undefined) {
+      return;
+    }
+    waiter.settled = result;
+    waiter.resolve(result);
   }
 
   private audit(eventType: AgentRunAuditEventType, record: InternalAgentRun): void {
