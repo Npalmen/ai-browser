@@ -7,7 +7,7 @@ import type { AgentModelOutput } from './interaction-output-schema';
 import { MODEL_CATALOG } from './model-catalog';
 import { ModelError, type ModelErrorCode } from './model-errors';
 import type { ModelRequest } from './model-types';
-import type { InteractionExecutionPort } from './interactive-agent';
+import type { InteractionExecutionPort } from './interaction-execution-port';
 import type { PageState, TabId } from '../shared/browser-types';
 import { InteractionError } from '../shared/interaction-errors';
 import type {
@@ -767,5 +767,47 @@ describe('InteractiveAgent', () => {
     for (const token of ['approvalId', 'preparedActionId', 'executionId', 'ExecuteGrant']) {
       assert.equal(JSON.stringify(result).includes(token), false, token);
     }
+  });
+
+  it('clears conversation when observation reports TAB_NOT_FOUND', async () => {
+    let calls = 0;
+    const pages = new FakeObservationSource(async () => {
+      calls += 1;
+      if (calls === 2) {
+        throw new ObservationError('TAB_NOT_FOUND', 'gone');
+      }
+      return observation();
+    });
+    const { agent, runtime } = agentOf({ pages });
+    await agent.interact({ tabId: TAB, instruction: 'Remember this?' });
+    await assert.rejects(
+      () => agent.interact({ tabId: TAB, instruction: 'Still there?' }),
+      (error: unknown) =>
+        error instanceof ObservationError && error.code === 'TAB_NOT_FOUND',
+    );
+    await agent.interact({ tabId: TAB, instruction: 'New tab life?' });
+    assert.equal(JSON.stringify(runtime.requests[1]?.messages).includes('Remember this?'), false);
+  });
+
+  it('does not carry prior-revision conversation into a new document revision', async () => {
+    const pages = new FakeObservationSource(async (_tabId, _options, callIndex) =>
+      observation({
+        observationId: `obs-${callIndex}`,
+        document: {
+          revision: callIndex === 1 ? 'rev-a' : 'rev-b',
+          url: 'https://example.com/page',
+          title: 'Example page',
+          loading: false,
+          mainFrameId: 'frame-1',
+        },
+      }),
+    );
+    const { agent, runtime } = agentOf({ pages });
+    await agent.interact({ tabId: TAB, instruction: 'First revision question?' });
+    await agent.interact({ tabId: TAB, instruction: 'Second revision question?' });
+    assert.equal(
+      JSON.stringify(runtime.requests[1]?.messages).includes('First revision question?'),
+      false,
+    );
   });
 });

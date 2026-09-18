@@ -87,6 +87,7 @@ export function buildInteractiveModelMessages(input: {
   exportDecision: ModelExportDecision;
   screenshot?: { mimeType: 'image/jpeg'; data: string };
   priorConversation?: string;
+  trustedProgress?: string;
 }): ModelMessage[] {
   if (!input.exportDecision.structuredExportAllowed) {
     throw new ModelError(
@@ -113,6 +114,13 @@ export function buildInteractiveModelMessages(input: {
       content: [{ type: 'text', text: INTERACTION_SYSTEM_PROMPT }],
     },
   ];
+
+  if (input.trustedProgress) {
+    messages.push({
+      role: 'system',
+      content: [{ type: 'text', text: input.trustedProgress }],
+    });
+  }
 
   if (input.priorConversation) {
     messages.push({

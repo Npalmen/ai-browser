@@ -12,7 +12,7 @@ import type {
   InteractionResult,
 } from '../shared/interaction-types';
 import type { ObservationNode, PageObservation } from '../shared/observation-types';
-import type { InteractionExecutionPort, InteractiveExecutionResult } from '../ai/interactive-agent';
+import type { InteractionExecutionPort, InteractiveExecutionResult } from '../ai/interaction-execution-port';
 import type { PageState } from '../shared/browser-types';
 
 function pageState(): PageState {

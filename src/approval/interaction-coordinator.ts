@@ -1,4 +1,4 @@
-import type { InteractionExecutionPort, InteractiveExecutionResult } from '../ai/interactive-agent';
+import type { InteractionExecutionPort, InteractiveExecutionResult } from '../ai/interaction-execution-port';
 import type { PreparedAction } from '../shared/approval-types';
 import { InteractionError } from '../shared/interaction-errors';
 import type { BoundInteractionProposal, InteractionResult } from '../shared/interaction-types';
