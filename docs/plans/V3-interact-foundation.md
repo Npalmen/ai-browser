@@ -1,10 +1,6 @@
 # Plan: V3 — Permissioned INTERACT foundation
 
-**Status:** locked
-
-Post-closure hardening in progress:
-native select keyboard execution must preserve exact `optionTargetId` identity.
-
+**Status:** complete  
 **Explicit reference:** Implementation tasks must cite `docs/plans/V3-interact-foundation.md` to treat this file as authoritative.
 
 Authoritative architecture:
@@ -588,16 +584,19 @@ b8467b137d037e3f332876d51669fc6656e27a20
 
 Phase 6 acceptance:
 0e1899260951514fc2f545210ff787f19be69319
+
+Post-closure native select exact-target hardening:
+aaa8ceb7a087c5c5ccec44d8b853dc4f2c7a6270
 ```
 
 ### Closure verification (2026-09-18)
 
 ```text
 npm run typecheck                          PASS
-npm run test:ai                            PASS (201 tests)
-npx tsx --test src/interaction/*.test.ts   PASS (75 tests)
+npm run test:ai                            PASS (202 tests)
+npx tsx --test src/interaction/*.test.ts   PASS (87 tests)
 npm run test:observation                   PASS (40 tests)
 npm run test:fixture                       PASS (5 tests)
 npm run test:v2-acceptance                 PASS (29 tests + [v2-electron-observation] PASS)
-npm run test:v3-acceptance                 PASS (27 tests + [v3-electron-interaction] PASS)
+npm run test:v3-acceptance                 PASS (29 tests + [v3-electron-interaction] PASS)
 ```

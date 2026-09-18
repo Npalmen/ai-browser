@@ -384,9 +384,9 @@ Sequence:
 
 V1 observation does **not** export arbitrary HTML `value` attributes. The attribute allowlist is `type`, `href`, `placeholder`, `autocomplete`, `alt`. Do not assume `<option value>` is present. Do not add `value` to the generic attribute allowlist. Do not query the live DOM with `Runtime.evaluate` to discover options.
 
-**Decision: Approach A — bounded select-specific option catalog.**
+**Decision: Approach A — bounded select-specific option catalog for authorization, plus live backend-identity preflight for execution.**
 
-V3 may add a **select-only** optional catalog on native `<select>` nodes, derived from the existing AX + DOM snapshot already in the observation pipeline (no new CDP domain, no page-world JS):
+V3 may add a **select-only** optional catalog on native `<select>` nodes, derived from the existing AX + DOM snapshot already in the observation pipeline (no page-world JS):
 
 ```ts
 nativeOptions?: ReadonlyArray<{
@@ -396,14 +396,45 @@ nativeOptions?: ReadonlyArray<{
 }>
 ```
 
-Rules:
+Authorization rules (unchanged):
 
 - Emit `nativeOptions` only on `tag === 'select'` (or equivalent native select role).
 - Include an option only when it has a reliable `targetId` (backend DOM join) and a usable accessible `name`.
 - Compact export may include `nativeOptions` on `ModelPageNode` so the model can choose `optionTargetId`. This is not a generic observation dump and does not add `tabId` / `observationId` to V2 `ModelPageContext`.
 - Model proposal identifies the option by `optionTargetId` from that catalog. Both `targetId` and `optionTargetId` must be in `exportedTargetIds`.
 - If the catalog cannot be built, is empty, truncated such that the requested option is absent, or the option cannot be associated with that select → `UNSUPPORTED_TARGET`.
-- Executor: click the select if needed, then click the granted option’s validated center. No HTML-value lookup. No fuzzy name matching outside the catalog.
+- Policy authorizes that exact `optionTargetId`. It does not authorize “whatever option occupies catalog index N”.
+
+**Why option box-model click is not the V3 mechanism:** Chromium native option popups are often not reliably clickable via `DOM.getBoxModel(option backendNodeId)` + mouse events on the attached session. V3 therefore uses bounded keyboard navigation after focusing/opening the select.
+
+**Why filtered `nativeOptions` indexes are not mechanical authority:** the model-visible catalog may omit options (empty/redacted names, `maxEmittedNodes`, `maxNativeSelectOptionsPerSelect`, interactive context budgeting). Catalog-array position is therefore not a trustworthy keyboard position. Using it can grant option C and mechanically select B.
+
+**Locked execution invariant:**
+
+```text
+optionTargetId
+→ exact trusted TargetRecord/backendNodeId
+→ live read-only select preflight (AX + DOM snapshot)
+→ verify that backend option still belongs to that exact select
+→ derive the current uniquely selected option from live state
+→ derive keyboard steps from the complete live option sequence
+→ bounded ArrowUp/ArrowDown + Enter
+```
+
+The model still supplies only `targetId` and `optionTargetId`. The model must never supply option index, keyboard delta, selected index, `backendNodeId`, `frameId`, or DOM position.
+
+Live preflight uses backend identity only. No option-name matching, HTML `value` matching, CSS selectors, coordinates, or nearest-option recovery.
+
+Supported V3 baseline: simple enabled single-select whose options are direct children of the `<select>`. Fail closed (`UNSUPPORTED_TARGET`, `TARGET_NOT_FOUND`, or `TARGET_STALE` as appropriate) for:
+
+- `<select multiple>`
+- no uniquely selected starting option (never default start index to 0)
+- optgroup / nested option structures
+- disabled options (Arrow key skipping is not assumed)
+- target option removed or reassociated to another select
+- required keyboard traversal beyond `MAX_NATIVE_SELECT_KEY_STEPS` (50)
+
+Policy remains semantic. Live preflight answers only: “Can I still mechanically select the exact already-authorized option?”
 
 #### 6.5 Scroll
 
@@ -580,12 +611,16 @@ Adapter errors map to `AdapterInteractionErrorCode`; executor maps to product `I
 **V3 interaction allowlist (closed):**
 
 ```text
-Page.getFrameTree              — document identity preflight
-DOM.getBoxModel                — bounds validation via backendNodeId
-Input.dispatchMouseEvent       — click, wheel scroll
-Input.dispatchKeyEvent         — bounded editing keys only (modifiers + A, Backspace, Delete, Home, End, PageUp, PageDown)
-Input.insertText               — replace typing
+Page.getFrameTree                 — document identity preflight
+DOM.getBoxModel                   — bounds validation via backendNodeId
+Accessibility.getFullAXTree       — read-only native-select live preflight
+DOMSnapshot.captureSnapshot       — read-only native-select live preflight
+Input.dispatchMouseEvent          — click, wheel scroll
+Input.dispatchKeyEvent            — bounded editing keys and native-select arrows/Enter
+Input.insertText                  — replace typing
 ```
+
+`Accessibility.getFullAXTree` and `DOMSnapshot.captureSnapshot` are the same read-only observation commands already used by the trusted observation pipeline. They were added to the interaction client only for exact native-select live preflight, not as a generic CDP expansion.
 
 `DOM.getBoxModel` accepts `backendNodeId`. V3 does not need a page-world `objectId`, so **`DOM.resolveNode` is not on the allowlist.** Do not add it “in case”.
 
@@ -705,7 +740,7 @@ No unresolved conflicts with ADR-001–003.
 
 ## Revisit if
 
-- Native `<select>` cannot be operated from the bounded option catalog without `Runtime.evaluate` — requires a new ADR, not a silent CDP widen.
+- Native `<select>` exact-option identity cannot be proven from live AX + DOM snapshot on the attached session — requires a new ADR, not `Runtime.evaluate`, page-world JS, or fuzzy option matching.
 - Center-click typing is insufficient for required accessible controls — reassess with user-testing, not arbitrary JS.
 - Product requires multi-step combobox interaction within V3 — would violate one-action boundary; defer or amend milestone.
 - Cross-origin / OOPIF interaction becomes product-critical — new ADR with an explicit `Target.*` allowlist; not implied by V3.
