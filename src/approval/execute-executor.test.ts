@@ -12,7 +12,11 @@ import type { ExecuteGrant } from '../shared/approval-types';
 import { InteractionError } from '../shared/interaction-errors';
 import type { PageObservation } from '../shared/observation-types';
 import { ApprovalAuditRecorder } from './approval-audit-recorder';
-import { InMemoryApprovalAuditSink, type ApprovalAuditEvent } from './approval-audit';
+import {
+  InMemoryApprovalAuditSink,
+  type ApprovalAuditEvent,
+  type ApprovalAuditSink,
+} from './approval-audit';
 import { ApprovalManager } from './approval-manager';
 import { ExecuteExecutor } from './execute-executor';
 
@@ -167,7 +171,23 @@ function createFakeAdapter(options: {
   };
 }
 
-function createHarness(adapter: BrowserAdapter, registry = new TargetRegistry()) {
+class ThrowingAuditSink implements ApprovalAuditSink {
+  append(): void {
+    throw new Error('audit sink unavailable');
+  }
+
+  getEvents(): ReadonlyArray<ApprovalAuditEvent> {
+    return Object.freeze([]);
+  }
+
+  clear(): void {}
+}
+
+function createHarness(
+  adapter: BrowserAdapter,
+  registry = new TargetRegistry(),
+  audit: ApprovalAuditSink = new InMemoryApprovalAuditSink(),
+) {
   const clock = { now: 1_000 };
   const manager = new ApprovalManager({
     now: () => clock.now,
@@ -175,7 +195,6 @@ function createHarness(adapter: BrowserAdapter, registry = new TargetRegistry())
     generateApprovalId: () => 'appr-1',
     generateExecutionId: () => 'exec-1',
   });
-  const audit = new InMemoryApprovalAuditSink();
   const auditRecorder = new ApprovalAuditRecorder({
     manager,
     audit,
@@ -618,6 +637,123 @@ describe('ExecuteExecutor', () => {
       executor.execute(Object.freeze({ ...grant, targetId: 'forged-target' })),
     );
     assert.deepEqual(eventTypes(audit.getEvents()), []);
+  });
+
+  it('still executes exactly once when grant-issued audit append throws', async () => {
+    const fake = createFakeAdapter();
+    const registry = new TargetRegistry();
+    registry.replaceObservation('tab-1', 'obs-1', [targetRecord()]);
+    const { executor, manager, grant } = createHarness(fake.adapter, registry, new ThrowingAuditSink());
+
+    const result = await executor.execute(grant);
+    assert.equal(result.status, 'executed');
+    assert.equal(fake.counts.click, 1);
+    assert.equal(fake.counts.hook, 1);
+    assert.equal(fake.counts.observePage, 1);
+    assert.deepEqual(snapshotFacts(manager, grant.approvalId), {
+      state: 'executed',
+      grantIssued: true,
+      grantClaimed: true,
+      adapterPrimitiveInvoked: true,
+      postObservationSucceeded: true,
+      executionId: 'exec-1',
+    });
+
+    await assert.rejects(
+      () => executor.execute(grant),
+      (error: unknown) => {
+        assert.ok(error instanceof ApprovalError);
+        assert.equal(error.code, 'INVALID_APPROVAL_TRANSITION');
+        return true;
+      },
+    );
+    assert.equal(fake.counts.click, 1);
+    assert.equal(fake.counts.observePage, 1);
+    assert.equal(manager.getByApprovalId(grant.approvalId)?.state, 'executed');
+  });
+
+  it('does not leave a claimed grant reusable when grant-issued audit throws', async () => {
+    const fake = createFakeAdapter();
+    const registry = new TargetRegistry();
+    registry.replaceObservation('tab-1', 'obs-1', [targetRecord()]);
+    const { executor, manager, grant } = createHarness(fake.adapter, registry, new ThrowingAuditSink());
+
+    await assert.doesNotReject(() => executor.execute(grant));
+    assert.notEqual(manager.getByApprovalId(grant.approvalId)?.state, 'executing');
+    assert.equal(snapshotFacts(manager, grant.approvalId).adapterPrimitiveInvoked, true);
+
+    await assert.rejects(() => executor.execute(grant));
+    assert.equal(fake.counts.click, 1);
+  });
+
+  it('still marks stale when audit append throws and the registry is stale', async () => {
+    const { adapter, counts } = createFakeAdapter();
+    const registry = new TargetRegistry();
+    registry.replaceObservation('tab-1', 'obs-other', [targetRecord({ observationId: 'obs-other' })]);
+    const { executor, manager, grant } = createHarness(adapter, registry, new ThrowingAuditSink());
+
+    const result = await executor.execute(grant);
+    assert.equal(result.status, 'stale');
+    assert.equal(counts.click, 0);
+    assert.equal(counts.observePage, 0);
+    assert.deepEqual(snapshotFacts(manager, grant.approvalId), {
+      state: 'stale',
+      grantIssued: true,
+      grantClaimed: true,
+      adapterPrimitiveInvoked: false,
+      postObservationSucceeded: false,
+      executionId: 'exec-1',
+    });
+
+    await assert.rejects(() => executor.execute(grant));
+    assert.equal(counts.click, 0);
+    assert.throws(
+      () => manager.claimExecuteGrant(grant.approvalId),
+      (error: unknown) => {
+        assert.ok(error instanceof ApprovalError);
+        assert.equal(error.code, 'EXECUTE_GRANT_ALREADY_CLAIMED');
+        return true;
+      },
+    );
+  });
+
+  it('still marks failed when audit append throws and click fails before the hook', async () => {
+    const { adapter, counts } = createFakeAdapter({
+      click: { beforeHookError: new InteractionError('INTERACTION_FAILED', 'debugger') },
+    });
+    const registry = new TargetRegistry();
+    registry.replaceObservation('tab-1', 'obs-1', [targetRecord()]);
+    const { executor, manager, grant } = createHarness(adapter, registry, new ThrowingAuditSink());
+
+    const result = await executor.execute(grant);
+    assert.equal(result.status, 'failed');
+    assert.equal(counts.hook, 0);
+    assert.equal(counts.observePage, 0);
+    assert.equal(snapshotFacts(manager, grant.approvalId).state, 'failed');
+    assert.equal(snapshotFacts(manager, grant.approvalId).adapterPrimitiveInvoked, false);
+
+    await assert.rejects(() => executor.execute(grant));
+    assert.equal(counts.click, 1);
+  });
+
+  it('still marks unknown when audit append throws and click fails after the hook', async () => {
+    const { adapter, counts } = createFakeAdapter({
+      click: { afterHookError: new InteractionError('PAGE_CHANGED', 'after dispatch') },
+    });
+    const registry = new TargetRegistry();
+    registry.replaceObservation('tab-1', 'obs-1', [targetRecord()]);
+    const { executor, manager, grant } = createHarness(adapter, registry, new ThrowingAuditSink());
+
+    const result = await executor.execute(grant);
+    assert.equal(result.status, 'execution-attempted-state-unknown');
+    assert.equal(counts.click, 1);
+    assert.equal(counts.hook, 1);
+    assert.equal(counts.observePage, 0);
+    assert.equal(snapshotFacts(manager, grant.approvalId).state, 'execution-attempted-state-unknown');
+    assert.equal(snapshotFacts(manager, grant.approvalId).adapterPrimitiveInvoked, true);
+
+    await assert.rejects(() => executor.execute(grant));
+    assert.equal(counts.click, 1);
   });
 
   it('keeps ExecuteExecutor free of renderer surfaces and new CDP methods', () => {

@@ -37,7 +37,7 @@ export class ExecuteExecutor {
     this.inFlightExecutionIds.add(grant.executionId);
 
     try {
-      this.deps.auditRecorder.recordExecuteGrantIssued(grant.approvalId);
+      this.recordExecuteGrantIssuedSafely(grant.approvalId);
 
       const initialRecord = this.resolveExactCurrentRecord(grant);
       if (initialRecord === null) {
@@ -225,6 +225,14 @@ export class ExecuteExecutor {
     const snapshot = this.deps.manager.getSnapshot(grant.approvalId);
     if (snapshot?.action.state === 'executing' && snapshot.facts.adapterPrimitiveInvoked === true) {
       this.deps.manager.markExecutionStateUnknown(grant.executionId);
+    }
+  }
+
+  private recordExecuteGrantIssuedSafely(approvalId: string): void {
+    try {
+      this.deps.auditRecorder.recordExecuteGrantIssued(approvalId);
+    } catch {
+      // Audit failure must not alter EXECUTE authority or trigger retry.
     }
   }
 
