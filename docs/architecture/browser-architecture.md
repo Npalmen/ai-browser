@@ -584,8 +584,11 @@ V4  PREPARE_ACTION + APPROVAL + EXECUTE — COMPLETE
     → existing bounded click primitive
     not an autonomous loop
 
-V5  agent loop                            (future)
-    multi-step observe→act orchestration
+V5  bounded agent loop                    (architecture locked; implementation not started)
+    one user task → sequential observe/reason/action steps
+    reusing V3 INTERACT and per-action V4 approval
+    no persistence / background autonomy
+    ADR-006
 
 V6  autonomous tasks                      (future)
 
@@ -598,7 +601,7 @@ Later  Deeper Chromium integration if justified
     agent, actions, approval, model provider reused
 ```
 
-ADR-004 specifies V3 INTERACT. ADR-005 specifies V4 PREPARE_ACTION, APPROVAL, and EXECUTE. V4 PREPARE_ACTION freezes one already-bound consequential click; it does not fill forms or run multi-step checkout. Multi-step tasks are V5+.
+ADR-004 specifies V3 INTERACT. ADR-005 specifies V4 PREPARE_ACTION, APPROVAL, and EXECUTE. ADR-006 specifies the V5 bounded agent loop: one explicit user task, sequential observe/reason/action steps, existing V3 INTERACT and per-action V4 approval, no persistence or background autonomy. V4 PREPARE_ACTION freezes one already-bound consequential click; it does not fill forms or run multi-step checkout. V6–V8 remain future.
 
 ### 13.1 Must be correct now
 
@@ -704,4 +707,4 @@ This architecture implements `.cursor/rules/browser-agent-safety.mdc`: action le
 
 It follows `AGENTS.md` and `.cursor/rules/execution.mdc`: smallest correct implementation, explicit permissions, and semantic action classification.
 
-The runtime choice is locked in `docs/architecture/ADR-001-browser-runtime.md` (Status: Accepted). V3 INTERACT is locked in `docs/architecture/ADR-004-interaction-authority.md`. V4 PREPARE_ACTION / APPROVAL / EXECUTE is locked in `docs/architecture/ADR-005-approval-execute-authority.md`.
+The runtime choice is locked in `docs/architecture/ADR-001-browser-runtime.md` (Status: Accepted). V3 INTERACT is locked in `docs/architecture/ADR-004-interaction-authority.md`. V4 PREPARE_ACTION / APPROVAL / EXECUTE is locked in `docs/architecture/ADR-005-approval-execute-authority.md`. V5 bounded agent-loop orchestration is locked in `docs/architecture/ADR-006-agent-loop-orchestration.md` (Status: Accepted; implementation not started).
