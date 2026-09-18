@@ -577,15 +577,15 @@ V3  INTERACT                              complete
     one bounded safe NAVIGATE / INTERACT action (ADR-004)
     consequential clicks return DEFER_EXECUTE (denied in product UI)
 
-V4  PREPARE_ACTION / APPROVAL / EXECUTE   specified in ADR-005
+V4  PREPARE_ACTION + APPROVAL + EXECUTE — COMPLETE
     one prepared consequential click
     → explicit trusted-app approval
     → one exact ExecuteGrant
     → existing bounded click primitive
     not an autonomous loop
 
-V5  agent loop
-    multi-step observe→act orchestration (future)
+V5  agent loop                            (future)
+    multi-step observe→act orchestration
 
 V6  autonomous tasks                      (future)
 

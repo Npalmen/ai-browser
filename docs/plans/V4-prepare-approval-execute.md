@@ -1,6 +1,6 @@
 # Plan: V4 — PREPARE_ACTION, APPROVAL, and EXECUTE
 
-**Status:** locked  
+**Status:** complete  
 **Explicit reference:** Implementation tasks must cite `docs/plans/V4-prepare-approval-execute.md` to treat this file as authoritative.
 
 Authoritative architecture:
@@ -467,37 +467,86 @@ stale consequential button
 V4 is complete when ADR-005 is implemented and all gates below are green.
 
 ```text
-[ ] model cannot self-approve
-[ ] website cannot approve
-[ ] renderer cannot specify target/proposal
-[ ] only DEFER_EXECUTE-supported actions prepare
-[ ] DENY cannot be approved
-[ ] sensitive typing cannot be approved
-[ ] approval exact-target binding survives no rebind
-[ ] stale page prevents execution
-[ ] expired approval prevents execution
-[ ] duplicate approval produces <=1 execute attempt
-[ ] approve/reject race produces one terminal decision
-[ ] ExecuteGrant single-use
-[ ] one BrowserAdapter primitive max
-[ ] no automatic EXECUTE retry
-[ ] claimed grant then stale/failed before dispatch is terminal; grant cannot be reclaimed
-[ ] BrowserAdapter.click entry is not treated as input dispatch
-[ ] post-dispatch observation failure represented as execution-attempted-state-unknown, never stale/failed
-[ ] approval UI contains no execution handles
-[ ] audit contains no sensitive values
-[ ] V2 acceptance green
-[ ] V3 acceptance green
-[ ] V4 acceptance green
+[x] model cannot self-approve
+[x] website cannot approve
+[x] renderer cannot specify target/proposal
+[x] only DEFER_EXECUTE-supported actions prepare
+[x] DENY cannot be approved
+[x] sensitive typing cannot be approved
+[x] approval exact-target binding survives no rebind
+[x] stale page prevents execution
+[x] expired approval prevents execution
+[x] duplicate approval produces <=1 execute attempt
+[x] approve/reject race produces one terminal decision
+[x] ExecuteGrant single-use
+[x] one BrowserAdapter primitive max
+[x] no automatic EXECUTE retry
+[x] claimed grant then stale/failed before dispatch is terminal; grant cannot be reclaimed
+[x] BrowserAdapter.click entry is not treated as input dispatch
+[x] post-dispatch observation failure represented as execution-attempted-state-unknown, never stale/failed
+[x] approval UI contains no execution handles
+[x] audit contains no sensitive values
+[x] V2 acceptance green
+[x] V3 acceptance green
+[x] V4 acceptance green
 ```
 
-Do not mark this plan complete until Phase 6 is green. Closure evidence (commit SHAs, command output) is filled then — not now.
+Phase 6 is green. Closure evidence is below.
 
 ### Closure evidence
 
 ```text
-(filled at Phase 6 closure)
+Architecture:
+ef31d0f Lock V4 approval and execute authority architecture
+
+Phase 1:
+64a5ef9 Implement V4 approval authority state machine
+18b043a Harden V4 approval authority atomicity
+312947a Clarify V4 pre-dispatch execution states
+
+Phase 2:
+2e60586 Implement V4 consequential action preparation
+
+Phase 3:
+e7370a4 Implement V4 trusted approval decision boundary
+
+Phase 4:
+d74704b Implement V4 single-use approved execution
+8bd9493 Clarify V4 approved click dispatch boundary
+12782fb Isolate V4 execution authority from audit failures
+
+Phase 5:
+58ef735 Wire V4 approval workflow into product
+
+Phase 6 acceptance:
+2ba44e339f76c3f5d6abbc3ec56a0ba99d1eb75e Add V4 approval acceptance coverage
 ```
+
+### Closure verification (2026-09-18)
+
+Final candidate: `2ba44e339f76c3f5d6abbc3ec56a0ba99d1eb75e`
+
+```text
+npm run typecheck                          PASS
+npm run test:ai                            PASS (208 tests)
+npm run test:observation                   PASS (40 tests)
+npm run test:fixture                       PASS (7 tests)
+npm run test:v2-acceptance                 PASS (29 tests + [v2-electron-observation] PASS)
+npm run test:v3-acceptance                 PASS (29 tests + [v3-electron-interaction] PASS)
+npm run test:v4-acceptance                 PASS (46 tests + [v4-electron-approval] PASS)
+
+npx tsx --test src/approval/*.test.ts      PASS (84 tests)
+npx tsx --test src/main/approval*.test.ts  PASS (38 tests)
+npx tsx --test src/app-ui/*.test.ts        PASS (24 tests)
+npx tsx --test src/interaction/*.test.ts   PASS (87 tests)
+npx tsx --test src/browser/tab-invalidation.test.ts
+           src/browser/interaction-primitives.test.ts
+                                           PASS (23 tests)
+```
+
+Live/paid model calls were not run (`test:v2-catalog-live` and `smoke:v2-gateway` were not invoked; `AI_GATEWAY_API_KEY` was unset).
+
+See `docs/acceptance/V4-acceptance.md`.
 
 ---
 
