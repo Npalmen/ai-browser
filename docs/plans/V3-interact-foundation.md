@@ -1,6 +1,6 @@
 # Plan: V3 — Permissioned INTERACT foundation
 
-**Status:** locked  
+**Status:** complete  
 **Explicit reference:** Implementation tasks must cite `docs/plans/V3-interact-foundation.md` to treat this file as authoritative.
 
 Authoritative architecture:
@@ -498,18 +498,18 @@ Do not add dependencies unless a phase truly requires it (none anticipated).
 ## Security gates (must pass before closure)
 
 ```text
-[ ] Model cannot import BrowserAdapter interaction methods
-[ ] Model proposal schema rejects tabId / observationId / documentRevision
-[ ] Binding copies identity from the inference PageObservation
-[ ] Non-exported targetId cannot execute
-[ ] Website preload unchanged (no action IPC)
-[ ] ipc-security allowlist has no interaction primitives for websites
-[ ] Interaction CDP allowlist is closed (no DOM.resolveNode, Target.*, Runtime.*)
-[ ] No Runtime.evaluate / executeJavaScript path
-[ ] Unsupported frames fail closed
-[ ] Audit sink contains no secrets or full page text
-[ ] ReadOnlyAgent tests still pass unchanged
-[ ] V2 acceptance still passes
+[x] Model cannot import BrowserAdapter interaction methods
+[x] Model proposal schema rejects tabId / observationId / documentRevision
+[x] Binding copies identity from the inference PageObservation
+[x] Non-exported targetId cannot execute
+[x] Website preload unchanged (no action IPC)
+[x] ipc-security allowlist has no interaction primitives for websites
+[x] Interaction CDP allowlist is closed (no DOM.resolveNode, Target.*, Runtime.*)
+[x] No Runtime.evaluate / executeJavaScript path
+[x] Unsupported frames fail closed
+[x] Audit sink contains no secrets or full page text
+[x] ReadOnlyAgent tests still pass unchanged
+[x] V2 acceptance still passes
 ```
 
 ---
@@ -555,5 +555,45 @@ V3 is complete when:
 ### Closure evidence
 
 ```text
-(final commit SHA filled at Phase 6 closure)
+Architecture hardening:
+616fd2bed34f096614471efd55f88036b44dd469
+
+Phase 1:
+1964fd250aeb3e159077a6a312791f94538bbb87
+
+Phase 2:
+d3e85974e080902544e45314932b4481f1b33899
+
+Phase 2 hardening:
+7de340404336479c0f0144d7c9db17e5f1f79103
+
+Phase 3:
+b261df93adbf4808c6f8132619f26cb91dee2adf
+
+Phase 3 audit correction:
+151b47e28b43fc31e375079990469dedc3f5ea8a
+
+Phase 4:
+c0e0943caf686926956db2c1670dcfa4f09c5540
+
+Phase 4 hardening:
+8d8d2462ed36744358c81043eb1123232496b034
+
+Phase 5:
+b8467b137d037e3f332876d51669fc6656e27a20
+
+Phase 6 acceptance:
+0e1899260951514fc2f545210ff787f19be69319
+```
+
+### Closure verification (2026-09-18)
+
+```text
+npm run typecheck                          PASS
+npm run test:ai                            PASS (201 tests)
+npx tsx --test src/interaction/*.test.ts   PASS (75 tests)
+npm run test:observation                   PASS (40 tests)
+npm run test:fixture                       PASS (5 tests)
+npm run test:v2-acceptance                 PASS (29 tests + [v2-electron-observation] PASS)
+npm run test:v3-acceptance                 PASS (27 tests + [v3-electron-interaction] PASS)
 ```
