@@ -4,6 +4,9 @@ import type { DocumentRevision, ObservationId, TargetId } from './observation-ty
 /** Fixed 2-minute TTL. Correctness is clock-checked on transitions, not timers. */
 export const PREPARED_ACTION_TTL_MS = 120_000;
 
+/** Bounded plain-text length for approval summary description fields. */
+export const MAX_APPROVAL_SUMMARY_TEXT_LENGTH = 160;
+
 export const CONSEQUENTIAL_ACTION_CATEGORIES = [
   'submit',
   'send',
