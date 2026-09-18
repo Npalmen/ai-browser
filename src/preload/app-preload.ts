@@ -1,9 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import type { AiAnswerEvent, AiAskCurrentPageInput, AiCancelAskInput } from '../shared/ai-types';
+import type { ApprovalDecideInput, ApprovalEvent } from '../shared/approval-types';
 import type { BrowserState, TabId } from '../shared/browser-types';
 import {
   AI_IPC_CHANNELS,
+  APPROVAL_IPC_CHANNELS,
   BROWSER_IPC_CHANNELS,
   type AiAssistantApi,
   type BrowserShellApi,
@@ -58,6 +60,21 @@ const aiAssistant: AiAssistantApi = {
 
     return () => {
       ipcRenderer.removeListener(AI_IPC_CHANNELS.answerEvent, wrapped);
+    };
+  },
+
+  decideApproval: (input: ApprovalDecideInput) =>
+    ipcRenderer.invoke(APPROVAL_IPC_CHANNELS.decide, input),
+
+  onApprovalEvent: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: ApprovalEvent) => {
+      listener(payload);
+    };
+
+    ipcRenderer.on(APPROVAL_IPC_CHANNELS.event, wrapped);
+
+    return () => {
+      ipcRenderer.removeListener(APPROVAL_IPC_CHANNELS.event, wrapped);
     };
   },
 };

@@ -91,6 +91,23 @@ export function buildApprovalPresentedAuditEvent(
   });
 }
 
+export interface BuildLifecycleApprovalAuditEventInput {
+  eventType: 'approved' | 'rejected' | 'expired' | 'stale';
+  snapshot: PreparedActionRecordSnapshot;
+  timestamp: number;
+}
+
+export function buildLifecycleApprovalAuditEvent(
+  input: BuildLifecycleApprovalAuditEventInput,
+): ApprovalAuditEvent {
+  return buildApprovalAuditEvent({
+    eventType: input.eventType,
+    timestamp: input.timestamp,
+    action: input.snapshot.action,
+    facts: input.snapshot.facts,
+  });
+}
+
 interface BuildApprovalAuditEventInput {
   eventType: ApprovalAuditEventType;
   timestamp: number;
@@ -136,6 +153,30 @@ function validateApprovalAuditEvent(input: BuildApprovalAuditEventInput): void {
     }
     if (input.executionId !== undefined) {
       throw new Error('Prepared audit event must not include executionId.');
+    }
+  }
+
+  if (input.eventType === 'approved') {
+    if (
+      !input.facts.grantIssued ||
+      input.facts.grantClaimed ||
+      input.facts.adapterPrimitiveInvoked ||
+      input.facts.postObservationSucceeded ||
+      input.executionId !== undefined
+    ) {
+      throw new Error('Approved audit event must record grantIssued only.');
+    }
+  }
+
+  if (input.eventType === 'rejected' || input.eventType === 'expired' || input.eventType === 'stale') {
+    if (
+      input.facts.grantIssued ||
+      input.facts.grantClaimed ||
+      input.facts.adapterPrimitiveInvoked ||
+      input.facts.postObservationSucceeded ||
+      input.executionId !== undefined
+    ) {
+      throw new Error(`${input.eventType} audit event must record all stage facts as false.`);
     }
   }
 }

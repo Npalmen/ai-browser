@@ -1,8 +1,10 @@
 import { ipcMain } from 'electron';
 
-import { AI_IPC_CHANNELS, BROWSER_IPC_CHANNELS } from '../shared/ipc-contract';
+import { APPROVAL_IPC_CHANNELS, AI_IPC_CHANNELS, BROWSER_IPC_CHANNELS } from '../shared/ipc-contract';
 import { isAiSafeError, parseAskCurrentPageRequest, parseAskId, parsePanelOpen, parseTabId } from './ai-ipc-guards';
-import { getAiController, setAiPanelOpen } from './ai-runtime';
+import { getAiController, getApprovalController, setAiPanelOpen } from './ai-runtime';
+import { parseApprovalDecideRequest } from './approval-ipc-guards';
+import { approvalSafeError } from './approval-safe-error';
 import { aiSafeError, toAiSafeError } from './ai-safe-error';
 import { getBrowserAdapter, whenBrowserReady } from './browser-runtime';
 import { assertTrustedAppSender } from './ipc-security';
@@ -142,6 +144,24 @@ export function registerBrowserShellIpc(): void {
       return { ok: true };
     } catch (error) {
       return { ok: false, error: toAiSafeError(error) };
+    }
+  });
+
+  ipcMain.handle(APPROVAL_IPC_CHANNELS.decide, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    try {
+      await whenBrowserReady();
+      const parsed = parseApprovalDecideRequest(input);
+      if (!parsed.ok) {
+        return { ok: false, error: parsed.error };
+      }
+      const approvalController = getApprovalController();
+      if (!approvalController) {
+        return { ok: false, error: approvalSafeError('APPROVAL_FAILED') };
+      }
+      return approvalController.decide(parsed.input);
+    } catch {
+      return { ok: false, error: approvalSafeError('APPROVAL_FAILED') };
     }
   });
 }

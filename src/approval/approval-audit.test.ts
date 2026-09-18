@@ -9,6 +9,7 @@ import {
   InMemoryApprovalAuditSink,
   type ApprovalAuditEvent,
 } from './approval-audit';
+import { ApprovalError } from '../shared/approval-errors';
 import type { PreparedAction } from '../shared/approval-types';
 
 function preparedAction(overrides: Partial<PreparedAction> = {}): PreparedAction {
@@ -133,6 +134,53 @@ describe('approval audit', () => {
     assert.equal(event.category, 'send');
     assert.equal(event.targetId, 'target-1');
     assert.equal(audit.getEvents().length, 1);
+  });
+
+  it('allows approval-presented at expiresAt - 1 and rejects at expiresAt', () => {
+    const clock = { now: 5_000 };
+    const manager = new ApprovalManager({
+      now: () => clock.now,
+      generatePreparedActionId: () => 'prep-1',
+      generateApprovalId: () => 'appr-1',
+    });
+    const action = manager.prepare({
+      tabId: 'tab-1',
+      observationId: 'obs-1',
+      documentRevision: 'rev-1',
+      targetId: 'target-1',
+      category: 'send',
+      summary: { title: 'Send' },
+    });
+    const audit = new InMemoryApprovalAuditSink();
+    const recorder = new ApprovalAuditRecorder({
+      manager,
+      audit,
+      now: () => clock.now,
+    });
+
+    clock.now = action.expiresAt - 1;
+    const presented = recorder.recordApprovalPresented(action.approvalId);
+    assert.equal(presented.eventType, 'approval-presented');
+    assert.equal(presented.timestamp, action.expiresAt - 1);
+    assert.equal(audit.getEvents().length, 1);
+
+    clock.now = action.expiresAt;
+    const laterAudit = new InMemoryApprovalAuditSink();
+    const laterRecorder = new ApprovalAuditRecorder({
+      manager,
+      audit: laterAudit,
+      now: () => clock.now,
+    });
+    assert.throws(
+      () => laterRecorder.recordApprovalPresented(action.approvalId),
+      (error: unknown) => {
+        assert.ok(error instanceof ApprovalError);
+        assert.equal(error.code, 'APPROVAL_EXPIRED');
+        return true;
+      },
+    );
+    assert.equal(laterAudit.getEvents().length, 0);
+    assert.equal(manager.getByApprovalId(action.approvalId)?.state, 'pending');
   });
 
   it('does not include summary or page text in audit serialization', () => {

@@ -7,6 +7,9 @@ export const PREPARED_ACTION_TTL_MS = 120_000;
 /** Bounded plain-text length for approval summary description fields. */
 export const MAX_APPROVAL_SUMMARY_TEXT_LENGTH = 160;
 
+/** Conservative bound for renderer-supplied approvalId. IDs are not trimmed. */
+export const MAX_APPROVAL_ID_CHARS = 128;
+
 export const CONSEQUENTIAL_ACTION_CATEGORIES = [
   'submit',
   'send',
@@ -109,3 +112,52 @@ export interface PreparePreparedActionInput {
   readonly category: ConsequentialActionCategory;
   readonly summary: PreparedActionSummary;
 }
+
+export interface ApprovalDecideInput {
+  readonly approvalId: string;
+  readonly decision: ApprovalDecisionValue;
+}
+
+export type ApprovalSafeErrorCode =
+  | 'INVALID_REQUEST'
+  | 'APPROVAL_NOT_FOUND'
+  | 'APPROVAL_ALREADY_DECIDED'
+  | 'APPROVAL_EXPIRED'
+  | 'APPROVAL_STALE'
+  | 'APPROVAL_FAILED';
+
+export interface ApprovalSafeError {
+  readonly code: ApprovalSafeErrorCode;
+  readonly message: string;
+}
+
+export type ApprovalDecideResult =
+  | {
+      readonly ok: true;
+      readonly approvalId: string;
+      readonly decision: ApprovalDecisionValue;
+      readonly state: 'approved' | 'rejected';
+    }
+  | {
+      readonly ok: false;
+      readonly error: ApprovalSafeError;
+    };
+
+export type ApprovalEvent =
+  | {
+      readonly type: 'approval-resolved';
+      readonly approvalId: string;
+      readonly tabId: TabId;
+      readonly decision: ApprovalDecisionValue;
+      readonly state: 'approved' | 'rejected';
+    }
+  | {
+      readonly type: 'approval-expired';
+      readonly approvalId: string;
+      readonly tabId: TabId;
+    }
+  | {
+      readonly type: 'approval-stale';
+      readonly approvalId: string;
+      readonly tabId: TabId;
+    };

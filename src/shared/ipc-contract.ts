@@ -7,6 +7,11 @@ import type {
   AiClearConversationResult,
   AiSetPanelOpenResult,
 } from './ai-types';
+import type {
+  ApprovalDecideInput,
+  ApprovalDecideResult,
+  ApprovalEvent,
+} from './approval-types';
 import type { BrowserState, TabId } from './browser-types';
 
 export const BROWSER_IPC_CHANNELS = {
@@ -27,6 +32,11 @@ export const AI_IPC_CHANNELS = {
   clearConversation: 'ai:clear-conversation',
   setPanelOpen: 'ai:set-panel-open',
   answerEvent: 'ai:answer-event',
+} as const;
+
+export const APPROVAL_IPC_CHANNELS = {
+  decide: 'approval:decide',
+  event: 'approval:event',
 } as const;
 
 export interface BrowserShellApi {
@@ -50,4 +60,6 @@ export interface AiAssistantApi {
   clearConversation(tabId: TabId): Promise<AiClearConversationResult>;
   setPanelOpen(open: boolean): Promise<AiSetPanelOpenResult>;
   onAnswerEvent(listener: (event: AiAnswerEvent) => void): () => void;
+  decideApproval(input: ApprovalDecideInput): Promise<ApprovalDecideResult>;
+  onApprovalEvent(listener: (event: ApprovalEvent) => void): () => void;
 }
