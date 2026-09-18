@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>V3 Policy Deny Fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+      }
+      button {
+        display: block;
+        margin: 8px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>V3 Policy Deny Fixture</h1>
+
+    <button type="button" id="buy-now">Buy now</button>
+    <span id="buy-marker" hidden>V3_BUY_MUTATED</span>
+
+    <button type="button" id="delete-account">Delete account</button>
+    <span id="delete-marker" hidden>V3_DELETE_MUTATED</span>
+
+    <button type="button" id="send-message">Send message</button>
+    <span id="send-marker" hidden>V3_SEND_MUTATED</span>
+
+    <button type="button" id="confirm-order">Confirm order</button>
+
+    <form id="submit-form">
+      <button type="submit" id="submit-btn">Submit</button>
+    </form>
+    <span id="submit-marker" hidden>V3_SUBMIT_MUTATED</span>
+
+    <script>
+      function mark(id) {
+        var el = document.getElementById(id);
+        if (el) {
+          el.hidden = false;
+        }
+      }
+      document.getElementById('buy-now').addEventListener('click', function () {
+        mark('buy-marker');
+      });
+      document.getElementById('delete-account').addEventListener('click', function () {
+        mark('delete-marker');
+      });
+      document.getElementById('send-message').addEventListener('click', function () {
+        mark('send-marker');
+      });
+      document.getElementById('submit-form').addEventListener('submit', function (event) {
+        event.preventDefault();
+        mark('submit-marker');
+      });
+    </script>
+  </body>
+</html>

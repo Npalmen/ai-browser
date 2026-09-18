@@ -15,6 +15,7 @@
     "test:observation": "tsx --test src/observation/redaction.test.ts src/observation/target-registry.test.ts src/observation/observation-builder.test.ts src/observation/document-identity.test.ts src/observation/observation-normalizer.test.ts src/observation/screenshot.test.ts",
     "test:fixture": "tsx --test scripts/observation-fixture-routes.test.ts",
     "test:v2-acceptance": "tsx --test src/v2-acceptance/*.test.ts && node scripts/run-v2-electron-observation.cjs",
+    "test:v3-acceptance": "tsx --test src/v3-acceptance/*.test.ts && node scripts/run-v3-electron-interaction.cjs",
     "test:v2-catalog-live": "tsx --test src/v2-live/catalog-freshness.test.ts",
     "smoke:v2-gateway": "node scripts/run-v2-gateway-smoke.cjs",
     "fixture:observation": "tsx scripts/observation-fixture-server.ts"

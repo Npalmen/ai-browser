@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>V3 Cross-Origin Parent Fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+      }
+      iframe {
+        width: 100%;
+        height: 240px;
+        border: 1px solid #ccc;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>V3 Cross-Origin Parent Fixture</h1>
+    <iframe id="cross-origin-frame" title="Cross-origin child"></iframe>
+    <script>
+      (function () {
+        var params = new URLSearchParams(window.location.search);
+        var childPort = params.get('childPort');
+        if (childPort) {
+          document.getElementById('cross-origin-frame').src =
+            'http://127.0.0.1:' + childPort + '/interaction/frame-child.html';
+        }
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>V3 Safe Interaction Fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+        line-height: 1.5;
+      }
+      .spacer {
+        height: 1800px;
+      }
+      #safe-section {
+        padding: 16px;
+        border: 1px solid #ccc;
+        margin-top: 24px;
+      }
+      #detail-panel {
+        display: none;
+        margin-top: 12px;
+        padding: 12px;
+        background: #f4f4f4;
+      }
+      #detail-panel.visible {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>V3 Safe Interaction Fixture</h1>
+
+    <button type="button" id="expand-btn" aria-expanded="false">Expand details</button>
+    <div id="detail-panel" aria-hidden="true">
+      <p id="detail-marker">V3_EXPANDED_DETAIL_MARKER</p>
+    </div>
+
+    <p>
+      <label>
+        Display name
+        <input
+          id="display-name"
+          type="text"
+          autocomplete="off"
+          placeholder="Display name"
+        />
+      </label>
+    </p>
+
+    <p>
+      <label>
+        Color
+        <select id="color-select">
+          <option>Red</option>
+          <option>Blue</option>
+          <option>Green</option>
+        </select>
+      </label>
+    </p>
+
+    <p>
+      <a id="safe-link" href="#safe-section">Read more</a>
+    </p>
+
+    <div class="spacer" aria-hidden="true"></div>
+
+    <section id="safe-section">
+      <h2>Lower section</h2>
+      <p id="lower-marker">V3_LOWER_SECTION_MARKER</p>
+    </section>
+
+    <script>
+      document.getElementById('expand-btn').addEventListener('click', function () {
+        var expanded = this.getAttribute('aria-expanded') === 'true';
+        expanded = !expanded;
+        this.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        var panel = document.getElementById('detail-panel');
+        panel.classList.toggle('visible', expanded);
+        panel.setAttribute('aria-hidden', expanded ? 'false' : 'true');
+      });
+    </script>
+  </body>
+</html>

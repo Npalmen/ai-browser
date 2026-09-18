@@ -240,6 +240,43 @@ function isInteractive(
   return false;
 }
 
+function resolveCandidateValue(
+  dom: NormalizedDomNode,
+  ax: { value?: string },
+): string | undefined {
+  const axValue = ax.value?.trim();
+  if (axValue) {
+    return axValue;
+  }
+  if (dom.tag === 'input' || dom.tag === 'textarea') {
+    return dom.text?.trim() || undefined;
+  }
+  return undefined;
+}
+
+function inferEditableFromAttributes(
+  tag?: string,
+  attributes?: Record<string, string>,
+): boolean {
+  const normalizedTag = tag?.toLowerCase();
+  if (normalizedTag === 'textarea') {
+    return true;
+  }
+  if (normalizedTag !== 'input') {
+    return false;
+  }
+
+  const type = attributes?.type?.toLowerCase() ?? 'text';
+  return (
+    type === 'text' ||
+    type === 'search' ||
+    type === 'email' ||
+    type === 'url' ||
+    type === 'tel' ||
+    type === ''
+  );
+}
+
 function isHeading(role: string, tag?: string): boolean {
   return role === 'heading' || (tag ? HEADING_DOM_TAGS.has(tag) : false);
 }
@@ -380,14 +417,14 @@ function mergeCandidate(
     frameId: dom.frameId,
     role,
     name,
-    value: ax.value,
+    value: resolveCandidateValue(dom, ax),
     text,
     tag: dom.tag,
     interactive,
     visible,
     inViewport,
     focused: ax.focused,
-    editable: ax.editable,
+    editable: ax.editable === true || inferEditableFromAttributes(dom.tag, dom.attributes),
     disabled: ax.disabled,
     checked: ax.checked,
     selected: ax.selected,
@@ -428,6 +465,8 @@ function buildDomOnlyCandidate(
     interactive,
     visible,
     inViewport,
+    value: resolveCandidateValue(dom, {}),
+    editable: inferEditableFromAttributes(dom.tag, dom.attributes),
     bounds: dom.bounds,
     attributes: Object.keys(dom.attributes).length > 0 ? dom.attributes : undefined,
     targetIdentity: { backendNodeId: dom.backendNodeId },

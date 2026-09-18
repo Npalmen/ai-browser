@@ -43,6 +43,7 @@ export async function executeAdapterClick(
     x: center.x,
     y: center.y,
     button: 'left',
+    buttons: 1,
     clickCount: 1,
   });
   await cdp.dispatchMouseEvent({
@@ -50,6 +51,7 @@ export async function executeAdapterClick(
     x: center.x,
     y: center.y,
     button: 'left',
+    buttons: 0,
     clickCount: 1,
   });
 
@@ -68,21 +70,25 @@ export async function executeAdapterType(
   const liveBox = await preflightTargetBox(cdp, request.target, request.observedBounds);
   const center = liveBoxCenter(liveBox);
 
-  await cdp.dispatchMouseEvent({ type: 'mouseMoved', x: center.x, y: center.y });
-  await cdp.dispatchMouseEvent({
-    type: 'mousePressed',
-    x: center.x,
-    y: center.y,
-    button: 'left',
-    clickCount: 1,
-  });
-  await cdp.dispatchMouseEvent({
-    type: 'mouseReleased',
-    x: center.x,
-    y: center.y,
-    button: 'left',
-    clickCount: 1,
-  });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await cdp.dispatchMouseEvent({ type: 'mouseMoved', x: center.x, y: center.y });
+    await cdp.dispatchMouseEvent({
+      type: 'mousePressed',
+      x: center.x,
+      y: center.y,
+      button: 'left',
+      buttons: 1,
+      clickCount: 1,
+    });
+    await cdp.dispatchMouseEvent({
+      type: 'mouseReleased',
+      x: center.x,
+      y: center.y,
+      button: 'left',
+      buttons: 0,
+      clickCount: 1,
+    });
+  }
 
   await cdp.dispatchKeyEvent({
     type: 'keyDown',
@@ -144,6 +150,7 @@ export async function executeAdapterSelect(
     x: selectCenter.x,
     y: selectCenter.y,
     button: 'left',
+    buttons: 1,
     clickCount: 1,
   });
   await cdp.dispatchMouseEvent({
@@ -151,33 +158,76 @@ export async function executeAdapterSelect(
     x: selectCenter.x,
     y: selectCenter.y,
     button: 'left',
+    buttons: 0,
     clickCount: 1,
   });
 
-  const optionBox = await preflightTargetBox(
-    cdp,
-    request.optionTarget,
-    request.optionObservedBounds,
-  );
-  const optionCenter = liveBoxCenter(optionBox);
+  if (!Number.isInteger(request.optionCatalogIndex)) {
+    throw new InteractionError('INVALID_INTERACTION_PROPOSAL', 'Select option catalog index is invalid.');
+  }
 
-  await cdp.dispatchMouseEvent({ type: 'mouseMoved', x: optionCenter.x, y: optionCenter.y });
-  await cdp.dispatchMouseEvent({
-    type: 'mousePressed',
-    x: optionCenter.x,
-    y: optionCenter.y,
-    button: 'left',
-    clickCount: 1,
-  });
-  await cdp.dispatchMouseEvent({
-    type: 'mouseReleased',
-    x: optionCenter.x,
-    y: optionCenter.y,
-    button: 'left',
-    clickCount: 1,
-  });
+  const steps = Math.abs(request.optionCatalogIndex);
+  for (let step = 0; step < steps; step += 1) {
+    if (request.optionCatalogIndex > 0) {
+      await dispatchArrowDown(cdp);
+    } else if (request.optionCatalogIndex < 0) {
+      await dispatchArrowUp(cdp);
+    }
+  }
+  await dispatchEnter(cdp);
 
   return { primitive: 'select' };
+}
+
+async function dispatchArrowUp(cdp: InteractionCdpClient): Promise<void> {
+  await cdp.dispatchKeyEvent({
+    type: 'keyDown',
+    key: 'ArrowUp',
+    code: 'ArrowUp',
+    windowsVirtualKeyCode: 38,
+    nativeVirtualKeyCode: 38,
+  });
+  await cdp.dispatchKeyEvent({
+    type: 'keyUp',
+    key: 'ArrowUp',
+    code: 'ArrowUp',
+    windowsVirtualKeyCode: 38,
+    nativeVirtualKeyCode: 38,
+  });
+}
+
+async function dispatchArrowDown(cdp: InteractionCdpClient): Promise<void> {
+  await cdp.dispatchKeyEvent({
+    type: 'keyDown',
+    key: 'ArrowDown',
+    code: 'ArrowDown',
+    windowsVirtualKeyCode: 40,
+    nativeVirtualKeyCode: 40,
+  });
+  await cdp.dispatchKeyEvent({
+    type: 'keyUp',
+    key: 'ArrowDown',
+    code: 'ArrowDown',
+    windowsVirtualKeyCode: 40,
+    nativeVirtualKeyCode: 40,
+  });
+}
+
+async function dispatchEnter(cdp: InteractionCdpClient): Promise<void> {
+  await cdp.dispatchKeyEvent({
+    type: 'keyDown',
+    key: 'Enter',
+    code: 'Enter',
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+  await cdp.dispatchKeyEvent({
+    type: 'keyUp',
+    key: 'Enter',
+    code: 'Enter',
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
 }
 
 export async function executeAdapterViewportScroll(

@@ -1,4 +1,4 @@
-import type { WebContents } from 'electron';
+import { BrowserWindow, type WebContents } from 'electron';
 
 import { InteractionError } from '../shared/interaction-errors';
 import type { TabId } from '../shared/browser-types';
@@ -46,6 +46,10 @@ export class InteractionSessionManager {
 
     try {
       session = await this.beginSession(webContents);
+      if (!webContents.isDestroyed()) {
+        BrowserWindow.fromWebContents(webContents)?.focus();
+        webContents.focus();
+      }
       return await action(session.cdp);
     } finally {
       if (session !== null) {

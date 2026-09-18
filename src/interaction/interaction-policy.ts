@@ -141,13 +141,13 @@ function classifyType(input: ClassifyInteractionInput): InteractionPolicyDecisio
     return deny('UNSUPPORTED_TARGET');
   }
 
+  if (isSensitiveField(node)) {
+    return deny('TARGET_SENSITIVE');
+  }
+
   const precondition = checkTargetPreconditions(node);
   if (precondition) {
     return precondition;
-  }
-
-  if (isSensitiveField(node)) {
-    return deny('TARGET_SENSITIVE');
   }
 
   if (!isEditableTextField(node)) {

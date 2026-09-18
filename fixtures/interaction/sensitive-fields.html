@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>V3 Sensitive Fields Fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+      }
+      label {
+        display: block;
+        margin: 12px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>V3 Sensitive Fields Fixture</h1>
+
+    <label>
+      Password
+      <input
+        id="password"
+        type="password"
+        autocomplete="current-password"
+        value="V3_PASSWORD_SECRET_DO_NOT_LEAK"
+      />
+    </label>
+
+    <label>
+      Card number
+      <input
+        id="card-number"
+        type="text"
+        autocomplete="cc-number"
+        value="4111111111111111"
+      />
+    </label>
+
+    <label>
+      CVC
+      <input
+        id="cvc"
+        type="text"
+        autocomplete="cc-csc"
+        value="123"
+      />
+    </label>
+
+    <label>
+      OTP
+      <input
+        id="otp"
+        type="text"
+        autocomplete="one-time-code"
+        value="V3_OTP_SECRET_DO_NOT_LEAK"
+      />
+    </label>
+
+    <label>
+      Display name
+      <input
+        id="ordinary-text"
+        type="text"
+        autocomplete="off"
+        placeholder="Display name"
+      />
+    </label>
+  </body>
+</html>

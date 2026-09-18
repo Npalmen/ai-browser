@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>V3 Frame Child Fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Child frame</h2>
+    <button type="button" id="frame-toggle">Frame toggle</button>
+    <p id="frame-marker" hidden>V3_FRAME_TOGGLED_MARKER</p>
+    <script>
+      document.getElementById('frame-toggle').addEventListener('click', function () {
+        document.getElementById('frame-marker').hidden = false;
+      });
+    </script>
+  </body>
+</html>

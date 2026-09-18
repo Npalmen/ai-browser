@@ -17,6 +17,7 @@ export interface InteractionMouseEventParams {
   x: number;
   y: number;
   button?: 'left' | 'middle' | 'right' | 'none';
+  buttons?: number;
   clickCount?: number;
   deltaX?: number;
   deltaY?: number;

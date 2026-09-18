@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>V3 Stale Target Fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>V3 Stale Target Fixture</h1>
+
+    <button type="button" id="stale-target">Stale target</button>
+    <button type="button" id="remove-stale">Remove stale target</button>
+
+    <script>
+      document.getElementById('remove-stale').addEventListener('click', function () {
+        var target = document.getElementById('stale-target');
+        if (target) {
+          target.remove();
+        }
+      });
+    </script>
+  </body>
+</html>

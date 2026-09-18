@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>V3 Frame Parent Fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+      }
+      iframe {
+        width: 100%;
+        height: 240px;
+        border: 1px solid #ccc;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>V3 Frame Parent Fixture</h1>
+    <iframe id="child-frame" title="Child frame"></iframe>
+    <script>
+      (function () {
+        var params = new URLSearchParams(window.location.search);
+        var childPort = params.get('childPort');
+        var childPath = params.get('childPath') || '/interaction/frame-child.html';
+        if (childPort) {
+          document.getElementById('child-frame').src =
+            'http://127.0.0.1:' + childPort + childPath;
+        } else {
+          document.getElementById('child-frame').src = '/interaction/frame-child.html';
+        }
+      })();
+    </script>
+  </body>
+</html>

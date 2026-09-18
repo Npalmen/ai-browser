@@ -138,7 +138,7 @@ describe('interaction primitives', () => {
     );
   });
 
-  it('selects by clicking select then option centers', async () => {
+  it('selects by opening the select then navigating with keyboard', async () => {
     const { cdp, calls } = createCdpStub();
 
     await executeAdapterSelect(cdp, {
@@ -154,11 +154,13 @@ describe('interaction primitives', () => {
         backendNodeId: 11,
         documentRevision: 'frame-1:loader-1',
       },
+      optionCatalogIndex: 1,
     });
 
     const mouseEvents = calls.filter((call) => call.method === 'Input.dispatchMouseEvent');
-    assert.equal(mouseEvents.length, 6);
-    assert.equal(calls.filter((call) => call.method === 'DOM.getBoxModel').length, 2);
+    assert.equal(mouseEvents.length, 3);
+    assert.equal(calls.filter((call) => call.method === 'DOM.getBoxModel').length, 1);
+    assert.equal(calls.filter((call) => call.method === 'Input.dispatchKeyEvent').length, 4);
   });
 
   it('scrolls viewport with bounded wheel deltas and rejects oversized amounts', () => {
@@ -252,6 +254,7 @@ describe('interaction primitives', () => {
             backendNodeId: 11,
             documentRevision: 'frame-1:loader-1',
           },
+          optionCatalogIndex: 0,
         }),
       (error: unknown) => {
         assert.ok(error instanceof InteractionError);
@@ -281,6 +284,7 @@ describe('interaction primitives', () => {
             backendNodeId: 11,
             documentRevision: 'frame-1:loader-2',
           },
+          optionCatalogIndex: 0,
         }),
       (error: unknown) => {
         assert.ok(error instanceof InteractionError);
@@ -310,6 +314,7 @@ describe('interaction primitives', () => {
             backendNodeId: 11,
             documentRevision: 'frame-1:loader-1',
           },
+          optionCatalogIndex: 0,
         }),
       (error: unknown) => {
         assert.ok(error instanceof InteractionError);

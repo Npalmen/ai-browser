@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 
-import { resolveObservationFixtureRoute } from './observation-fixture-routes';
+import { resolveFixtureRoute } from './observation-fixture-routes';
 
 export interface ObservationFixtureServer {
   url: string;
@@ -13,7 +13,7 @@ export async function startObservationFixtureServer(
   requestedPort = 0,
 ): Promise<ObservationFixtureServer> {
   const server = http.createServer(async (request, response) => {
-    const resolved = resolveObservationFixtureRoute(request.url ?? '/');
+    const resolved = resolveFixtureRoute(request.url ?? '/');
     if (!resolved) {
       response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
       response.end('Not Found');
