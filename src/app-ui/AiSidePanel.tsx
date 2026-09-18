@@ -3,11 +3,14 @@ import type { FormEvent, KeyboardEvent } from 'react';
 import { AI_SIDE_PANEL_WIDTH_PX, type AiRequestMode } from '../shared/ai-types';
 
 import type { AiTranscriptEntry } from './ai-ui-state';
+import { ApprovalCard } from './ApprovalCard';
+import type { TabApprovalUiState } from './approval-ui-state';
 
 export function AiSidePanel(props: {
   hasActiveTab: boolean;
   entries: AiTranscriptEntry[];
   isAsking: boolean;
+  approvalBusy: boolean;
   mode: AiRequestMode;
   draft: string;
   onDraftChange: (value: string) => void;
@@ -16,9 +19,13 @@ export function AiSidePanel(props: {
   onStop: () => void;
   onClear: () => void;
   onClose: () => void;
+  approval?: TabApprovalUiState;
+  onApprove?: () => void;
+  onReject?: () => void;
 }) {
+  const inputLocked = props.isAsking || props.approvalBusy;
   const canAsk =
-    props.hasActiveTab && props.draft.trim().length > 0 && !props.isAsking;
+    props.hasActiveTab && props.draft.trim().length > 0 && !inputLocked;
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -64,7 +71,7 @@ export function AiSidePanel(props: {
         <button
           type="button"
           className={`ai-mode-button ${props.mode === 'read' ? 'ai-mode-button-active' : ''}`}
-          disabled={props.isAsking}
+          disabled={inputLocked}
           aria-pressed={props.mode === 'read'}
           onClick={() => props.onModeChange('read')}
         >
@@ -73,7 +80,7 @@ export function AiSidePanel(props: {
         <button
           type="button"
           className={`ai-mode-button ${props.mode === 'interact' ? 'ai-mode-button-active' : ''}`}
-          disabled={props.isAsking}
+          disabled={inputLocked}
           aria-pressed={props.mode === 'interact'}
           onClick={() => props.onModeChange('interact')}
         >
@@ -82,7 +89,18 @@ export function AiSidePanel(props: {
       </div>
 
       <div className="ai-panel-body">
-        {props.entries.length === 0 ? (
+        {props.approval && props.approval.status !== 'idle' && props.approval.approval ? (
+          <ApprovalCard
+            approval={props.approval.approval}
+            status={props.approval.status}
+            message={props.approval.message}
+            busy={props.approvalBusy}
+            onApprove={() => props.onApprove?.()}
+            onReject={() => props.onReject?.()}
+          />
+        ) : null}
+        {props.entries.length === 0 &&
+        !(props.approval && props.approval.status !== 'idle' && props.approval.approval) ? (
           <p className="ai-empty-state">
             {props.mode === 'interact'
               ? 'Describe one action for the current page.'
@@ -129,7 +147,7 @@ export function AiSidePanel(props: {
           placeholder={
             props.mode === 'interact' ? 'Describe one action' : 'Ask about this page'
           }
-          disabled={!props.hasActiveTab}
+          disabled={!props.hasActiveTab || props.approvalBusy}
           rows={3}
           onChange={(event) => props.onDraftChange(event.target.value)}
           onKeyDown={handleKeyDown}
@@ -158,6 +176,9 @@ function assistantLabel(entry: AiTranscriptEntry): string {
     return 'Assistant (cancelled)';
   }
   if (entry.status === 'denied') {
+    return 'Assistant';
+  }
+  if (entry.status === 'approval') {
     return 'Assistant';
   }
   if (entry.status === 'error') {

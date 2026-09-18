@@ -99,5 +99,26 @@ describe('approval IPC security', () => {
     ]) {
       assert.equal(block.includes(token), false, `approval handler leaked ${token}`);
     }
+    assert.match(block, /getApprovalWorkflowController/);
+    assert.equal(block.includes('getApprovalController'), false);
+  });
+
+  it('invalidates approvals before trusted chrome navigation and tab close', () => {
+    const ipc = readSrc('src/main/ipc.ts');
+    for (const channel of [
+      'BROWSER_IPC_CHANNELS.navigate',
+      'BROWSER_IPC_CHANNELS.back',
+      'BROWSER_IPC_CHANNELS.forward',
+      'BROWSER_IPC_CHANNELS.reload',
+      'BROWSER_IPC_CHANNELS.closeTab',
+    ]) {
+      const start = ipc.indexOf(channel);
+      assert.ok(start >= 0, channel);
+      const block = ipc.slice(start, start + 450);
+      const senderIndex = block.indexOf('assertTrustedAppSender(event)');
+      const invalidateIndex = block.indexOf('invalidateApprovalTab(trustedTabId)');
+      assert.ok(senderIndex >= 0, `${channel} sender`);
+      assert.ok(invalidateIndex > senderIndex, `${channel} invalidate order`);
+    }
   });
 });

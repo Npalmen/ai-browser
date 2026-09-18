@@ -49,6 +49,7 @@ export class AiRequestController {
   private readonly readAgent: AiReadAgent;
   private readonly interactiveAgent: AiInteractionAgent;
   private readonly emit: (event: AiAnswerEvent) => void;
+  private readonly invalidateApprovalsForTab?: (tabId: TabId) => void;
   private readonly currentAsks = new Map<TabId, TabAskState>();
   private disposed = false;
 
@@ -56,10 +57,12 @@ export class AiRequestController {
     readAgent: AiReadAgent;
     interactiveAgent: AiInteractionAgent;
     emit: (event: AiAnswerEvent) => void;
+    invalidateApprovalsForTab?: (tabId: TabId) => void;
   }) {
     this.readAgent = input.readAgent;
     this.interactiveAgent = input.interactiveAgent;
     this.emit = input.emit;
+    this.invalidateApprovalsForTab = input.invalidateApprovalsForTab;
   }
 
   startAsk(tabId: TabId, question: string, mode: AiRequestMode): AiAskStartResult {
@@ -67,6 +70,7 @@ export class AiRequestController {
       return { ok: false, error: toAiSafeError(new Error('disposed')) };
     }
 
+    this.invalidateApprovalsForTab?.(tabId);
     this.cancelCurrentAgent(tabId);
     const askId = crypto.randomUUID();
     this.currentAsks.set(tabId, { askId, mode });
@@ -91,6 +95,7 @@ export class AiRequestController {
       return { ok: false, error: toAiSafeError(new Error('disposed')) };
     }
 
+    this.invalidateApprovalsForTab?.(tabId);
     this.cancelCurrentAgent(tabId);
     this.currentAsks.delete(tabId);
     this.readAgent.clearConversation(tabId);
@@ -107,6 +112,7 @@ export class AiRequestController {
     if (this.disposed) {
       return;
     }
+    this.invalidateApprovalsForTab?.(tabId);
     this.cancelCurrentAgent(tabId);
     this.currentAsks.delete(tabId);
     this.readAgent.clearConversation(tabId);
@@ -242,6 +248,16 @@ export class AiRequestController {
       }
 
       const interaction = result.result;
+      if (interaction.status === 'approval-required') {
+        this.emitIfCurrent(tabId, askId, {
+          type: 'interaction-approval-required',
+          askId,
+          tabId,
+          truncatedContext: result.truncatedContext,
+        });
+        return;
+      }
+
       if (interaction.status === 'succeeded') {
         this.emitIfCurrent(tabId, askId, {
           type: 'interaction-completed',

@@ -8,6 +8,9 @@ const APPROVAL_SAFE_MESSAGES: Record<ApprovalSafeErrorCode, string> = {
   APPROVAL_EXPIRED: 'This approval has expired.',
   APPROVAL_STALE: 'The page changed and this approval is no longer valid.',
   APPROVAL_FAILED: 'The approval decision failed.',
+  EXECUTION_FAILED: 'The approved action could not be performed.',
+  EXECUTION_STATE_UNKNOWN:
+    'The action may have been performed, but the final page state could not be confirmed. Do not retry automatically.',
 };
 
 export function approvalSafeError(code: ApprovalSafeErrorCode): ApprovalSafeError {

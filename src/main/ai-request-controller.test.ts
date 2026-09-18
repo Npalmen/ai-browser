@@ -524,4 +524,73 @@ describe('AiRequestController', () => {
     assert.equal(finished.length, 1);
     assert.equal(finished[0]?.type === 'answer-finished' && finished[0].askId, askB.ok ? askB.askId : '');
   });
+
+  it('emits interaction-approval-required without denial or authority tokens', async () => {
+    const interactiveAgent = new FakeInteractionAgent(async () => ({
+      kind: 'interaction',
+      alias: 'page-standard',
+      truncatedContext: true,
+      result: { status: 'approval-required' },
+    }));
+    const { controller, events } = controllerOf(new FakeReadAgent(), interactiveAgent);
+    controller.startAsk(TAB, 'Buy now', 'interact');
+    await waitUntil(() => events.some((event) => event.type === 'interaction-approval-required'));
+
+    const required = events.find((event) => event.type === 'interaction-approval-required');
+    assert.equal(required?.type, 'interaction-approval-required');
+    if (required?.type === 'interaction-approval-required') {
+      assert.equal(required.tabId, TAB);
+      assert.equal(required.truncatedContext, true);
+    }
+    assert.equal(events.some((event) => event.type === 'interaction-denied'), false);
+    const serialized = JSON.stringify(events);
+    for (const token of ['approvalId', 'targetId', 'executionId', 'preparedActionId', 'ExecuteGrant']) {
+      assert.equal(serialized.includes(token), false, token);
+    }
+  });
+
+  it('invalidates same-tab approvals before starting a new ask', () => {
+    const invalidated: string[] = [];
+    const hold = new Deferred<InteractiveAgentResult>();
+    const interactiveAgent = new FakeInteractionAgent(async () => hold.promise);
+    const events: AiAnswerEvent[] = [];
+    const controller = new AiRequestController({
+      readAgent: new FakeReadAgent(),
+      interactiveAgent,
+      emit: (event) => {
+        events.push(event);
+      },
+      invalidateApprovalsForTab: (tabId) => {
+        invalidated.push(tabId);
+      },
+    });
+
+    controller.startAsk(TAB, 'Buy now', 'interact');
+    assert.deepEqual(invalidated, [TAB]);
+    controller.startAsk('tab-2', 'Read this', 'read');
+    assert.deepEqual(invalidated, [TAB, 'tab-2']);
+    controller.startAsk(TAB, 'Another action', 'interact');
+    assert.deepEqual(invalidated, [TAB, 'tab-2', TAB]);
+    hold.resolve({
+      kind: 'answer',
+      text: 'later',
+      referencedTargets: [],
+      alias: 'page-standard',
+      truncatedContext: false,
+    });
+  });
+
+  it('invalidates approvals when clearing a conversation', () => {
+    const invalidated: string[] = [];
+    const controller = new AiRequestController({
+      readAgent: new FakeReadAgent(),
+      interactiveAgent: new FakeInteractionAgent(),
+      emit: () => undefined,
+      invalidateApprovalsForTab: (tabId) => {
+        invalidated.push(tabId);
+      },
+    });
+    controller.clearConversation(TAB);
+    assert.deepEqual(invalidated, [TAB]);
+  });
 });

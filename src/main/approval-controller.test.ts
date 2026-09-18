@@ -263,4 +263,94 @@ describe('ApprovalController', () => {
     assert.equal(serialized.includes('appr-safe'), true);
     assert.equal(serialized.includes('tab-safe'), true);
   });
+
+  it('keeps a committed approve when the audit sink throws', () => {
+    const manager = new ApprovalManager({
+      now: () => 1_000,
+      generatePreparedActionId: () => 'prep-1',
+      generateApprovalId: () => 'appr-1',
+    });
+    const action = manager.prepare(prepareInput());
+    const events: ApprovalEvent[] = [];
+    const controller = new ApprovalController({
+      manager,
+      auditRecorder: new ApprovalAuditRecorder({
+        manager,
+        audit: {
+          append() {
+            throw new Error('audit sink unavailable');
+          },
+          getEvents() {
+            return [];
+          },
+          clear() {},
+        },
+      }),
+      emit: (event) => {
+        events.push(event);
+      },
+    });
+
+    const result = controller.decide({ approvalId: action.approvalId, decision: 'approve' });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.decision, 'approve');
+    }
+    assert.equal(manager.getByApprovalId(action.approvalId)?.state, 'approved');
+    assert.equal(events[0]?.type, 'approval-resolved');
+  });
+
+  it('keeps a committed reject when the audit sink throws', () => {
+    const manager = new ApprovalManager({
+      now: () => 1_000,
+      generatePreparedActionId: () => 'prep-1',
+      generateApprovalId: () => 'appr-1',
+    });
+    const action = manager.prepare(prepareInput());
+    const controller = new ApprovalController({
+      manager,
+      auditRecorder: new ApprovalAuditRecorder({
+        manager,
+        audit: {
+          append() {
+            throw new Error('audit sink unavailable');
+          },
+          getEvents() {
+            return [];
+          },
+          clear() {},
+        },
+      }),
+      emit: () => undefined,
+    });
+
+    const result = controller.decide({ approvalId: action.approvalId, decision: 'reject' });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.decision, 'reject');
+    }
+    assert.equal(manager.getByApprovalId(action.approvalId)?.state, 'rejected');
+    assert.equal(manager.getSnapshot(action.approvalId)?.executionGrant, undefined);
+  });
+
+  it('keeps a committed decision when renderer emission throws', () => {
+    const harness = createHarness();
+    const action = harness.manager.prepare(prepareInput());
+    const controller = new ApprovalController({
+      manager: harness.manager,
+      auditRecorder: new ApprovalAuditRecorder({
+        manager: harness.manager,
+        audit: harness.audit,
+        now: () => harness.now,
+      }),
+      emit: () => {
+        throw new Error('renderer emit failed');
+      },
+    });
+
+    const result = controller.decide({ approvalId: action.approvalId, decision: 'approve' });
+    assert.equal(result.ok, true);
+    assert.equal(harness.manager.getByApprovalId(action.approvalId)?.state, 'approved');
+    assert.equal(harness.audit.getEvents()[0]?.eventType, 'approved');
+  });
 });

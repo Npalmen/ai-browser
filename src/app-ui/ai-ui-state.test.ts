@@ -381,4 +381,29 @@ describe('AI UI event ordering', () => {
     assert.equal(assistants(state, 'tab-2')[0]?.text, 'Answer two');
     assert.equal(tab(state, 'tab-1').entries.some((entry) => entry.text === 'Two?'), false);
   });
+
+  it('marks interaction-approval-required as a terminal approval transcript', () => {
+    const createId = ids();
+    let state: AiUiState = {};
+    state = appendUserQuestion(state, TAB, 'Buy now', SUB_A, createId);
+    state = applyAiAnswerEvent(state, { type: 'interaction-started', askId: ASK_A, tabId: TAB }, createId);
+    state = applyAiAnswerEvent(
+      state,
+      {
+        type: 'interaction-approval-required',
+        askId: ASK_A,
+        tabId: TAB,
+        truncatedContext: true,
+      },
+      createId,
+    );
+
+    assert.equal(assistants(state)[0]?.status, 'approval');
+    assert.equal(
+      assistants(state)[0]?.text,
+      'Approval required before this action can be performed.',
+    );
+    assert.equal(tab(state).activeAskId, null);
+    assert.equal(JSON.stringify(assistants(state)).includes('approvalId'), false);
+  });
 });

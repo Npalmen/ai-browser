@@ -13,5 +13,18 @@ describe('ai-runtime composition', () => {
     assert.match(source, /new InteractionExecutor\(/);
     assert.match(source, /new ReadOnlyAgent\(/);
     assert.match(source, /new InteractiveAgent\(/);
+    assert.match(source, /new InteractionCoordinator\(/);
+    assert.match(source, /new ApprovalManager\(/);
+    assert.match(source, /new ApprovalLifecycle\(/);
+    assert.match(source, /new ApprovalWorkflowController\(/);
+    assert.match(source, /interactionExecutor: coordinator/);
+    assert.equal(source.split('new ApprovalManager(').length - 1, 1);
+    assert.match(source, /invalidateApprovalsForTab: invalidateApprovalTab/);
+  });
+
+  it('exposes a no-op invalidation helper when runtime is uninitialized', () => {
+    const source = readFileSync(path.join(ROOT, 'src/main/ai-runtime.ts'), 'utf8');
+    assert.match(source, /export function invalidateApprovalTab/);
+    assert.match(source, /approvalRuntime\?\.lifecycle\.invalidateTab\(tabId\)/);
   });
 });

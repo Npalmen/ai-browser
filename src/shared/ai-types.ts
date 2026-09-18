@@ -146,4 +146,10 @@ export type AiAnswerEvent =
       tabId: TabId;
       error: AiSafeError;
       truncatedContext: boolean;
+    }
+  | {
+      type: 'interaction-approval-required';
+      askId: string;
+      tabId: TabId;
+      truncatedContext: boolean;
     };

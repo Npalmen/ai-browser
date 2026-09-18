@@ -370,3 +370,36 @@ body {
   color: #ffffff;
 }
 
+.approval-card {
+  margin: 0 8px 8px;
+  padding: 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #f9fafb;
+}
+
+.approval-card-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.approval-card-description,
+.approval-card-origin,
+.approval-card-category,
+.approval-card-status {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #4b5563;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.approval-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+

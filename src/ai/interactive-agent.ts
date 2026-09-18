@@ -41,12 +41,18 @@ const FALLBACK_ELIGIBLE_CODES = new Set<ModelError['code']>([
   'MODEL_OUTPUT_INVALID',
 ]);
 
+export interface ApprovalRequiredExecutionResult {
+  readonly status: 'approval-required';
+}
+
+export type InteractiveExecutionResult = InteractionResult | ApprovalRequiredExecutionResult;
+
 export interface InteractionExecutionPort {
   execute(input: {
     proposal: BoundInteractionProposal;
     observation: PageObservation;
     signal?: AbortSignal;
-  }): Promise<InteractionResult>;
+  }): Promise<InteractiveExecutionResult>;
 }
 
 export interface InteractiveAgentRequest {
@@ -68,7 +74,7 @@ export type InteractiveAgentResult =
     }
   | {
       kind: 'interaction';
-      result: InteractionResult;
+      result: InteractiveExecutionResult;
       alias: ModelAlias;
       truncatedContext: boolean;
     };
@@ -262,10 +268,12 @@ export class InteractiveAgent {
       signal: input.signal,
     });
 
-    this.conversations.commitTurn(input.tabId, observation.document.revision, {
-      question: input.instruction,
-      answer: summarizeInteractionResult(output.proposal.kind, result),
-    });
+    if (result.status !== 'approval-required') {
+      this.conversations.commitTurn(input.tabId, observation.document.revision, {
+        question: input.instruction,
+        answer: summarizeInteractionResult(output.proposal.kind, result),
+      });
+    }
 
     return {
       kind: 'interaction',

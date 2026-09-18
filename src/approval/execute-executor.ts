@@ -41,8 +41,9 @@ export class ExecuteExecutor {
 
       const initialRecord = this.resolveExactCurrentRecord(grant);
       if (initialRecord === null) {
-        this.markStaleBeforeDispatchIfExecuting(grant);
-        this.recordStaleSafely(grant.approvalId);
+        if (this.markStaleBeforeDispatchIfExecuting(grant)) {
+          this.recordStaleSafely(grant.approvalId);
+        }
         return { executionId: grant.executionId, status: 'stale', errorCode: 'TARGET_STALE' };
       }
 
@@ -117,13 +118,13 @@ export class ExecuteExecutor {
     }
 
     if (state === 'stale') {
-      this.recordStaleSafely(grant.approvalId);
       return { executionId: grant.executionId, status: 'stale', errorCode: errorCodeOf(error) };
     }
 
     if (isPreDispatchStaleError(error)) {
-      this.markStaleBeforeDispatchIfExecuting(grant);
-      this.recordStaleSafely(grant.approvalId);
+      if (this.markStaleBeforeDispatchIfExecuting(grant)) {
+        this.recordStaleSafely(grant.approvalId);
+      }
       return { executionId: grant.executionId, status: 'stale', errorCode: errorCodeOf(error) };
     }
 
@@ -207,11 +208,13 @@ export class ExecuteExecutor {
     }
   }
 
-  private markStaleBeforeDispatchIfExecuting(grant: ExecuteGrant): void {
+  private markStaleBeforeDispatchIfExecuting(grant: ExecuteGrant): boolean {
     const snapshot = this.deps.manager.getSnapshot(grant.approvalId);
     if (snapshot?.action.state === 'executing' && snapshot.facts.adapterPrimitiveInvoked === false) {
       this.deps.manager.markStaleBeforeDispatch(grant.executionId);
+      return true;
     }
+    return false;
   }
 
   private markFailedBeforeDispatchIfExecuting(grant: ExecuteGrant): void {

@@ -1,7 +1,7 @@
 import type { AiAnswerEvent, AiRequestMode, AiSafeError } from '../shared/ai-types';
 import type { TabId } from '../shared/browser-types';
 
-export type AiAssistantStatus = 'streaming' | 'complete' | 'cancelled' | 'error' | 'denied';
+export type AiAssistantStatus = 'streaming' | 'complete' | 'cancelled' | 'error' | 'denied' | 'approval';
 
 export interface AiTranscriptEntry {
   id: string;
@@ -278,6 +278,16 @@ function applyAskProgress(tab: TabAiUiState, event: Exclude<AiAnswerEvent, { typ
       errorMessage: event.error.message,
       truncatedContext: event.truncatedContext,
     };
+  } else if (event.type === 'interaction-approval-required') {
+    if (isTerminal(entry.status)) {
+      return tab;
+    }
+    updated = {
+      ...entry,
+      status: 'approval',
+      text: 'Approval required before this action can be performed.',
+      truncatedContext: event.truncatedContext,
+    };
   }
 
   if (!updated) {
@@ -339,7 +349,8 @@ function isTerminal(status: AiAssistantStatus | undefined): boolean {
     status === 'complete' ||
     status === 'cancelled' ||
     status === 'error' ||
-    status === 'denied'
+    status === 'denied' ||
+    status === 'approval'
   );
 }
 

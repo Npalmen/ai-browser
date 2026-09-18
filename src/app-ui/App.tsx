@@ -12,6 +12,15 @@ import {
   type AiUiState,
   type TabAiUiState,
 } from './ai-ui-state';
+import {
+  applyApprovalDecideFailure,
+  applyApprovalEvent,
+  emptyTabApprovalState,
+  isApprovalBusy,
+  markApprovalDeciding,
+  purgeClosedApprovalTabs,
+  type ApprovalUiState,
+} from './approval-ui-state';
 
 const NAV_ERROR = 'Invalid or unsupported address';
 
@@ -43,11 +52,18 @@ export function App() {
   const [navError, setNavError] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
   const [tabAiState, setTabAiState] = useState<AiUiState>({});
+  const [tabApprovalState, setTabApprovalState] = useState<ApprovalUiState>({});
   const lastSyncedUrlRef = useRef('');
+  const activeTabIdRef = useRef<string | null>(null);
 
   const activeTab =
     browserState?.tabs.find((tab) => tab.id === browserState.activeTabId) ?? null;
   const activeAi = activeTab ? tabAiState[activeTab.id] ?? emptyTabAiState() : emptyTabAiState();
+  const activeApproval = activeTab
+    ? tabApprovalState[activeTab.id] ?? emptyTabApprovalState()
+    : emptyTabApprovalState();
+  const approvalBusy = isApprovalBusy(activeApproval.status);
+  activeTabIdRef.current = activeTab?.id ?? null;
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
@@ -84,11 +100,35 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const unsubscribe = window.aiAssistant.onApprovalEvent((event) => {
+      setTabApprovalState((current) => applyApprovalEvent(current, event));
+      if (
+        event.type === 'approval-required' &&
+        event.approval.tabId === activeTabIdRef.current
+      ) {
+        void window.aiAssistant
+          .setPanelOpen(true)
+          .then((result) => {
+            if (!result.ok) {
+              return;
+            }
+            setPanelOpen(true);
+          })
+          .catch((error: unknown) => {
+            console.error('[app-ui] failed to open AI panel for approval:', error);
+          });
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
     if (!browserState) {
       return;
     }
     const liveIds = new Set(browserState.tabs.map((tab) => tab.id));
     setTabAiState((current) => purgeClosedTabs(current, liveIds));
+    setTabApprovalState((current) => purgeClosedApprovalTabs(current, liveIds));
   }, [browserState]);
 
   useEffect(() => {
@@ -212,7 +252,7 @@ export function App() {
     }
     const tabId = activeTab.id;
     const question = activeAi.draft.trim();
-    if (!question || activeAi.activeAskId) {
+    if (!question || activeAi.activeAskId || approvalBusy) {
       return;
     }
 
@@ -246,6 +286,28 @@ export function App() {
       .cancelAsk({ tabId: activeTab.id, askId: activeAi.activeAskId })
       .catch((error: unknown) => {
         console.error('[app-ui] failed to cancel AI ask:', error);
+      });
+  };
+
+  const handleApprovalDecision = (decision: 'approve' | 'reject') => {
+    if (!activeTab || !activeApproval.approval) {
+      return;
+    }
+    const tabId = activeTab.id;
+    const approvalId = activeApproval.approval.approvalId;
+    setTabApprovalState((current) => markApprovalDeciding(current, tabId, approvalId));
+    void window.aiAssistant
+      .decideApproval({ approvalId, decision })
+      .then((result) => {
+        if (result.ok) {
+          return;
+        }
+        setTabApprovalState((current) =>
+          applyApprovalDecideFailure(current, tabId, approvalId, result.error),
+        );
+      })
+      .catch((error: unknown) => {
+        console.error('[app-ui] failed to decide approval:', error);
       });
   };
 
@@ -386,6 +448,7 @@ export function App() {
           hasActiveTab={Boolean(activeTab)}
           entries={activeAi.entries}
           isAsking={activeAi.activeAskId !== null}
+          approvalBusy={approvalBusy}
           mode={activeAi.mode}
           draft={activeAi.draft}
           onDraftChange={(value) => updateActiveTabAi((current) => ({ ...current, draft: value }))}
@@ -394,6 +457,9 @@ export function App() {
           onStop={handleStop}
           onClear={handleClear}
           onClose={handleClosePanel}
+          approval={activeApproval}
+          onApprove={() => handleApprovalDecision('approve')}
+          onReject={() => handleApprovalDecision('reject')}
         />
       ) : null}
     </div>

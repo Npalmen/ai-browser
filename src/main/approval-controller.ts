@@ -31,12 +31,12 @@ export class ApprovalController {
       }
 
       if (decision.decision === 'approve') {
-        this.deps.auditRecorder.recordApproved(input.approvalId);
+        this.recordApprovedSafely(input.approvalId);
       } else {
-        this.deps.auditRecorder.recordRejected(input.approvalId);
+        this.recordRejectedSafely(input.approvalId);
       }
 
-      this.deps.emit(
+      this.emitSafely(
         Object.freeze({
           type: 'approval-resolved',
           approvalId: snapshot.action.approvalId,
@@ -68,9 +68,9 @@ export class ApprovalController {
       if (previousState === 'pending') {
         const current = this.deps.manager.getSnapshot(approvalId);
         if (current?.action.state === 'expired') {
-          this.deps.auditRecorder.recordExpired(approvalId);
+          this.recordExpiredSafely(approvalId);
         }
-        this.deps.emit(
+        this.emitSafely(
           Object.freeze({
             type: 'approval-expired',
             approvalId,
@@ -82,7 +82,7 @@ export class ApprovalController {
     }
 
     if (safe.code === 'APPROVAL_STALE') {
-      this.deps.emit(
+      this.emitSafely(
         Object.freeze({
           type: 'approval-stale',
           approvalId,
@@ -96,6 +96,38 @@ export class ApprovalController {
       ok: false,
       error: safe,
     });
+  }
+
+  private emitSafely(event: ApprovalEvent): void {
+    try {
+      this.deps.emit(event);
+    } catch {
+      // Event emission must not roll back a committed decision.
+    }
+  }
+
+  private recordApprovedSafely(approvalId: string): void {
+    try {
+      this.deps.auditRecorder.recordApproved(approvalId);
+    } catch {
+      // Audit must not convert a committed approval into a failed decision.
+    }
+  }
+
+  private recordRejectedSafely(approvalId: string): void {
+    try {
+      this.deps.auditRecorder.recordRejected(approvalId);
+    } catch {
+      // Audit must not convert a committed rejection into a failed decision.
+    }
+  }
+
+  private recordExpiredSafely(approvalId: string): void {
+    try {
+      this.deps.auditRecorder.recordExpired(approvalId);
+    } catch {
+      // Audit remains observational.
+    }
   }
 }
 

@@ -2,7 +2,7 @@ import { ipcMain } from 'electron';
 
 import { APPROVAL_IPC_CHANNELS, AI_IPC_CHANNELS, BROWSER_IPC_CHANNELS } from '../shared/ipc-contract';
 import { isAiSafeError, parseAskCurrentPageRequest, parseAskId, parsePanelOpen, parseTabId } from './ai-ipc-guards';
-import { getAiController, getApprovalController, setAiPanelOpen } from './ai-runtime';
+import { getAiController, getApprovalWorkflowController, invalidateApprovalTab, setAiPanelOpen } from './ai-runtime';
 import { parseApprovalDecideRequest } from './approval-ipc-guards';
 import { approvalSafeError } from './approval-safe-error';
 import { aiSafeError, toAiSafeError } from './ai-safe-error';
@@ -48,6 +48,7 @@ export function registerBrowserShellIpc(): void {
     assertTrustedAppSender(event);
     await whenBrowserReady();
     const trustedTabId = assertTabId(tabId);
+    invalidateApprovalTab(trustedTabId);
     getAiController()?.handleTabClosed(trustedTabId);
     await getBrowserAdapter().closeTab(trustedTabId);
   });
@@ -61,25 +62,33 @@ export function registerBrowserShellIpc(): void {
   ipcMain.handle(BROWSER_IPC_CHANNELS.navigate, async (event, tabId: unknown, url: unknown) => {
     assertTrustedAppSender(event);
     await whenBrowserReady();
-    await getBrowserAdapter().navigate(assertTabId(tabId), assertUrl(url));
+    const trustedTabId = assertTabId(tabId);
+    invalidateApprovalTab(trustedTabId);
+    await getBrowserAdapter().navigate(trustedTabId, assertUrl(url));
   });
 
   ipcMain.handle(BROWSER_IPC_CHANNELS.back, async (event, tabId: unknown) => {
     assertTrustedAppSender(event);
     await whenBrowserReady();
-    await getBrowserAdapter().back(assertTabId(tabId));
+    const trustedTabId = assertTabId(tabId);
+    invalidateApprovalTab(trustedTabId);
+    await getBrowserAdapter().back(trustedTabId);
   });
 
   ipcMain.handle(BROWSER_IPC_CHANNELS.forward, async (event, tabId: unknown) => {
     assertTrustedAppSender(event);
     await whenBrowserReady();
-    await getBrowserAdapter().forward(assertTabId(tabId));
+    const trustedTabId = assertTabId(tabId);
+    invalidateApprovalTab(trustedTabId);
+    await getBrowserAdapter().forward(trustedTabId);
   });
 
   ipcMain.handle(BROWSER_IPC_CHANNELS.reload, async (event, tabId: unknown) => {
     assertTrustedAppSender(event);
     await whenBrowserReady();
-    await getBrowserAdapter().reload(assertTabId(tabId));
+    const trustedTabId = assertTabId(tabId);
+    invalidateApprovalTab(trustedTabId);
+    await getBrowserAdapter().reload(trustedTabId);
   });
 
   ipcMain.handle(AI_IPC_CHANNELS.askCurrentPage, async (event, input: unknown) => {
@@ -155,11 +164,11 @@ export function registerBrowserShellIpc(): void {
       if (!parsed.ok) {
         return { ok: false, error: parsed.error };
       }
-      const approvalController = getApprovalController();
-      if (!approvalController) {
+      const workflow = getApprovalWorkflowController();
+      if (!workflow) {
         return { ok: false, error: approvalSafeError('APPROVAL_FAILED') };
       }
-      return approvalController.decide(parsed.input);
+      return workflow.decide(parsed.input);
     } catch {
       return { ok: false, error: approvalSafeError('APPROVAL_FAILED') };
     }

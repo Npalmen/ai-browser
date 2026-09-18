@@ -183,6 +183,17 @@ class ThrowingAuditSink implements ApprovalAuditSink {
   clear(): void {}
 }
 
+class DeferredHold {
+  readonly promise: Promise<void>;
+  resolve!: () => void;
+
+  constructor() {
+    this.promise = new Promise((resolve) => {
+      this.resolve = resolve;
+    });
+  }
+}
+
 function createHarness(
   adapter: BrowserAdapter,
   registry = new TargetRegistry(),
@@ -754,6 +765,41 @@ describe('ExecuteExecutor', () => {
 
     await assert.rejects(() => executor.execute(grant));
     assert.equal(counts.click, 1);
+  });
+
+  it('does not append a second stale audit when lifecycle already invalidated during preflight', async () => {
+    const started = new DeferredHold();
+    const release = new DeferredHold();
+    const { adapter, counts } = createFakeAdapter({
+      click: {
+        hold: {
+          started: () => started.resolve(),
+          wait: release.promise,
+        },
+        beforeHookError: new InteractionError('TARGET_STALE', 'registry replaced'),
+      },
+    });
+    const registry = new TargetRegistry();
+    registry.replaceObservation('tab-1', 'obs-1', [targetRecord()]);
+    const { executor, manager, grant, audit, auditRecorder } = createHarness(adapter, registry);
+
+    const pending = executor.execute(grant);
+    await started.promise;
+    const changed = manager.invalidateTab('tab-1');
+    assert.equal(changed.length, 1);
+    assert.equal(changed[0]?.action.state, 'stale');
+    auditRecorder.recordStale(grant.approvalId);
+    release.resolve();
+
+    const result = await pending;
+    assert.equal(result.status, 'stale');
+    assert.equal(counts.click, 1);
+    assert.equal(counts.hook, 0);
+    assert.equal(counts.input, 0);
+    assert.equal(counts.observePage, 0);
+    assert.equal(snapshotFacts(manager, grant.approvalId).state, 'stale');
+    assert.equal(snapshotFacts(manager, grant.approvalId).adapterPrimitiveInvoked, false);
+    assert.deepEqual(eventTypes(audit.getEvents()), ['execute-grant-issued', 'stale']);
   });
 
   it('keeps ExecuteExecutor free of renderer surfaces and new CDP methods', () => {

@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { app, BrowserWindow, WebContentsView } from 'electron';
 
 import { ElectronBrowserAdapter } from '../browser/electron-adapter';
-import { InteractiveAgent } from '../ai/interactive-agent';
+import { InteractiveAgent, type InteractiveExecutionResult } from '../ai/interactive-agent';
 import { AiRequestController } from '../main/ai-request-controller';
 import { InMemoryInteractionAuditSink } from '../interaction/interaction-audit';
 import { InteractionExecutor } from '../interaction/interaction-executor';
+import type { InteractionResult } from '../shared/interaction-types';
 import { startObservationFixtureServer } from '../../scripts/observation-fixture-server';
 import type { TabId } from '../shared/browser-types';
 import type { PageObservation } from '../shared/observation-types';
@@ -68,6 +69,13 @@ function getActiveWebContents(window: BrowserWindow) {
 
 function assertDebuggerDetached(window: BrowserWindow): void {
   assert.equal(getActiveWebContents(window).debugger.isAttached(), false);
+}
+
+function requireV3InteractionResult(result: InteractiveExecutionResult): InteractionResult {
+  if (result.status === 'approval-required') {
+    throw new Error('Expected a V3 interaction result');
+  }
+  return result;
 }
 
 function lastAuditEvent(audit: InMemoryInteractionAuditSink) {
@@ -174,14 +182,15 @@ async function run(): Promise<void> {
     if (clickResult.kind !== 'interaction') {
       throw new Error('Expected interaction result for click');
     }
+    const click = requireV3InteractionResult(clickResult.result);
     assert.equal(
-      clickResult.result.status,
+      click.status,
       'succeeded',
-      `click status=${clickResult.result.status} error=${clickResult.result.errorCode ?? 'none'}`,
+      `click status=${click.status} error=${click.errorCode ?? 'none'}`,
     );
-    assert.equal(clickResult.result.observation !== undefined, true);
+    assert.equal(click.observation !== undefined, true);
     assert.equal(
-      observationContainsText(clickResult.result.observation!.nodes, V3_EXPANDED_DETAIL_MARKER),
+      observationContainsText(click.observation!.nodes, V3_EXPANDED_DETAIL_MARKER),
       true,
     );
     const clickAudit = lastAuditEvent(audit);
@@ -195,10 +204,11 @@ async function run(): Promise<void> {
     if (typeResult.kind !== 'interaction') {
       throw new Error('Expected interaction result for type');
     }
+    const typed = requireV3InteractionResult(typeResult.result);
     assert.equal(
-      typeResult.result.status,
+      typed.status,
       'succeeded',
-      `type status=${typeResult.result.status} error=${typeResult.result.errorCode ?? 'none'}`,
+      `type status=${typed.status} error=${typed.errorCode ?? 'none'}`,
     );
     assert.equal(JSON.stringify(audit.getEvents()).includes(V3_TYPED_FIXTURE_VALUE), false);
     assert.equal(lastAuditEvent(audit).adapterPrimitiveInvoked, true);
@@ -222,12 +232,13 @@ async function run(): Promise<void> {
     if (selectResult.kind !== 'interaction') {
       throw new Error('Expected interaction result for select');
     }
+    const select = requireV3InteractionResult(selectResult.result);
     assert.equal(
-      selectResult.result.status,
+      select.status,
       'succeeded',
-      `select status=${selectResult.result.status} error=${selectResult.result.errorCode ?? 'none'}`,
+      `select status=${select.status} error=${select.errorCode ?? 'none'}`,
     );
-    const selectObservation = selectResult.result.observation!;
+    const selectObservation = select.observation!;
     const colorNode = selectObservation.nodes.find(
       (node) => node.nativeOptions?.some((option) => option.name === 'Blue' && option.selected === true),
     );
@@ -240,10 +251,11 @@ async function run(): Promise<void> {
     if (scrollResult.kind !== 'interaction') {
       throw new Error('Expected interaction result for scroll');
     }
+    const scrolled = requireV3InteractionResult(scrollResult.result);
     assert.equal(
-      scrollResult.result.status,
+      scrolled.status,
       'succeeded',
-      `scroll status=${scrollResult.result.status} error=${scrollResult.result.errorCode ?? 'none'}`,
+      `scroll status=${scrolled.status} error=${scrolled.errorCode ?? 'none'}`,
     );
     const scrollAudit = lastAuditEvent(audit);
     assert.equal(scrollAudit.policyOutcome, 'ALLOW_NAVIGATE');
@@ -310,13 +322,14 @@ async function run(): Promise<void> {
     if (exactResult.kind !== 'interaction') {
       throw new Error('Expected interaction result for exact select');
     }
+    const exact = requireV3InteractionResult(exactResult.result);
     assert.equal(
-      exactResult.result.status,
+      exact.status,
       'succeeded',
-      `exact select status=${exactResult.result.status} error=${exactResult.result.errorCode ?? 'none'}`,
+      `exact select status=${exact.status} error=${exact.errorCode ?? 'none'}`,
     );
     assert.ok(grantedExact?.backendNodeId, 'granted option backendNodeId was not recorded');
-    const exactObservation = exactResult.result.observation!;
+    const exactObservation = exact.observation!;
     const exactSelectNode = exactObservation.nodes.find((node) =>
       node.nativeOptions?.some((option) => option.name === 'Charlie' && option.selected === true),
     );
@@ -356,8 +369,9 @@ async function run(): Promise<void> {
     if (denyResult.kind !== 'interaction') {
       throw new Error('Expected interaction result for denial');
     }
-    assert.equal(denyResult.result.status, 'denied');
-    assert.equal(denyResult.result.errorCode, 'DEFERRED_TO_EXECUTE');
+    const denied = requireV3InteractionResult(denyResult.result);
+    assert.equal(denied.status, 'denied');
+    assert.equal(denied.errorCode, 'DEFERRED_TO_EXECUTE');
     const denyAudit = lastAuditEvent(audit);
     assert.equal(denyAudit.grantIssued, false);
     assert.equal(denyAudit.adapterPrimitiveInvoked, false);
@@ -391,8 +405,9 @@ async function run(): Promise<void> {
     if (sensitiveResult.kind !== 'interaction') {
       throw new Error('Expected interaction result for sensitive denial');
     }
-    assert.equal(sensitiveResult.result.status, 'denied');
-    assert.equal(sensitiveResult.result.errorCode, 'TARGET_SENSITIVE');
+    const sensitive = requireV3InteractionResult(sensitiveResult.result);
+    assert.equal(sensitive.status, 'denied');
+    assert.equal(sensitive.errorCode, 'TARGET_SENSITIVE');
     assert.equal(lastAuditEvent(audit).grantIssued, false);
     assert.equal(lastAuditEvent(audit).adapterPrimitiveInvoked, false);
     assertDebuggerDetached(window);

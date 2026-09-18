@@ -62,12 +62,16 @@ export class PrepareActionService {
       throw new Error('Prepared action snapshot missing after manager prepare.');
     }
 
-    this.deps.audit.append(
-      buildPreparedApprovalAuditEvent({
-        action,
-        facts: snapshot.facts,
-      }),
-    );
+    try {
+      this.deps.audit.append(
+        buildPreparedApprovalAuditEvent({
+          action,
+          facts: snapshot.facts,
+        }),
+      );
+    } catch {
+      // Audit failure must not roll back a successfully created PreparedAction.
+    }
 
     return action;
   }

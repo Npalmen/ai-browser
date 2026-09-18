@@ -139,13 +139,25 @@ export type ExecuteResult =
       readonly errorCode?: string;
     };
 
+export interface PendingApprovalView {
+  readonly approvalId: string;
+  readonly tabId: TabId;
+  readonly category: ConsequentialActionCategory;
+  readonly title: string;
+  readonly description?: string;
+  readonly origin?: string;
+  readonly expiresAt: number;
+}
+
 export type ApprovalSafeErrorCode =
   | 'INVALID_REQUEST'
   | 'APPROVAL_NOT_FOUND'
   | 'APPROVAL_ALREADY_DECIDED'
   | 'APPROVAL_EXPIRED'
   | 'APPROVAL_STALE'
-  | 'APPROVAL_FAILED';
+  | 'APPROVAL_FAILED'
+  | 'EXECUTION_FAILED'
+  | 'EXECUTION_STATE_UNKNOWN';
 
 export interface ApprovalSafeError {
   readonly code: ApprovalSafeErrorCode;
@@ -166,6 +178,10 @@ export type ApprovalDecideResult =
 
 export type ApprovalEvent =
   | {
+      readonly type: 'approval-required';
+      readonly approval: PendingApprovalView;
+    }
+  | {
       readonly type: 'approval-resolved';
       readonly approvalId: string;
       readonly tabId: TabId;
@@ -181,4 +197,21 @@ export type ApprovalEvent =
       readonly type: 'approval-stale';
       readonly approvalId: string;
       readonly tabId: TabId;
+    }
+  | {
+      readonly type: 'execution-started';
+      readonly approvalId: string;
+      readonly tabId: TabId;
+    }
+  | {
+      readonly type: 'execution-completed';
+      readonly approvalId: string;
+      readonly tabId: TabId;
+    }
+  | {
+      readonly type: 'execution-failed';
+      readonly approvalId: string;
+      readonly tabId: TabId;
+      readonly status: 'stale' | 'failed' | 'execution-attempted-state-unknown';
+      readonly error: ApprovalSafeError;
     };

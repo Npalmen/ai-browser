@@ -736,4 +736,36 @@ describe('InteractiveAgent', () => {
       assert.doesNotMatch(prior.text, /option-1/);
     }
   });
+
+  it('returns approval-required without committing a denial or leaking tokens', async () => {
+    const pages = new FakeObservationSource();
+    const runtime = new FakeInteractionRuntime({
+      kind: 'interaction',
+      proposal: { kind: 'click', targetId: 'target-1' },
+    });
+    const agent = new InteractiveAgent({
+      observationSource: pages,
+      modelRuntime: runtime,
+      interactionExecutor: {
+        async execute() {
+          return { status: 'approval-required' };
+        },
+      },
+      allowScreenshotExport: false,
+      catalog: MODEL_CATALOG,
+    });
+
+    const result = await agent.interact({ tabId: TAB, instruction: 'Buy now' });
+    assert.equal(result.kind, 'interaction');
+    if (result.kind === 'interaction') {
+      assert.deepEqual(result.result, { status: 'approval-required' });
+    }
+
+    await agent.interact({ tabId: TAB, instruction: 'What happened?' });
+    const serialized = JSON.stringify([result, runtime.requests]);
+    assert.equal(serialized.includes('[interaction click denied]'), false);
+    for (const token of ['approvalId', 'preparedActionId', 'executionId', 'ExecuteGrant']) {
+      assert.equal(JSON.stringify(result).includes(token), false, token);
+    }
+  });
 });

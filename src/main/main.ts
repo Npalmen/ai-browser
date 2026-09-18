@@ -1,6 +1,6 @@
 import { app, BrowserWindow } from 'electron';
 
-import { disposeAiRuntime, initializeAiRuntime } from './ai-runtime';
+import { disposeAiRuntime, initializeAiRuntime, invalidateApprovalTab } from './ai-runtime';
 import { initializeBrowserRuntime } from './browser-runtime';
 import { registerBrowserShellIpc } from './ipc';
 import { initializeSecurity } from './security';
@@ -11,6 +11,9 @@ async function startBrowserWindow(): Promise<void> {
   const adapter = await initializeBrowserRuntime(mainWindow, {
     onBeforeDispose: () => {
       disposeAiRuntime();
+    },
+    onTabInvalidated: (tabId) => {
+      invalidateApprovalTab(tabId);
     },
   });
   initializeAiRuntime(adapter);

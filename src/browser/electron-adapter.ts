@@ -18,6 +18,7 @@ import {
 } from './interaction-primitives';
 import { InteractionSessionManager } from './interaction-session';
 import { TabNotFoundError, TabRegistry } from './tab-registry';
+import { isMainFrameNavigationInvalidation, type TabInvalidationReason } from './tab-invalidation';
 import { ElectronPageObserver } from '../observation/electron-page-observer';
 import { TargetRegistry } from '../observation/target-registry';
 import type { BrowserState, PageState, TabId } from '../shared/browser-types';
@@ -36,6 +37,7 @@ import { normalizeRightInset } from '../main/website-view-bounds';
 
 export interface ElectronBrowserAdapterOptions {
   onStateChange?: (state: BrowserState) => void;
+  onTabInvalidated?: (tabId: TabId, reason: TabInvalidationReason) => void;
 }
 
 export class ElectronBrowserAdapter implements BrowserAdapter {
@@ -106,6 +108,8 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     if (!this.views.has(tabId)) {
       throw new TabNotFoundError(tabId);
     }
+
+    this.options.onTabInvalidated?.(tabId, 'tab-close');
 
     if (this.activeAttachedTabId === tabId) {
       this.detachActiveView();
@@ -350,6 +354,7 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
       return;
     }
 
+    this.options.onTabInvalidated?.(tabId, 'renderer-crash');
     console.error(`[adapter] recovering crashed renderer for tab ${tabId}`);
 
     this.targetRegistry.clearTab(tabId);
@@ -447,7 +452,17 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
       this.syncMetadata(tabId, true);
     };
 
-    webContents.on('did-start-navigation', sync);
+    webContents.on(
+      'did-start-navigation',
+      (event: { isMainFrame?: boolean }, _url?: string, _isInPlace?: boolean, isMainFrame?: boolean) => {
+        const mainFrame =
+          typeof isMainFrame === 'boolean' ? isMainFrame : event?.isMainFrame;
+        if (isMainFrameNavigationInvalidation({ isMainFrame: mainFrame })) {
+          this.options.onTabInvalidated?.(tabId, 'navigation');
+        }
+        sync();
+      },
+    );
     webContents.on('did-navigate', () => {
       if (!this.disposed && this.views.has(tabId)) {
         this.targetRegistry.clearTab(tabId);

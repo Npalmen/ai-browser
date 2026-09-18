@@ -54,6 +54,7 @@ describe('V2 side panel treats model output as text', () => {
         hasActiveTab: true,
         entries,
         isAsking: false,
+        approvalBusy: false,
         mode: 'read',
         draft: '',
         onDraftChange: () => {},

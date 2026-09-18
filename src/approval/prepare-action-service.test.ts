@@ -382,6 +382,37 @@ describe('PrepareActionService', () => {
     assert.equal(audit.getEvents()[1].approvalId, action.approvalId);
   });
 
+  it('returns a pending action even when the prepared audit sink throws', () => {
+    const ids = { prepared: 0, approval: 0 };
+    const manager = new ApprovalManager({
+      now: () => 1_000,
+      generatePreparedActionId: () => `prep-${++ids.prepared}`,
+      generateApprovalId: () => `appr-${++ids.approval}`,
+    });
+    const service = new PrepareActionService({
+      manager,
+      audit: {
+        append() {
+          throw new Error('audit sink unavailable');
+        },
+        getEvents() {
+          return [];
+        },
+        clear() {},
+      },
+    });
+
+    const action = service.prepare({
+      proposal: boundClick(),
+      observation: observation([consequentialNode('Buy now')]),
+    });
+
+    assert.equal(action.state, 'pending');
+    assert.equal(manager.getByApprovalId(action.approvalId)?.state, 'pending');
+    assert.equal(manager.getPendingForTab('tab-1')?.approvalId, action.approvalId);
+    assert.equal(manager.getSnapshot(action.approvalId)?.executionGrant, undefined);
+  });
+
   it('does not import browser execution surfaces', () => {
     const files = [
       path.join(__dirname, 'prepare-action-service.ts'),
