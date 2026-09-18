@@ -67,14 +67,14 @@ export class ApprovalManager {
   }
 
   prepare(input: PreparePreparedActionInput): PreparedAction {
-    this.staleUnresolvedForTab(input.tabId);
-
     const createdAt = this.now();
     const preparedActionId = requireGeneratedId(
       this.generatePreparedActionId(),
       'preparedActionId',
     );
     const approvalId = requireGeneratedId(this.generateApprovalId(), 'approvalId');
+    this.assertPreparedActionIdAvailable(preparedActionId);
+    this.assertApprovalIdAvailable(approvalId);
 
     const record: InternalApprovalRecord = {
       preparedActionId,
@@ -96,9 +96,8 @@ export class ApprovalManager {
       },
     };
 
-    this.byApprovalId.set(approvalId, record);
-    this.byPreparedActionId.set(preparedActionId, record);
-    this.unresolvedByTab.set(input.tabId, approvalId);
+    this.staleUnresolvedForTab(input.tabId);
+    this.insertPreparedRecord(record);
 
     return this.toAction(record);
   }
@@ -112,7 +111,8 @@ export class ApprovalManager {
     }
 
     const record = this.requireApproval(approvalId);
-    this.expireIfDue(record, this.now());
+    const transitionNow = this.now();
+    this.expireIfDue(record, transitionNow);
 
     if (record.state === 'expired') {
       throw new ApprovalError('APPROVAL_EXPIRED', 'Approval has expired.');
@@ -131,7 +131,7 @@ export class ApprovalManager {
       approvalId: record.approvalId,
       preparedActionId: record.preparedActionId,
       decision,
-      decidedAt: this.now(),
+      decidedAt: transitionNow,
     });
 
     record.decision = recorded;
@@ -149,7 +149,8 @@ export class ApprovalManager {
 
   claimExecuteGrant(approvalId: string): ExecuteGrant {
     const record = this.requireApproval(approvalId);
-    this.expireIfDue(record, this.now());
+    const transitionNow = this.now();
+    this.expireIfDue(record, transitionNow);
 
     if (record.facts.grantClaimed || record.executionGrant !== undefined) {
       throw new ApprovalError('EXECUTE_GRANT_ALREADY_CLAIMED', 'ExecuteGrant already claimed.');
@@ -164,8 +165,8 @@ export class ApprovalManager {
       throw new ApprovalError('INVALID_APPROVAL_TRANSITION', 'ExecuteGrant requires an approved action.');
     }
 
-    const issuedAt = this.now();
     const executionId = requireGeneratedId(this.generateExecutionId(), 'executionId');
+    this.assertExecutionIdAvailable(executionId);
     const grant: ExecuteGrant = Object.freeze({
       executionId,
       preparedActionId: record.preparedActionId,
@@ -176,14 +177,14 @@ export class ApprovalManager {
       observationId: record.observationId,
       documentRevision: record.documentRevision,
       targetId: record.targetId,
-      issuedAt,
+      issuedAt: transitionNow,
     });
 
     record.executionGrant = grant;
     record.facts.grantClaimed = true;
     record.state = 'executing';
     this.clearUnresolved(record);
-    this.byExecutionId.set(executionId, record);
+    this.bindExecutionId(executionId, record);
 
     return cloneGrant(grant);
   }
@@ -293,6 +294,46 @@ export class ApprovalManager {
   getSnapshot(approvalId: string): PreparedActionRecordSnapshot | undefined {
     const record = this.byApprovalId.get(approvalId);
     return record ? this.toSnapshot(record) : undefined;
+  }
+
+  private insertPreparedRecord(record: InternalApprovalRecord): void {
+    this.assertPreparedActionIdAvailable(record.preparedActionId);
+    this.assertApprovalIdAvailable(record.approvalId);
+    this.byPreparedActionId.set(record.preparedActionId, record);
+    this.byApprovalId.set(record.approvalId, record);
+    this.unresolvedByTab.set(record.tabId, record.approvalId);
+  }
+
+  private bindExecutionId(executionId: string, record: InternalApprovalRecord): void {
+    this.assertExecutionIdAvailable(executionId);
+    this.byExecutionId.set(executionId, record);
+  }
+
+  private assertPreparedActionIdAvailable(preparedActionId: string): void {
+    if (this.byPreparedActionId.has(preparedActionId)) {
+      throw new ApprovalError(
+        'AUTHORITY_ID_COLLISION',
+        `preparedActionId already exists: ${preparedActionId}`,
+      );
+    }
+  }
+
+  private assertApprovalIdAvailable(approvalId: string): void {
+    if (this.byApprovalId.has(approvalId)) {
+      throw new ApprovalError(
+        'AUTHORITY_ID_COLLISION',
+        `approvalId already exists: ${approvalId}`,
+      );
+    }
+  }
+
+  private assertExecutionIdAvailable(executionId: string): void {
+    if (this.byExecutionId.has(executionId)) {
+      throw new ApprovalError(
+        'AUTHORITY_ID_COLLISION',
+        `executionId already exists: ${executionId}`,
+      );
+    }
   }
 
   private staleUnresolvedForTab(tabId: TabId): void {
@@ -455,7 +496,7 @@ function cloneGrant(grant: ExecuteGrant): ExecuteGrant {
 }
 
 function requireGeneratedId(id: string, label: string): string {
-  if (typeof id !== 'string' || id.length === 0) {
+  if (typeof id !== 'string' || id.trim().length === 0) {
     throw new ApprovalError('INVALID_APPROVAL_TRANSITION', `${label} must be a non-empty string.`);
   }
   return id;

@@ -61,6 +61,35 @@ function requireSnapshot(manager: ApprovalManager, approvalId: string): Prepared
   return snapshot;
 }
 
+function createSequencedClockManager(): {
+  manager: ApprovalManager;
+  queueNow: (...values: number[]) => void;
+  readCount: () => number;
+} {
+  const ids = { prepared: 0, approval: 0, execution: 0 };
+  const sequence: number[] = [];
+  let index = 0;
+  return {
+    queueNow: (...values: number[]) => {
+      sequence.push(...values);
+    },
+    readCount: () => index,
+    manager: new ApprovalManager({
+      now: () => {
+        if (index >= sequence.length) {
+          throw new Error(`unexpected extra now() read at index ${index}`);
+        }
+        const value = sequence[index];
+        index += 1;
+        return value;
+      },
+      generatePreparedActionId: () => `prep-${++ids.prepared}`,
+      generateApprovalId: () => `appr-${++ids.approval}`,
+      generateExecutionId: () => `exec-${++ids.execution}`,
+    }),
+  };
+}
+
 function approveAndClaim(harness: Harness, prepared = input()): {
   action: PreparedAction;
   grant: ReturnType<ApprovalManager['claimExecuteGrant']>;
@@ -171,6 +200,35 @@ describe('ApprovalManager decide', () => {
       assertApprovalError(() => manager.claimExecuteGrant(action.approvalId), 'EXECUTE_GRANT_ALREADY_CLAIMED');
     }
   });
+
+  it('uses one clock sample for TTL and decidedAt', () => {
+    const clock = createSequencedClockManager();
+    clock.queueNow(1_000);
+    const action = clock.manager.prepare(input());
+    assert.equal(action.expiresAt, 121_000);
+
+    const readsBeforeDecide = clock.readCount();
+    clock.queueNow(120_999);
+    const decision = clock.manager.decide(action.approvalId, 'approve');
+
+    assert.equal(clock.readCount() - readsBeforeDecide, 1);
+    assert.equal(decision.decidedAt, 120_999);
+    assert.equal(clock.manager.getByApprovalId(action.approvalId)?.state, 'approved');
+    assert.equal(requireSnapshot(clock.manager, action.approvalId).decision?.decidedAt, 120_999);
+  });
+
+  it('expires from the same single timestamp when decide starts at expiresAt', () => {
+    const clock = createSequencedClockManager();
+    clock.queueNow(1_000);
+    const action = clock.manager.prepare(input());
+
+    const readsBeforeDecide = clock.readCount();
+    clock.queueNow(121_000, 120_999);
+    assertApprovalError(() => clock.manager.decide(action.approvalId, 'approve'), 'APPROVAL_EXPIRED');
+    assert.equal(clock.readCount() - readsBeforeDecide, 1);
+    assert.equal(clock.manager.getByApprovalId(action.approvalId)?.state, 'expired');
+    assert.equal(requireSnapshot(clock.manager, action.approvalId).decision, undefined);
+  });
 });
 
 describe('ApprovalManager expiry', () => {
@@ -258,6 +316,36 @@ describe('ApprovalManager claimExecuteGrant', () => {
       () => harness.manager.claimExecuteGrant(action.approvalId),
       'EXECUTE_GRANT_ALREADY_CLAIMED',
     );
+  });
+
+  it('uses one clock sample for TTL and issuedAt', () => {
+    const clock = createSequencedClockManager();
+    clock.queueNow(1_000, 1_000);
+    const action = clock.manager.prepare(input());
+    clock.manager.decide(action.approvalId, 'approve');
+
+    const readsBeforeClaim = clock.readCount();
+    clock.queueNow(120_999);
+    const grant = clock.manager.claimExecuteGrant(action.approvalId);
+
+    assert.equal(clock.readCount() - readsBeforeClaim, 1);
+    assert.equal(grant.issuedAt, 120_999);
+    assert.equal(clock.manager.getByApprovalId(action.approvalId)?.state, 'executing');
+  });
+
+  it('expires an approved action from the same single claim timestamp', () => {
+    const clock = createSequencedClockManager();
+    clock.queueNow(1_000, 1_000);
+    const action = clock.manager.prepare(input());
+    clock.manager.decide(action.approvalId, 'approve');
+
+    const readsBeforeClaim = clock.readCount();
+    clock.queueNow(121_000, 120_999);
+    assertApprovalError(() => clock.manager.claimExecuteGrant(action.approvalId), 'APPROVAL_EXPIRED');
+    assert.equal(clock.readCount() - readsBeforeClaim, 1);
+    assert.equal(clock.manager.getByApprovalId(action.approvalId)?.state, 'expired');
+    assert.equal(requireSnapshot(clock.manager, action.approvalId).executionGrant, undefined);
+    assert.equal(requireSnapshot(clock.manager, action.approvalId).facts.grantClaimed, false);
   });
 });
 
@@ -606,3 +694,179 @@ describe('ApprovalManager immutability and privacy', () => {
     }
   });
 });
+
+describe('ApprovalManager authority ID uniqueness', () => {
+  function createCollidingManager(initial: {
+    prepared: string;
+    approval: string;
+    execution: string;
+  }) {
+    const next = { ...initial, now: 1_000 };
+    const manager = new ApprovalManager({
+      now: () => next.now,
+      generatePreparedActionId: () => next.prepared,
+      generateApprovalId: () => next.approval,
+      generateExecutionId: () => next.execution,
+    });
+    return { manager, next };
+  }
+
+  it('does not overwrite or stale existing authority on preparedActionId collision', () => {
+    const { manager, next } = createCollidingManager({
+      prepared: 'prepared-existing',
+      approval: 'approval-existing',
+      execution: 'exec-1',
+    });
+    const existing = manager.prepare(input({ tabId: 'tab-1', targetId: 'target-a' }));
+
+    next.prepared = 'prepared-existing';
+    next.approval = 'approval-new';
+    assertApprovalError(() => manager.prepare(input({ tabId: 'tab-1', targetId: 'target-b' })), 'AUTHORITY_ID_COLLISION');
+
+    assert.equal(manager.getByApprovalId(existing.approvalId)?.state, 'pending');
+    assert.equal(manager.getPendingForTab('tab-1')?.approvalId, existing.approvalId);
+    assert.equal(manager.getByPreparedActionId('prepared-existing')?.targetId, 'target-a');
+    assert.equal(manager.getByApprovalId('approval-new'), undefined);
+  });
+
+  it('does not overwrite or stale existing authority on approvalId collision', () => {
+    const { manager, next } = createCollidingManager({
+      prepared: 'prepared-existing',
+      approval: 'approval-existing',
+      execution: 'exec-1',
+    });
+    const existing = manager.prepare(input({ tabId: 'tab-1', targetId: 'target-a' }));
+
+    next.prepared = 'prepared-new';
+    next.approval = 'approval-existing';
+    assertApprovalError(() => manager.prepare(input({ tabId: 'tab-1', targetId: 'target-b' })), 'AUTHORITY_ID_COLLISION');
+
+    assert.equal(manager.getByApprovalId(existing.approvalId)?.state, 'pending');
+    assert.equal(manager.getPendingForTab('tab-1')?.approvalId, existing.approvalId);
+    assert.equal(manager.getByPreparedActionId('prepared-existing')?.approvalId, existing.approvalId);
+    assert.equal(manager.getByPreparedActionId('prepared-new'), undefined);
+  });
+
+  it('does not stale existing same-tab approval when a generated ID is empty or whitespace', () => {
+    const next = { prepared: 'prep-1', approval: 'appr-1' };
+    const manager = new ApprovalManager({
+      now: () => 1_000,
+      generatePreparedActionId: () => next.prepared,
+      generateApprovalId: () => next.approval,
+    });
+    const existing = manager.prepare(input({ tabId: 'tab-1' }));
+
+    next.prepared = '';
+    next.approval = 'appr-2';
+    assertApprovalError(() => manager.prepare(input({ tabId: 'tab-1' })), 'INVALID_APPROVAL_TRANSITION');
+    assert.equal(manager.getPendingForTab('tab-1')?.approvalId, existing.approvalId);
+
+    next.prepared = '   ';
+    assertApprovalError(() => manager.prepare(input({ tabId: 'tab-1' })), 'INVALID_APPROVAL_TRANSITION');
+    assert.equal(manager.getByApprovalId(existing.approvalId)?.state, 'pending');
+    assert.equal(manager.getPendingForTab('tab-1')?.preparedActionId, existing.preparedActionId);
+  });
+
+  it('does not stale existing same-tab approval when a prepare generator throws', () => {
+    const next = { prepared: 'prep-1', approval: 'appr-1', fail: false };
+    const manager = new ApprovalManager({
+      now: () => 1_000,
+      generatePreparedActionId: () => {
+        if (next.fail) {
+          throw new Error('prepared-id-failed');
+        }
+        return next.prepared;
+      },
+      generateApprovalId: () => next.approval,
+    });
+    const existing = manager.prepare(input({ tabId: 'tab-1' }));
+    next.fail = true;
+    next.approval = 'appr-2';
+
+    assert.throws(() => manager.prepare(input({ tabId: 'tab-1' })), /prepared-id-failed/);
+    assert.equal(manager.getByApprovalId(existing.approvalId)?.state, 'pending');
+    assert.equal(manager.getPendingForTab('tab-1')?.approvalId, existing.approvalId);
+  });
+
+  it('does not consume an approval when executionId collides, then allows a unique retry', () => {
+    const next = {
+      prepared: 'prep-a',
+      approval: 'appr-a',
+      execution: 'exec-existing',
+    };
+    const manager = new ApprovalManager({
+      now: () => 1_000,
+      generatePreparedActionId: () => next.prepared,
+      generateApprovalId: () => next.approval,
+      generateExecutionId: () => next.execution,
+    });
+
+    const first = manager.prepare(input({ tabId: 'tab-a', targetId: 'target-a' }));
+    manager.decide(first.approvalId, 'approve');
+    const firstGrant = manager.claimExecuteGrant(first.approvalId);
+    assert.equal(firstGrant.executionId, 'exec-existing');
+
+    next.prepared = 'prep-b';
+    next.approval = 'appr-b';
+    const second = manager.prepare(input({ tabId: 'tab-b', targetId: 'target-b' }));
+    manager.decide(second.approvalId, 'approve');
+
+    assertApprovalError(() => manager.claimExecuteGrant(second.approvalId), 'AUTHORITY_ID_COLLISION');
+    const failedClaim = requireSnapshot(manager, second.approvalId);
+    assert.equal(failedClaim.action.state, 'approved');
+    assert.equal(failedClaim.facts.grantIssued, true);
+    assert.equal(failedClaim.facts.grantClaimed, false);
+    assert.equal(failedClaim.facts.adapterPrimitiveInvoked, false);
+    assert.equal(failedClaim.executionGrant, undefined);
+
+    manager.markAdapterPrimitiveInvoked(firstGrant.executionId);
+    assert.equal(requireSnapshot(manager, first.approvalId).facts.adapterPrimitiveInvoked, true);
+    assert.equal(requireSnapshot(manager, first.approvalId).action.state, 'executing');
+
+    next.execution = 'exec-fresh';
+    const retryGrant = manager.claimExecuteGrant(second.approvalId);
+    assert.equal(retryGrant.executionId, 'exec-fresh');
+    assert.equal(manager.getByApprovalId(second.approvalId)?.state, 'executing');
+    assertApprovalError(() => manager.claimExecuteGrant(second.approvalId), 'EXECUTE_GRANT_ALREADY_CLAIMED');
+  });
+
+  it('does not consume an approval when the execution generator throws', () => {
+    const next = { prepared: 'prep-1', approval: 'appr-1', failExecution: false };
+    const manager = new ApprovalManager({
+      now: () => 1_000,
+      generatePreparedActionId: () => next.prepared,
+      generateApprovalId: () => next.approval,
+      generateExecutionId: () => {
+        if (next.failExecution) {
+          throw new Error('execution-id-failed');
+        }
+        return 'exec-1';
+      },
+    });
+    const action = manager.prepare(input());
+    manager.decide(action.approvalId, 'approve');
+    next.failExecution = true;
+
+    assert.throws(() => manager.claimExecuteGrant(action.approvalId), /execution-id-failed/);
+    const snapshot = requireSnapshot(manager, action.approvalId);
+    assert.equal(snapshot.action.state, 'approved');
+    assert.equal(snapshot.facts.grantIssued, true);
+    assert.equal(snapshot.facts.grantClaimed, false);
+    assert.equal(snapshot.executionGrant, undefined);
+
+    next.failExecution = false;
+    const grant = manager.claimExecuteGrant(action.approvalId);
+    assert.equal(grant.executionId, 'exec-1');
+  });
+
+  it('still treats a successful claim as permanently single-use after later stale', () => {
+    const harness = createHarness();
+    const { action, grant } = approveAndClaim(harness);
+    harness.manager.markStaleBeforeDispatch(grant.executionId);
+    assertApprovalError(
+      () => harness.manager.claimExecuteGrant(action.approvalId),
+      'EXECUTE_GRANT_ALREADY_CLAIMED',
+    );
+  });
+});
+

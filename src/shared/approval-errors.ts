@@ -5,7 +5,8 @@ export type ApprovalErrorCode =
   | 'APPROVAL_STALE'
   | 'EXECUTE_GRANT_ALREADY_CLAIMED'
   | 'EXECUTION_NOT_FOUND'
-  | 'INVALID_APPROVAL_TRANSITION';
+  | 'INVALID_APPROVAL_TRANSITION'
+  | 'AUTHORITY_ID_COLLISION';
 
 export class ApprovalError extends Error {
   readonly code: ApprovalErrorCode;
