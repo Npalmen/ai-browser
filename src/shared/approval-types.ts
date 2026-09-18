@@ -118,6 +118,27 @@ export interface ApprovalDecideInput {
   readonly decision: ApprovalDecisionValue;
 }
 
+export type ExecuteResult =
+  | {
+      readonly executionId: string;
+      readonly status: 'executed';
+    }
+  | {
+      readonly executionId: string;
+      readonly status: 'stale';
+      readonly errorCode?: string;
+    }
+  | {
+      readonly executionId: string;
+      readonly status: 'failed';
+      readonly errorCode?: string;
+    }
+  | {
+      readonly executionId: string;
+      readonly status: 'execution-attempted-state-unknown';
+      readonly errorCode?: string;
+    };
+
 export type ApprovalSafeErrorCode =
   | 'INVALID_REQUEST'
   | 'APPROVAL_NOT_FOUND'

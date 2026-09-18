@@ -105,6 +105,35 @@ export function buildLifecycleApprovalAuditEvent(
     timestamp: input.timestamp,
     action: input.snapshot.action,
     facts: input.snapshot.facts,
+    executionId: input.snapshot.executionGrant?.executionId,
+  });
+}
+
+export interface BuildExecutionApprovalAuditEventInput {
+  readonly eventType:
+    | 'execute-grant-issued'
+    | 'execution-attempted'
+    | 'execution-failed'
+    | 'executed'
+    | 'post-observation-failed'
+    | 'stale';
+  readonly snapshot: PreparedActionRecordSnapshot;
+  readonly timestamp: number;
+}
+
+export function buildExecutionApprovalAuditEvent(
+  input: BuildExecutionApprovalAuditEventInput,
+): ApprovalAuditEvent {
+  const executionId = input.snapshot.executionGrant?.executionId;
+  if (executionId === undefined) {
+    throw new Error('Execution audit events require a manager-owned executionId.');
+  }
+  return buildApprovalAuditEvent({
+    eventType: input.eventType,
+    timestamp: input.timestamp,
+    action: input.snapshot.action,
+    facts: input.snapshot.facts,
+    executionId,
   });
 }
 
@@ -168,7 +197,7 @@ function validateApprovalAuditEvent(input: BuildApprovalAuditEventInput): void {
     }
   }
 
-  if (input.eventType === 'rejected' || input.eventType === 'expired' || input.eventType === 'stale') {
+  if (input.eventType === 'rejected' || input.eventType === 'expired') {
     if (
       input.facts.grantIssued ||
       input.facts.grantClaimed ||
@@ -177,6 +206,83 @@ function validateApprovalAuditEvent(input: BuildApprovalAuditEventInput): void {
       input.executionId !== undefined
     ) {
       throw new Error(`${input.eventType} audit event must record all stage facts as false.`);
+    }
+  }
+
+  if (input.eventType === 'stale') {
+    if (input.facts.adapterPrimitiveInvoked || input.facts.postObservationSucceeded) {
+      throw new Error('Stale audit events cannot record adapter dispatch or a successful post-observation.');
+    }
+    if (input.facts.grantClaimed) {
+      if (!input.facts.grantIssued || input.executionId === undefined) {
+        throw new Error('Post-claim stale audit events must include a claimed grant and executionId.');
+      }
+    } else if (input.executionId !== undefined) {
+      throw new Error('Pre-claim stale audit events cannot include an executionId.');
+    }
+  }
+
+  if (input.eventType === 'execute-grant-issued') {
+    if (
+      !input.facts.grantIssued ||
+      !input.facts.grantClaimed ||
+      input.facts.adapterPrimitiveInvoked ||
+      input.facts.postObservationSucceeded ||
+      input.executionId === undefined
+    ) {
+      throw new Error('Execute-grant-issued audit events require a claimed unused grant before adapter dispatch.');
+    }
+  }
+
+  if (input.eventType === 'execution-failed') {
+    if (
+      !input.facts.grantIssued ||
+      !input.facts.grantClaimed ||
+      input.facts.adapterPrimitiveInvoked ||
+      input.facts.postObservationSucceeded ||
+      input.executionId === undefined
+    ) {
+      throw new Error('Execution-failed audit events are strictly pre-dispatch.');
+    }
+  }
+
+  if (input.eventType === 'execution-attempted') {
+    if (
+      !input.facts.grantIssued ||
+      !input.facts.grantClaimed ||
+      !input.facts.adapterPrimitiveInvoked ||
+      input.facts.postObservationSucceeded ||
+      input.executionId === undefined
+    ) {
+      throw new Error(
+        'Execution-attempted audit events require adapter dispatch without a successful post-observation.',
+      );
+    }
+  }
+
+  if (input.eventType === 'executed') {
+    if (
+      !input.facts.grantIssued ||
+      !input.facts.grantClaimed ||
+      !input.facts.adapterPrimitiveInvoked ||
+      !input.facts.postObservationSucceeded ||
+      input.executionId === undefined
+    ) {
+      throw new Error('Executed audit events require adapter dispatch and a successful post-observation.');
+    }
+  }
+
+  if (input.eventType === 'post-observation-failed') {
+    if (
+      !input.facts.grantIssued ||
+      !input.facts.grantClaimed ||
+      !input.facts.adapterPrimitiveInvoked ||
+      input.facts.postObservationSucceeded ||
+      input.executionId === undefined
+    ) {
+      throw new Error(
+        'Post-observation-failed audit events require adapter dispatch without a successful post-observation.',
+      );
     }
   }
 }

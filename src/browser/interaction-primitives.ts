@@ -38,6 +38,8 @@ export async function executeAdapterClick(
   const liveBox = await preflightTargetBox(cdp, request.target, request.observedBounds);
   const center = liveBoxCenter(liveBox);
 
+  request.onBeforeInputDispatch?.();
+
   await cdp.dispatchMouseEvent({ type: 'mouseMoved', x: center.x, y: center.y });
   await cdp.dispatchMouseEvent({
     type: 'mousePressed',

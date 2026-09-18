@@ -10,7 +10,9 @@ export type ApprovalErrorCode =
   | 'PREPARE_ACTION_NOT_DEFERRED'
   | 'PREPARE_ACTION_UNSUPPORTED_KIND'
   | 'PREPARE_ACTION_IDENTITY_MISMATCH'
-  | 'PREPARE_ACTION_TARGET_NOT_FOUND';
+  | 'PREPARE_ACTION_TARGET_NOT_FOUND'
+  | 'INVALID_EXECUTE_GRANT'
+  | 'EXECUTE_IN_PROGRESS';
 
 export class ApprovalError extends Error {
   readonly code: ApprovalErrorCode;

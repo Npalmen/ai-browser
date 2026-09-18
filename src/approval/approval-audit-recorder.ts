@@ -2,6 +2,7 @@ import { ApprovalError } from '../shared/approval-errors';
 import type { ApprovalManager } from './approval-manager';
 import {
   buildApprovalPresentedAuditEvent,
+  buildExecutionApprovalAuditEvent,
   buildLifecycleApprovalAuditEvent,
   type ApprovalAuditEvent,
   type ApprovalAuditSink,
@@ -82,7 +83,124 @@ export class ApprovalAuditRecorder {
         'stale audit requires a stale action.',
       );
     }
+    if (snapshot.facts.adapterPrimitiveInvoked) {
+      throw new ApprovalError(
+        'INVALID_APPROVAL_TRANSITION',
+        'stale audit cannot record adapter dispatch.',
+      );
+    }
+    if (snapshot.facts.grantClaimed) {
+      return this.appendExecution('stale', snapshot);
+    }
     return this.appendLifecycle('stale', snapshot);
+  }
+
+  recordExecuteGrantIssued(approvalId: string): ApprovalAuditEvent {
+    const snapshot = this.requireSnapshot(approvalId);
+    if (snapshot.action.state !== 'executing' || snapshot.executionGrant === undefined) {
+      throw new ApprovalError(
+        'INVALID_APPROVAL_TRANSITION',
+        'execute-grant-issued requires an executing claimed grant.',
+      );
+    }
+    if (
+      snapshot.facts.grantIssued !== true ||
+      snapshot.facts.grantClaimed !== true ||
+      snapshot.facts.adapterPrimitiveInvoked !== false ||
+      snapshot.facts.postObservationSucceeded !== false
+    ) {
+      throw new ApprovalError(
+        'INVALID_APPROVAL_TRANSITION',
+        'execute-grant-issued requires a claimed unused grant before adapter dispatch.',
+      );
+    }
+    return this.appendExecution('execute-grant-issued', snapshot, snapshot.executionGrant.issuedAt);
+  }
+
+  recordExecutionAttempted(approvalId: string): ApprovalAuditEvent {
+    const snapshot = this.requireSnapshot(approvalId);
+    if (
+      snapshot.facts.grantIssued !== true ||
+      snapshot.facts.grantClaimed !== true ||
+      snapshot.facts.adapterPrimitiveInvoked !== true ||
+      snapshot.facts.postObservationSucceeded !== false ||
+      snapshot.executionGrant === undefined
+    ) {
+      throw new ApprovalError(
+        'INVALID_APPROVAL_TRANSITION',
+        'execution-attempted requires adapter dispatch without a successful post-observation.',
+      );
+    }
+    return this.appendExecution('execution-attempted', snapshot);
+  }
+
+  recordExecutionFailed(approvalId: string): ApprovalAuditEvent {
+    const snapshot = this.requireSnapshot(approvalId);
+    if (snapshot.action.state !== 'failed') {
+      throw new ApprovalError(
+        'INVALID_APPROVAL_TRANSITION',
+        'execution-failed audit requires a failed action.',
+      );
+    }
+    if (
+      snapshot.facts.grantIssued !== true ||
+      snapshot.facts.grantClaimed !== true ||
+      snapshot.facts.adapterPrimitiveInvoked !== false ||
+      snapshot.facts.postObservationSucceeded !== false ||
+      snapshot.executionGrant === undefined
+    ) {
+      throw new ApprovalError(
+        'INVALID_APPROVAL_TRANSITION',
+        'execution-failed is strictly pre-dispatch.',
+      );
+    }
+    return this.appendExecution('execution-failed', snapshot);
+  }
+
+  recordExecuted(approvalId: string): ApprovalAuditEvent {
+    const snapshot = this.requireSnapshot(approvalId);
+    if (snapshot.action.state !== 'executed') {
+      throw new ApprovalError(
+        'INVALID_APPROVAL_TRANSITION',
+        'executed audit requires an executed action.',
+      );
+    }
+    if (
+      snapshot.facts.grantIssued !== true ||
+      snapshot.facts.grantClaimed !== true ||
+      snapshot.facts.adapterPrimitiveInvoked !== true ||
+      snapshot.facts.postObservationSucceeded !== true ||
+      snapshot.executionGrant === undefined
+    ) {
+      throw new ApprovalError(
+        'INVALID_APPROVAL_TRANSITION',
+        'executed audit requires adapter dispatch and a successful post-observation.',
+      );
+    }
+    return this.appendExecution('executed', snapshot);
+  }
+
+  recordPostObservationFailed(approvalId: string): ApprovalAuditEvent {
+    const snapshot = this.requireSnapshot(approvalId);
+    if (snapshot.action.state !== 'execution-attempted-state-unknown') {
+      throw new ApprovalError(
+        'INVALID_APPROVAL_TRANSITION',
+        'post-observation-failed requires execution-attempted-state-unknown.',
+      );
+    }
+    if (
+      snapshot.facts.grantIssued !== true ||
+      snapshot.facts.grantClaimed !== true ||
+      snapshot.facts.adapterPrimitiveInvoked !== true ||
+      snapshot.facts.postObservationSucceeded !== false ||
+      snapshot.executionGrant === undefined
+    ) {
+      throw new ApprovalError(
+        'INVALID_APPROVAL_TRANSITION',
+        'post-observation-failed requires adapter dispatch without a successful post-observation.',
+      );
+    }
+    return this.appendExecution('post-observation-failed', snapshot);
   }
 
   private appendLifecycle(
@@ -91,6 +209,26 @@ export class ApprovalAuditRecorder {
     timestamp?: number,
   ): ApprovalAuditEvent {
     const event = buildLifecycleApprovalAuditEvent({
+      eventType,
+      snapshot,
+      timestamp: timestamp ?? this.now(),
+    });
+    this.deps.audit.append(event);
+    return event;
+  }
+
+  private appendExecution(
+    eventType:
+      | 'execute-grant-issued'
+      | 'execution-attempted'
+      | 'execution-failed'
+      | 'executed'
+      | 'post-observation-failed'
+      | 'stale',
+    snapshot: NonNullable<ReturnType<ApprovalManager['getSnapshot']>>,
+    timestamp?: number,
+  ): ApprovalAuditEvent {
+    const event = buildExecutionApprovalAuditEvent({
       eventType,
       snapshot,
       timestamp: timestamp ?? this.now(),

@@ -210,4 +210,72 @@ describe('approval audit', () => {
     assert.equal(serialized.includes('node.name'), false);
     assert.equal(serialized.includes('backendNodeId'), false);
   });
+
+  it('allows post-claim stale audit with a claimed unused grant', () => {
+    const manager = new ApprovalManager({
+      now: () => 5_000,
+      generatePreparedActionId: () => 'prep-1',
+      generateApprovalId: () => 'appr-1',
+      generateExecutionId: () => 'exec-1',
+    });
+    const action = manager.prepare({
+      tabId: 'tab-1',
+      observationId: 'obs-1',
+      documentRevision: 'rev-1',
+      targetId: 'target-1',
+      category: 'send',
+      summary: { title: 'Send' },
+    });
+    manager.decide(action.approvalId, 'approve');
+    manager.claimExecuteGrant(action.approvalId);
+    manager.markStaleBeforeDispatch('exec-1');
+    const audit = new InMemoryApprovalAuditSink();
+    const recorder = new ApprovalAuditRecorder({
+      manager,
+      audit,
+      now: () => 6_000,
+    });
+
+    const event = recorder.recordStale(action.approvalId);
+    assert.equal(event.eventType, 'stale');
+    assert.equal(event.grantIssued, true);
+    assert.equal(event.grantClaimed, true);
+    assert.equal(event.adapterPrimitiveInvoked, false);
+    assert.equal(event.executionId, 'exec-1');
+  });
+
+  it('rejects stale audit when adapterPrimitiveInvoked is true', () => {
+    const manager = new ApprovalManager({
+      now: () => 5_000,
+      generatePreparedActionId: () => 'prep-1',
+      generateApprovalId: () => 'appr-1',
+      generateExecutionId: () => 'exec-1',
+    });
+    const action = manager.prepare({
+      tabId: 'tab-1',
+      observationId: 'obs-1',
+      documentRevision: 'rev-1',
+      targetId: 'target-1',
+      category: 'send',
+      summary: { title: 'Send' },
+    });
+    manager.decide(action.approvalId, 'approve');
+    manager.claimExecuteGrant(action.approvalId);
+    manager.markAdapterPrimitiveInvoked('exec-1');
+    const audit = new InMemoryApprovalAuditSink();
+    const recorder = new ApprovalAuditRecorder({
+      manager,
+      audit,
+      now: () => 6_000,
+    });
+
+    assert.throws(
+      () => recorder.recordStale(action.approvalId),
+      (error: unknown) => {
+        assert.ok(error instanceof ApprovalError);
+        return true;
+      },
+    );
+    assert.equal(audit.getEvents().length, 0);
+  });
 });

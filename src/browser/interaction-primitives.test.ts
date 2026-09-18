@@ -508,4 +508,207 @@ describe('interaction primitives', () => {
       },
     );
   });
+
+  it('invokes onBeforeInputDispatch after live preflight and before the first mouse event', async () => {
+    const { cdp, calls } = createCdpStub();
+    let hookCount = 0;
+
+    await executeAdapterClick(cdp, {
+      target: {
+        tabId: 'tab-1',
+        frameId: 'frame-1',
+        backendNodeId: 42,
+        documentRevision: 'frame-1:loader-1',
+      },
+      onBeforeInputDispatch: () => {
+        hookCount += 1;
+        assert.equal(
+          calls.some((call) => call.method === 'DOM.getBoxModel'),
+          true,
+        );
+        assert.equal(
+          calls.some((call) => call.method === 'Input.dispatchMouseEvent'),
+          false,
+        );
+      },
+    });
+
+    assert.equal(hookCount, 1);
+    const methods = calls.map((call) => call.method);
+    const boxIndex = methods.indexOf('DOM.getBoxModel');
+    const hookMouse = calls.filter((call) => call.method === 'Input.dispatchMouseEvent');
+    assert.equal(hookMouse.length, 3);
+    assert.equal(hookMouse[0]?.params?.type, 'mouseMoved');
+    assert.equal(hookMouse[1]?.params?.type, 'mousePressed');
+    assert.equal(hookMouse[2]?.params?.type, 'mouseReleased');
+    assert.ok(boxIndex >= 0);
+    assert.ok(methods.indexOf('Input.dispatchMouseEvent') > boxIndex);
+  });
+
+  it('does not invoke onBeforeInputDispatch when document preflight fails', async () => {
+    const { cdp, calls } = createCdpStub();
+    cdp.getFrameTree = async () => {
+      calls.push({ method: 'Page.getFrameTree' });
+      return {
+        frameTree: {
+          frame: { id: 'frame-1', loaderId: 'loader-other', securityOrigin: 'https://example.com' },
+        },
+      };
+    };
+    let hookCount = 0;
+
+    await assert.rejects(
+      () =>
+        executeAdapterClick(cdp, {
+          target: {
+            tabId: 'tab-1',
+            frameId: 'frame-1',
+            backendNodeId: 42,
+            documentRevision: 'frame-1:loader-1',
+          },
+          onBeforeInputDispatch: () => {
+            hookCount += 1;
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof InteractionError);
+        assert.equal(error.code, 'PAGE_CHANGED');
+        return true;
+      },
+    );
+    assert.equal(hookCount, 0);
+    assert.equal(calls.filter((call) => call.method === 'Input.dispatchMouseEvent').length, 0);
+  });
+
+  it('does not invoke onBeforeInputDispatch when frame preflight fails', async () => {
+    const { cdp, calls } = createCdpStub();
+    cdp.getFrameTree = async () => {
+      calls.push({ method: 'Page.getFrameTree' });
+      return {
+        frameTree: {
+          frame: { id: 'frame-1', loaderId: 'loader-1', securityOrigin: 'https://example.com' },
+          childFrames: [
+            {
+              frame: {
+                id: 'frame-2',
+                loaderId: 'loader-2',
+                securityOrigin: 'https://other.test',
+              },
+            },
+          ],
+        },
+      };
+    };
+    let hookCount = 0;
+
+    await assert.rejects(
+      () =>
+        executeAdapterClick(cdp, {
+          target: {
+            tabId: 'tab-1',
+            frameId: 'frame-2',
+            backendNodeId: 42,
+            documentRevision: 'frame-1:loader-1',
+          },
+          onBeforeInputDispatch: () => {
+            hookCount += 1;
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof InteractionError);
+        assert.equal(error.code, 'UNSUPPORTED_FRAME');
+        return true;
+      },
+    );
+    assert.equal(hookCount, 0);
+    assert.equal(calls.filter((call) => call.method === 'Input.dispatchMouseEvent').length, 0);
+  });
+
+  it('does not invoke onBeforeInputDispatch when box preflight fails', async () => {
+    const { cdp, calls } = createCdpStub();
+    cdp.getBoxModel = async (backendNodeId: number) => {
+      calls.push({ method: 'DOM.getBoxModel', params: { backendNodeId } });
+      return { model: { content: [] } };
+    };
+    let hookCount = 0;
+
+    await assert.rejects(
+      () =>
+        executeAdapterClick(cdp, {
+          target: {
+            tabId: 'tab-1',
+            frameId: 'frame-1',
+            backendNodeId: 42,
+            documentRevision: 'frame-1:loader-1',
+          },
+          onBeforeInputDispatch: () => {
+            hookCount += 1;
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof InteractionError);
+        assert.equal(error.code, 'TARGET_NOT_FOUND');
+        return true;
+      },
+    );
+    assert.equal(hookCount, 0);
+    assert.equal(calls.filter((call) => call.method === 'Input.dispatchMouseEvent').length, 0);
+  });
+
+  it('does not dispatch mouse events when onBeforeInputDispatch throws', async () => {
+    const { cdp, calls } = createCdpStub();
+    let hookCount = 0;
+
+    await assert.rejects(
+      () =>
+        executeAdapterClick(cdp, {
+          target: {
+            tabId: 'tab-1',
+            frameId: 'frame-1',
+            backendNodeId: 42,
+            documentRevision: 'frame-1:loader-1',
+          },
+          onBeforeInputDispatch: () => {
+            hookCount += 1;
+            throw new Error('blocked');
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal((error as Error).message, 'blocked');
+        return true;
+      },
+    );
+    assert.equal(hookCount, 1);
+    assert.equal(calls.filter((call) => call.method === 'Input.dispatchMouseEvent').length, 0);
+  });
+
+  it('keeps V3 click without a hook on the existing three mouse events', async () => {
+    const { cdp, calls } = createCdpStub();
+
+    await executeAdapterClick(cdp, {
+      target: {
+        tabId: 'tab-1',
+        frameId: 'frame-1',
+        backendNodeId: 42,
+        documentRevision: 'frame-1:loader-1',
+      },
+    });
+
+    assert.deepEqual(
+      calls.map((call) => call.method),
+      [
+        'Page.getFrameTree',
+        'Page.getFrameTree',
+        'DOM.getBoxModel',
+        'Input.dispatchMouseEvent',
+        'Input.dispatchMouseEvent',
+        'Input.dispatchMouseEvent',
+      ],
+    );
+    const mouseEvents = calls.filter((call) => call.method === 'Input.dispatchMouseEvent');
+    assert.equal(mouseEvents[0]?.params?.type, 'mouseMoved');
+    assert.equal(mouseEvents[1]?.params?.type, 'mousePressed');
+    assert.equal(mouseEvents[2]?.params?.type, 'mouseReleased');
+  });
 });

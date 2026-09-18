@@ -708,6 +708,7 @@ describe('interaction adapter boundary', () => {
     ];
 
     const executorPath = path.join(ROOT, 'src', 'interaction', 'interaction-executor.ts');
+    const executeExecutorPath = path.normalize(path.join(ROOT, 'src', 'approval', 'execute-executor.ts'));
     const allowedFiles = new Set([
       path.normalize(executorPath),
       path.normalize(path.join(ROOT, 'src', 'browser', 'electron-adapter.ts')),
@@ -715,14 +716,25 @@ describe('interaction adapter boundary', () => {
     ]);
 
     for (const file of collectTsFiles(path.join(ROOT, 'src'))) {
-      if (allowedFiles.has(path.normalize(file))) {
+      const normalized = path.normalize(file);
+      if (allowedFiles.has(normalized)) {
         continue;
       }
 
       const source = readFileSync(file, 'utf8');
       for (const pattern of forbiddenCallers) {
+        if (normalized === executeExecutorPath && pattern.source === 'adapter\\.click\\(') {
+          continue;
+        }
         assert.equal(pattern.test(source), false, `${path.relative(ROOT, file)} must not call interaction primitives`);
       }
     }
+
+    const executeExecutorSource = readFileSync(executeExecutorPath, 'utf8');
+    assert.equal(/adapter\.click\(/.test(executeExecutorSource), true);
+    assert.equal(/adapter\.type\(/.test(executeExecutorSource), false);
+    assert.equal(/adapter\.select\(/.test(executeExecutorSource), false);
+    assert.equal(/adapter\.scroll\(/.test(executeExecutorSource), false);
+    assert.equal(/adapter\.scrollIntoView\(/.test(executeExecutorSource), false);
   });
 });

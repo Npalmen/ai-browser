@@ -22,6 +22,11 @@ export interface AdapterObservedBounds {
 export interface AdapterClickRequest {
   target: AdapterTargetRef;
   observedBounds?: AdapterObservedBounds;
+  /**
+   * Trusted in-process only. Invoked exactly once after live preflight,
+   * immediately before the first Input.dispatchMouseEvent.
+   */
+  readonly onBeforeInputDispatch?: () => void;
 }
 
 export interface AdapterTypeRequest {
