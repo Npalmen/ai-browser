@@ -1,7 +1,7 @@
 # Plan: V5 — Bounded agent loop
 
-**Status:** locked  
-**Implementation:** not started  
+**Status:** complete  
+**Implementation:** complete (Phases 1–6)  
 **Explicit reference:** Implementation tasks must cite `docs/plans/V5-agent-loop.md` to treat this file as authoritative.
 
 Authoritative architecture:
@@ -19,8 +19,8 @@ AGENTS.md
 ```
 
 ```text
-V5 architecture locked
-implementation not started
+V5 bounded agent loop — COMPLETE
+Phases 1–6 implemented and accepted
 ```
 
 V0 (shell), V1 (observation), V2 (read-only agent), V3 (permissioned INTERACT), and V4 (PREPARE / APPROVAL / EXECUTE) are **complete and frozen**. V5 must not reopen already-green V3/V4 authority.
@@ -197,12 +197,12 @@ A one-step Act request is a short run, not a separate product path.
 
 | Phase | Scope | Verification | Status |
 |-------|-------|--------------|--------|
-| 1 | AgentRun types, state machine, budgets, idempotency; no model/browser integration | targeted unit tests | not started |
-| 2 | One-step agent refactor + ephemeral run progress context; preserve existing single-step behavior | targeted agent/conversation tests | not started |
-| 3 | AgentRunCoordinator safe V3 multi-step loop (safe actions only) | targeted coordinator tests | not started |
-| 4 | Approval pause/resume correlation; successful V4 EXECUTE resumes; reject/stale/failed/unknown terminate | targeted approval-loop tests | not started |
-| 5 | Main controller + cancellation/supersede/lifecycle; renderer run progress UI | targeted main + UI tests | not started |
-| 6 | Deterministic fixtures + Electron V5 acceptance + closure | V2/V3/V4/V5 acceptance | not started |
+| 1 | AgentRun types, state machine, budgets, idempotency; no model/browser integration | targeted unit tests | complete (`caafb84`) |
+| 2 | One-step agent refactor + ephemeral run progress context; preserve existing single-step behavior | targeted agent/conversation tests | complete (`baf0a0d`) |
+| 3 | AgentRunCoordinator safe V3 multi-step loop (safe actions only) | targeted coordinator tests | complete (`fc8f4ad`) |
+| 4 | Approval pause/resume correlation; successful V4 EXECUTE resumes; reject/stale/failed/unknown terminate | targeted approval-loop tests | complete (`44cb0e5`) |
+| 5 | Main controller + cancellation/supersede/lifecycle; renderer run progress UI | targeted main + UI tests | complete (`5a53674`) |
+| 6 | Deterministic fixtures + Electron V5 acceptance + closure | V2/V3/V4/V5 acceptance | complete (see Closure evidence) |
 
 Each phase must remain independently reviewable. Do not collapse later phases into earlier ones.
 
@@ -442,11 +442,37 @@ Do not reopen V4 authority to make V5 green.
 
 V5 is complete only when Phase 6 closure gates are green and this plan’s status is updated to `complete` by a later implementation task.
 
-Until then:
+---
+
+## Closure evidence
+
+**Phase 1–5 implementation commits**
 
 ```text
-V5 architecture locked
-implementation not started
+caafb84 Implement V5 AgentRun state core
+baf0a0d Extract V5 interactive step primitive
+fc8f4ad Implement V5 safe multi-step agent loop
+44cb0e5 Implement V5 approval-aware agent pause and resume
+5a53674 Wire V5 bounded agent runs into product
 ```
+
+**Phase 6 acceptance** — `dad7e76` (`Add V5 bounded agent loop acceptance`; see `docs/acceptance/V5-acceptance.md`).
+
+**Closure matrix (all PASS on acceptance candidate, `AI_GATEWAY_API_KEY` unset):**
+
+```text
+npm run typecheck
+npm run test:ai                            (220 tests)
+npm run test:observation                   (40 tests)
+npm run test:fixture                       (7 tests)
+npm run test:v2-acceptance                 (29 tests + [v2-electron-observation] PASS)
+npm run test:v3-acceptance                 (29 tests + [v3-electron-interaction] PASS)
+npm run test:v4-acceptance                 (46 tests + [v4-electron-approval] PASS)
+npm run test:v5-acceptance                 (31 tests + [v5-electron-agent-loop] PASS)
+```
+
+**No-live confirmation:** `AiSdkGatewayRuntime` not used by V5 acceptance; `test:v2-catalog-live` and `smoke:v2-gateway` not run.
+
+V6 autonomous tasks and V7 persistent workflows were not started.
 
 No implementation phase in this file is complete.

@@ -584,8 +584,8 @@ V4  PREPARE_ACTION + APPROVAL + EXECUTE — COMPLETE
     → existing bounded click primitive
     not an autonomous loop
 
-V5  bounded agent loop                    (architecture locked; implementation not started)
-    one user task → sequential observe/reason/action steps
+V5  bounded agent loop — COMPLETE
+    one explicit user task → bounded sequential observe/reason/action
     reusing V3 INTERACT and per-action V4 approval
     no persistence / background autonomy
     ADR-006
@@ -707,4 +707,4 @@ This architecture implements `.cursor/rules/browser-agent-safety.mdc`: action le
 
 It follows `AGENTS.md` and `.cursor/rules/execution.mdc`: smallest correct implementation, explicit permissions, and semantic action classification.
 
-The runtime choice is locked in `docs/architecture/ADR-001-browser-runtime.md` (Status: Accepted). V3 INTERACT is locked in `docs/architecture/ADR-004-interaction-authority.md`. V4 PREPARE_ACTION / APPROVAL / EXECUTE is locked in `docs/architecture/ADR-005-approval-execute-authority.md`. V5 bounded agent-loop orchestration is locked in `docs/architecture/ADR-006-agent-loop-orchestration.md` (Status: Accepted; implementation not started).
+The runtime choice is locked in `docs/architecture/ADR-001-browser-runtime.md` (Status: Accepted). V3 INTERACT is locked in `docs/architecture/ADR-004-interaction-authority.md`. V4 PREPARE_ACTION / APPROVAL / EXECUTE is locked in `docs/architecture/ADR-005-approval-execute-authority.md`. V5 bounded agent-loop orchestration is locked in `docs/architecture/ADR-006-agent-loop-orchestration.md` (Status: Accepted; implementation complete).
