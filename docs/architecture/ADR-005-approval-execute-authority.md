@@ -111,12 +111,14 @@ Interaction policy          ← semantic classification (trusted metadata)
               → approval-required event (renderer-safe view)
               → user Approve | Reject via trusted IPC
               → ApprovalDecision
-              → claimExecuteGrant (atomic)
+              → claimExecuteGrant (atomic; consumes the approval)
               → ExecuteGrant (single-use, authority=EXECUTE)
-              → ExecuteExecutor
-              → BrowserAdapter.click (existing primitive)
-              → observePage exactly once
-              → renderer-safe execution outcome
+              → ExecuteExecutor exact validation
+                    ├─ identity/revision invalid → executing → stale (adapter 0)
+                    ├─ non-stale mechanical block → executing → failed (adapter 0)
+                    └─ valid → BrowserAdapter.click
+                         → observePage exactly once
+                         → executed | execution-attempted-state-unknown
 ```
 
 The model still proposes:
@@ -260,17 +262,34 @@ This is a distinct type from V3 `InteractionGrant` (`INTERACT` | `NAVIGATE`). Do
 
 The grant must not contain `WebContents`, CDP objects, reusable `backendNodeId` as external authority, page text, or model reasoning.
 
-`ExecuteGrant` is **single-use**. After one execution attempt it is consumed, regardless of:
+`claimExecuteGrant()` and browser dispatch are **not** the same event.
 
 ```text
-success
-mechanical failure before dispatch
-mechanical failure after dispatch
+claimExecuteGrant()
+= this approval has been consumed
+  and no other caller can claim it
+≠ the external side effect has been attempted
+```
+
+The irreversible uncertainty boundary is:
+
+```text
+immediately before BrowserAdapter.click invocation
+```
+
+that is, the executor stage that marks `adapterPrimitiveInvoked = true`.
+
+`ExecuteGrant` is **single-use**. After `claimExecuteGrant()` succeeds, the grant and approval are consumed, regardless of:
+
+```text
+pre-dispatch stale
+pre-dispatch mechanical failure
+successful click
 post-action observation failure
 navigation
 ```
 
-Never automatically retry EXECUTE. The external side effect may already have happened.
+Do not issue another `ExecuteGrant` from the same approval. Do not transition back to `pending` or `approved`. Never automatically retry EXECUTE. After dispatch, the external side effect may already have happened.
 
 ---
 
@@ -278,38 +297,99 @@ Never automatically retry EXECUTE. The external side effect may already have hap
 
 `ApprovalManager` / `PreparedActionStore` in trusted main owns all transitions. Invalid transitions are rejected explicitly. No component in renderer, `InteractiveAgent`, or `BrowserAdapter` mutates these states.
 
-```text
-                 ┌──────────┐
-                 │ pending  │
-                 └────┬─────┘
-          ┌──────────┼──────────┬──────────┐
-          │          │          │          │
-       reject     expire     stale      approve
-          │          │          │          │
-          ▼          ▼          ▼          ▼
-      rejected    expired     stale     approved
-                                             │
-                                    claimExecuteGrant
-                                             │
-                                             ▼
-                                         executing
-                                        /    |     \
-                                       /     |      \
-                                 executed  failed  execution-attempted-
-                                                   state-unknown
+Future `ExecuteExecutor` reports an execution-stage outcome back to the manager through explicit methods (names may differ in Phase 1):
+
+```ts
+markStaleBeforeDispatch(executionId)
+markFailedBeforeDispatch(executionId)
+markExecuted(executionId)
+markExecutionStateUnknown(executionId)
 ```
 
-Also:
-
 ```text
-pending → stale
-approved → stale     (if validation fails before dispatch; no adapter call)
-executing → executed | failed | execution-attempted-state-unknown
+pending
+  ├─ reject → rejected
+  ├─ expire → expired
+  ├─ stale  → stale
+  └─ approve → approved
+                 │
+                 ├─ stale  (pre-claim; no ExecuteGrant)
+                 ├─ expire (pre-claim; no ExecuteGrant)
+                 │
+                 ▼
+          claimExecuteGrant
+                 │
+                 ▼
+             executing
+          ┌──────┼───────────────┬──────────────┐
+          │      │               │              │
+       stale   failed         executed      execution-attempted-
+          │      │                              state-unknown
+          │      │
+          └ pre-dispatch only
+            adapterPrimitiveInvoked = false
 ```
 
-No transition back to `pending` after an execution attempt. No transition from `rejected` / `expired` / `stale` to `executing`.
+`executing → stale` and `executing → failed` are allowed **only when no BrowserAdapter mutation/input primitive has yet been invoked**.
 
-Terminal states: `rejected`, `expired`, `stale`, `executed`, `failed`, `execution-attempted-state-unknown`.
+Once `adapterPrimitiveInvoked = true`, the action must never transition to `stale`, `failed`, `rejected`, or `expired`. After dispatch, outcomes are limited to:
+
+```text
+executed
+execution-attempted-state-unknown
+```
+
+There is no generic post-dispatch `failed`. Uncertainty about side effect after dispatch is always `execution-attempted-state-unknown`.
+
+No transition back to `pending` or `approved`. No transition from `rejected` / `expired` / `stale` / `failed` / `executed` / `execution-attempted-state-unknown` to `executing`.
+
+Terminal states: `rejected`, `expired`, `stale`, `failed`, `executed`, `execution-attempted-state-unknown`.
+
+### Pre-claim vs post-claim stale
+
+Both may exist. Neither is retryable.
+
+**Pre-claim stale:** exact validity is known broken before grant claim.
+
+```text
+approved → stale
+ExecuteGrant not issued
+adapterPrimitiveInvoked = false
+```
+
+**Post-claim / pre-dispatch stale:** validity breaks or is discovered after the single-use grant was atomically claimed but before browser input.
+
+```text
+executing → stale
+ExecuteGrant consumed
+adapterPrimitiveInvoked = false
+```
+
+Both mean the external consequential click was not dispatched. They differ in whether an `ExecuteGrant` had already been consumed internally. Audit must preserve that distinction via stage facts.
+
+### `failed` vs `stale`
+
+Do not collapse all pre-dispatch failures into `stale`.
+
+```text
+failed
+= execution could not reach browser mutation dispatch
+  for a non-staleness mechanical/runtime reason
+adapterPrimitiveInvoked = false
+```
+
+Examples:
+
+```text
+TargetRegistry / observationId / documentRevision / target identity mismatch
+→ stale
+
+unsupported, destroyed, or other mechanical browser condition
+that is not identity staleness
+→ failed
+```
+
+Exact later mapping may use existing V3 error codes (`TARGET_STALE`, `PAGE_CHANGED`, `TAB_NOT_FOUND`, `UNSUPPORTED_FRAME`, `INTERACTION_FAILED`, …). `failed` after a claimed grant remains single-use: the grant cannot be reclaimed.
 
 ---
 
@@ -321,6 +401,10 @@ Terminal states: `rejected`, `expired`, `stale`, `executed`, `failed`, `executio
 prepare(...)
 decide(approvalId, decision)
 claimExecuteGrant(approvalId)
+markStaleBeforeDispatch(executionId)
+markFailedBeforeDispatch(executionId)
+markExecuted(executionId)
+markExecutionStateUnknown(executionId)
 invalidateTab(tabId)
 invalidateObservation(tabId, observationId)
 expire(now)
@@ -328,9 +412,11 @@ expire(now)
 
 **Duplicate Approve / duplicate IPC / late renderer retry:** only one caller may transition `pending → approved → executing`. Use an atomic in-memory compare-and-set. The loser receives a terminal already-decided (or already-executing / already-consumed) response. Adapter click count for that approval is `<= 1`.
 
+**Claimed then stale/failed before dispatch:** `claimExecuteGrant` has already consumed the grant. `executing → stale` or `executing → failed` is terminal. A second `claimExecuteGrant` for the same approval must fail. The user must prepare and approve a new action.
+
 **Approve vs Reject race:** exactly one decision wins. The other receives already-decided. A winning rejection never produces `ExecuteGrant` or adapter invocation.
 
-**Expiry race:** the state transition checks the injectable clock atomically. If `now >= expiresAt` before the approve transition commits, the state becomes `expired` and no `ExecuteGrant` is issued.
+**Expiry race:** the state transition checks the injectable clock atomically. If `now >= expiresAt` before the approve transition commits, the state becomes `expired` and no `ExecuteGrant` is issued. The same clock check applies at claim: elapsed TTL after approve but before a successful `claimExecuteGrant` is `approved → expired`, with no grant. After the grant is claimed, TTL does not create `expired`; pre-dispatch identity failure is `stale`, and post-dispatch uncertainty is `execution-attempted-state-unknown`.
 
 **Crash / restart:** V4 stores pending approvals and audit in memory only. Process restart invalidates every pending approval. There is no re-execution after restart. If the process crashes after adapter dispatch but before the result is observed, the system may not know whether the external side effect occurred; V4 represents that honestly and does not retry.
 
@@ -386,8 +472,8 @@ Defense in depth:
 |-------|--------|------------|
 | Prepare | Bound identity, `DEFER_EXECUTE`, click-only, target resolved in inference observation, category/summary | No `PreparedAction`; remain denied |
 | Decide | pending, TTL, single-use, trusted sender, not already decided | Terminal already-decided / expired / stale; no grant |
-| Claim grant | still pending/approved as required by the atomic transition, identity unchanged | No `ExecuteGrant` |
-| Immediately before click | `TargetRegistry` exact current `observationId`, `documentRevision`, exact `targetId`, V3 live box/frame/revision preflight | `stale` or `failed` **before** dispatch; `adapterPrimitiveInvoked = false` |
+| Claim grant | still `approved`, not already claimed, TTL remaining, identity still current if already known broken | No `ExecuteGrant`. Identity already invalid → `approved → stale` (**pre-claim stale**). TTL elapsed → `approved → expired`. |
+| Immediately before click | `TargetRegistry` exact current `observationId`, `documentRevision`, exact `targetId`, V3 live box/frame/revision preflight | Grant already claimed: `executing → stale` (identity) or `executing → failed` (non-stale mechanical). `adapterPrimitiveInvoked = false`. Grant remains consumed. |
 
 Do **not** re-observe before execute in a way that issues a new `observationId` and rebinds authority:
 
@@ -412,16 +498,39 @@ result = execution-attempted-state-unknown
 
 Do not tell the UI it is safe to retry automatically.
 
-Distinguish these outcomes (names may differ; collapsing them is forbidden):
+Once the executor marks `adapterPrimitiveInvoked = true`, never report `rejected`, `expired`, `stale`, or `failed` for that execution.
 
-| Outcome | Meaning | Adapter invoked? |
-|---------|---------|------------------|
-| `executed` | click dispatched; fresh observation returned | yes |
-| `rejected` | user rejected | no |
-| `expired` | TTL elapsed before a winning approve | no |
-| `stale` | observation/revision/tab/target invalid before dispatch | no |
-| `failed` | mechanical/preflight failure **before** dispatch | no |
-| `execution-attempted-state-unknown` | dispatch occurred; final page state unconfirmed | yes |
+| Outcome | Grant claimed? | Adapter invoked? | Meaning |
+|---------|----------------|------------------|---------|
+| `rejected` | no | no | user rejected |
+| `expired` | no | no | TTL expired before winning approval/claim |
+| `stale` | maybe | no | exact prepared identity invalid before browser dispatch |
+| `failed` | maybe | no | non-stale failure prevented browser dispatch |
+| `executed` | yes | yes | click dispatched and fresh observation succeeded |
+| `execution-attempted-state-unknown` | yes | yes | browser dispatch attempted; final state not safely confirmed |
+
+A `stale` or `failed` result after a claimed grant remains single-use. No retry.
+
+### Execution stage facts
+
+Main-process / audit facts only; not renderer-visible; no executable browser handles:
+
+```text
+grantIssued          — ApprovalDecision recorded as approve
+grantClaimed         — claimExecuteGrant succeeded
+adapterPrimitiveInvoked — BrowserAdapter.click / input dispatch started
+postObservationSucceeded — mandatory fresh observePage returned
+```
+
+These distinguish:
+
+```text
+stale before claim
+stale after claim but before dispatch
+mechanical failure before dispatch
+browser dispatch attempted
+fully confirmed execution
+```
 
 This continues V3 Phase 3 audit semantics: policy/grant vs adapter invocation vs post-observation are separate facts.
 
@@ -435,8 +544,8 @@ Do not overload `InteractionExecutor`.
 |--------|------|
 | `InteractionExecutor` | V3 safe `ALLOW_INTERACT` / `ALLOW_NAVIGATE` only |
 | `PrepareActionService` | `DEFER_EXECUTE` → `PreparedAction` + safe summary/category |
-| `PreparedActionStore` / `ApprovalManager` | pending state, TTL, decide, claim, invalidate |
-| `ExecuteExecutor` | consumes `ExecuteGrant`; reuses V3 click primitive + fresh observation |
+| `PreparedActionStore` / `ApprovalManager` | sole owner of PreparedAction state: decide, claim, pre-dispatch stale/failed, executed/unknown, invalidate, expire |
+| `ExecuteExecutor` | consumes `ExecuteGrant`; reports stage outcomes to the manager; reuses V3 click primitive + fresh observation; never mutates store state directly |
 | `AiRequestController` | trusted-app events; must not become the grant issuer |
 | `InteractiveAgent` | propose/bind; must not import `BrowserAdapter` or issue `ExecuteGrant` |
 | `BrowserAdapter` | mechanical `click` only; no `buy` / `send` / `delete` methods |
@@ -640,13 +749,15 @@ approval-presented
 approved
 rejected
 expired
-stale
-execute-grant-issued
-execution-attempted
+stale                    — include whether grantClaimed is already true
+execute-grant-issued     — grantIssued / grantClaimed
+execution-attempted      — adapterPrimitiveInvoked
 executed
-execution-failed
-post-observation-failed
+execution-failed         — pre-dispatch mechanical failed only
+post-observation-failed  — dispatch attempted; observation unconfirmed
 ```
+
+Audit must be able to tell pre-claim stale from post-claim / pre-dispatch stale. Do not store executable browser handles in these facts.
 
 Metadata only. Never store passwords, OTP, card numbers, typed secrets, full `PageObservation`, screenshots, `backendNodeId`, CDP params, or model chain-of-thought.
 
@@ -757,7 +868,9 @@ V5 agent loop
 [ ] Expired approval cannot execute
 [ ] Duplicate approve → at most one adapter click
 [ ] Approve/reject race → one terminal decision
-[ ] ExecuteGrant is single-use
+[ ] ExecuteGrant is single-use; claimed then stale/failed cannot be reclaimed
+[ ] executing → stale/failed only when adapterPrimitiveInvoked is false
+[ ] After adapter dispatch, never stale, failed, rejected, or expired
 [ ] No automatic EXECUTE retry
 [ ] Post-dispatch observation failure is unknown, not a retry
 [ ] Approval UI has no execution handles
@@ -805,6 +918,8 @@ tab closed / runtime disposed → no execution
 prompt-injection “already approved” → no authority
 malicious model output claiming approval → rejected by schema/policy
 website navigation while pending → stale, no execution
+claimed grant then stale before dispatch → stale, grant not reclaimable
+claimed grant then mechanical fail before dispatch → failed, grant not reclaimable
 post-click observation failure → unknown, no retry
 DENY and TARGET_SENSITIVE never prepare
 ```

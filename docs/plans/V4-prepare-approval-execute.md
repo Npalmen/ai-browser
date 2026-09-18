@@ -185,14 +185,15 @@ Copied from ADR-005; implementation must not weaken them.
 5. Any superseding observation for the tab makes the prepared action stale.
 6. Renderer decide payload is only `{ approvalId, decision }`.
 7. `approvalId` alone does not authorize execution.
-8. `ExecuteGrant` is single-use; one adapter click max; no automatic retry.
+8. `ExecuteGrant` is single-use. `claimExecuteGrant` consumes the approval even if later `executing → stale` or `executing → failed` before dispatch. One adapter click max; no automatic retry; no second grant from the same approval.
 9. TTL = 2 minutes; injectable clock.
 10. Max one pending PreparedAction per tab; a new prepare invalidates the previous.
 11. In-memory only; restart clears pending approvals.
-12. Post-dispatch observation failure → `execution-attempted-state-unknown`, not retry.
-13. Final purchase/sign-in click may be prepared after the user manually filled secrets; secrets stay unexported.
-14. Cancel of the original AI request must not execute. Pending approval is independent after prepare, but a new same-tab AI request invalidates it.
-15. Tab close, dispose, navigation/reload → invalid/stale.
+12. Post-dispatch observation failure → `execution-attempted-state-unknown`, not retry. After `adapterPrimitiveInvoked = true`, never `stale`, `failed`, `rejected`, or `expired`.
+13. Grant claim ≠ browser dispatch. `executing → stale` / `executing → failed` are legal only with adapter invocation count 0.
+14. Final purchase/sign-in click may be prepared after the user manually filled secrets; secrets stay unexported.
+15. Cancel of the original AI request must not execute. Pending approval is independent after prepare, but a new same-tab AI request invalidates it.
+16. Tab close, dispose, navigation/reload → invalid/stale.
 
 ---
 
@@ -209,25 +210,55 @@ Copied from ADR-005; implementation must not weaken them.
 
 ### Phase 1 — types and state machine
 
-Add project-owned types (likely `src/shared/approval-types.ts` or adjacent) and `PreparedActionStore` / `ApprovalManager` with:
+Add project-owned types (likely `src/shared/approval-types.ts` or adjacent) and `PreparedActionStore` / `ApprovalManager` with the full in-memory transition model. Conceptual operations (names may differ):
 
 ```text
 prepare
 decide
 claimExecuteGrant
+markStaleBeforeDispatch
+markFailedBeforeDispatch
+markExecuted
+markExecutionStateUnknown
 invalidateTab
 expire(now)
 ```
 
-Prove:
+Internal stage facts (not renderer-visible; no browser handles):
+
+```text
+grantIssued
+grantClaimed
+adapterPrimitiveInvoked
+postObservationSucceeded
+```
+
+Phase 1 must implement and unit-test:
+
+```text
+pending → approved
+approved → executing
+approved → stale
+executing → stale before dispatch
+executing → failed before dispatch
+executing → executed
+executing → execution-attempted-state-unknown
+```
+
+Also prove:
 
 - illegal transitions throw or return explicit terminal errors
+- no return to `pending` or `approved`
 - duplicate decide cannot issue two grants
 - approve/reject race: one winner
 - expire-before-approve: no grant
 - injectable clock
+- claimed grant then stale before dispatch → state `stale`; grant cannot be reclaimed
+- claimed grant then failed before dispatch → state `failed`; grant cannot be reclaimed
+- adapter-dispatch boundary represented distinctly from grant claim (`adapterPrimitiveInvoked` vs `grantClaimed`)
+- after `adapterPrimitiveInvoked = true`, `stale` / `failed` / `rejected` / `expired` are illegal
 
-No BrowserAdapter. No UI.
+No BrowserAdapter. No UI. Phase 1 does not dispatch browser input; it records the dispatch-boundary fact so later phases cannot collapse claim and click.
 
 ### Phase 2 — prepare from DEFER_EXECUTE
 
@@ -267,13 +298,17 @@ exact target
 V3 live click preflight
 Input.dispatchMouseEvent path only
 observePage once
-consume grant even on failure
+grant already consumed at claim; never reissue
 ```
 
-Map:
+Map execution-stage outcomes back to `ApprovalManager` (do not mutate store state from the adapter):
 
-- pre-dispatch failure → `failed` / `stale`, adapter 0
-- post-dispatch observation failure → `execution-attempted-state-unknown`, adapter 1, no retry
+- identity/revision/target mismatch before dispatch → `executing → stale`, adapter 0, grant already consumed
+- non-stale mechanical/runtime block before dispatch → `executing → failed`, adapter 0, grant already consumed
+- click dispatched and fresh observation succeeds → `executed`, adapter 1
+- click/input may have occurred but final state cannot be safely confirmed → `execution-attempted-state-unknown`, adapter 1, no retry
+
+Never map post-dispatch uncertainty to `failed` or `stale`. A second `claimExecuteGrant` after stale/failed/executed/unknown must fail.
 
 Reuse `ElectronBrowserAdapter.click`. No new CDP methods.
 
@@ -333,6 +368,8 @@ prompt-injection text says the action is already approved
 malicious model output claims approval / authority=EXECUTE
 website navigates while approval pending
 post-click observation fails
+claimed grant then stale before dispatch
+claimed grant then mechanical fail before dispatch
 sensitive password type proposal
 unsupported combobox
 stale consequential button
@@ -371,7 +408,8 @@ V4 is complete when ADR-005 is implemented and all gates below are green.
 [ ] ExecuteGrant single-use
 [ ] one BrowserAdapter primitive max
 [ ] no automatic EXECUTE retry
-[ ] post-dispatch observation failure represented as unknown/failed safely
+[ ] claimed grant then stale/failed before dispatch is terminal; grant cannot be reclaimed
+[ ] post-dispatch observation failure represented as execution-attempted-state-unknown, never stale/failed
 [ ] approval UI contains no execution handles
 [ ] audit contains no sensitive values
 [ ] V2 acceptance green
