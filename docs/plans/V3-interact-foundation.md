@@ -1,6 +1,10 @@
 # Plan: V3 — Permissioned INTERACT foundation
 
-**Status:** complete  
+**Status:** locked
+
+Post-closure hardening in progress:
+native select keyboard execution must preserve exact `optionTargetId` identity.
+
 **Explicit reference:** Implementation tasks must cite `docs/plans/V3-interact-foundation.md` to treat this file as authoritative.
 
 Authoritative architecture:

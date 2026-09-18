@@ -136,4 +136,66 @@ describe('buildNativeSelectOptionCatalogs', () => {
 
     assert.equal(catalogs.size, 0);
   });
+
+  it('omits unnamed intermediate options from the model-visible catalog', () => {
+    const catalogs = buildNativeSelectOptionCatalogs(
+      [
+        {
+          targetId: 'select-1',
+          displayName: 'Exact color',
+          candidate: candidate({
+            documentOrder: 0,
+            tag: 'select',
+            role: 'combobox',
+            targetIdentity: { backendNodeId: 1 },
+          }),
+        },
+        {
+          targetId: 'option-a',
+          displayName: 'Alpha',
+          selected: true,
+          candidate: candidate({
+            documentOrder: 1,
+            tag: 'option',
+            role: 'option',
+            name: 'Alpha',
+            parentBackendNodeId: 1,
+            targetIdentity: { backendNodeId: 2 },
+            selected: true,
+          }),
+        },
+        {
+          targetId: 'option-unnamed',
+          displayName: '',
+          candidate: candidate({
+            documentOrder: 2,
+            tag: 'option',
+            role: 'option',
+            parentBackendNodeId: 1,
+            targetIdentity: { backendNodeId: 3 },
+          }),
+        },
+        {
+          targetId: 'option-c',
+          displayName: 'Charlie',
+          candidate: candidate({
+            documentOrder: 3,
+            tag: 'option',
+            role: 'option',
+            name: 'Charlie',
+            parentBackendNodeId: 1,
+            targetIdentity: { backendNodeId: 4 },
+          }),
+        },
+      ],
+      OBSERVATION_BUDGETS,
+    );
+
+    const catalog = catalogs.get('select-1');
+    assert.ok(catalog);
+    assert.deepEqual(
+      catalog.map((option) => option.targetId),
+      ['option-a', 'option-c'],
+    );
+  });
 });

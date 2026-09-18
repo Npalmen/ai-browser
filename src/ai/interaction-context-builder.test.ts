@@ -210,6 +210,36 @@ describe('buildInteractiveModelPageContext', () => {
     assert.equal(built.context.nodes[0]?.nativeOptions?.[0]?.name, '[redacted]');
     assert.doesNotMatch(built.serialized, new RegExp(SECRET_LITERAL));
   });
+
+  it('does not expose native select mechanical indexes or backend identities', () => {
+    const built = buildInteractiveModelPageContext(
+      observation([
+        node({
+          targetId: 'select-1',
+          role: 'combobox',
+          name: 'Color',
+          tag: 'select',
+          interactive: true,
+          nativeOptions: [
+            { targetId: 'option-1', name: 'Red', selected: true },
+            { targetId: 'option-2', name: 'Blue' },
+          ],
+        }),
+      ]),
+    );
+
+    assert.doesNotMatch(built.serialized, /backendNodeId/);
+    assert.doesNotMatch(built.serialized, /keyboardDelta/);
+    assert.doesNotMatch(built.serialized, /optionCatalogIndex/);
+    assert.doesNotMatch(built.serialized, /liveOptionBackendNodeIds/);
+    assert.doesNotMatch(built.serialized, /selectedBackendNodeId/);
+    assert.equal(JSON.stringify(built.context.nodes).includes('backendNodeId'), false);
+    assert.deepEqual(Object.keys(built.context.nodes[0]?.nativeOptions?.[0] ?? {}), [
+      'targetId',
+      'name',
+      'selected',
+    ]);
+  });
 });
 
 describe('buildInteractiveModelMessages', () => {

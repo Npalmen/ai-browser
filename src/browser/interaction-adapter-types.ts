@@ -33,8 +33,6 @@ export interface AdapterTypeRequest {
 export interface AdapterSelectRequest {
   selectTarget: AdapterTargetRef;
   optionTarget: AdapterTargetRef;
-  /** Signed steps from the currently selected option to the target option. */
-  optionCatalogIndex: number;
   selectObservedBounds?: AdapterObservedBounds;
   optionObservedBounds?: AdapterObservedBounds;
 }

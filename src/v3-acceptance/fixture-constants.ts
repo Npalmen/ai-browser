@@ -10,7 +10,7 @@ export const V3_STALE_TARGET_PATH = '/interaction/stale-target.html';
 export const V3_PROMPT_INJECTION_PATH = '/interaction/prompt-injection.html';
 export const V3_FRAME_PARENT_PATH = '/interaction/frame-parent.html';
 export const V3_FRAME_CHILD_PATH = '/interaction/frame-child.html';
-export const V3_CROSS_ORIGIN_PARENT_PATH = '/interaction/cross-origin-parent.html';
+export const V3_SELECT_EXACT_TARGET_PATH = '/interaction/select-exact-target.html';
 
 export const V3_EXPANDED_DETAIL_MARKER = 'V3_EXPANDED_DETAIL_MARKER';
 export const V3_LOWER_SECTION_MARKER = 'V3_LOWER_SECTION_MARKER';

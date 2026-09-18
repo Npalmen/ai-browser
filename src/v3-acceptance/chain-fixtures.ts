@@ -88,7 +88,7 @@ export function createFakeAdapter(options: {
   observePage?: () => Promise<PageObservation>;
   onClick?: () => void;
   onType?: () => void;
-  onSelect?: () => void;
+  onSelect?: (request: import('../browser/interaction-adapter-types').AdapterSelectRequest) => void;
   onScroll?: () => void;
   onScrollIntoView?: () => void;
   failObserveAfterMutation?: boolean;
@@ -149,9 +149,9 @@ export function createFakeAdapter(options: {
       options.onType?.();
       return { primitive: 'type' };
     },
-    select: async () => {
+    select: async (request) => {
       counts.select += 1;
-      options.onSelect?.();
+      options.onSelect?.(request);
       return { primitive: 'select' };
     },
     scroll: async () => {

@@ -67,6 +67,8 @@ describe('InteractionCdpClient', () => {
       nativeVirtualKeyCode: 65,
     });
     await client.insertText('hello');
+    await client.getAccessibilityTree();
+    await client.captureDomSnapshot();
 
     assert.deepEqual(
       stub.commands.map((command) => command.method),
@@ -76,6 +78,8 @@ describe('InteractionCdpClient', () => {
         'Input.dispatchMouseEvent',
         'Input.dispatchKeyEvent',
         'Input.insertText',
+        'Accessibility.getFullAXTree',
+        'DOMSnapshot.captureSnapshot',
       ],
     );
     assert.equal(stub.commands[1]?.params?.backendNodeId, 42);

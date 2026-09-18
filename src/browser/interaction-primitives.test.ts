@@ -3,6 +3,10 @@ import { describe, it } from 'node:test';
 
 import { InteractionError } from '../shared/interaction-errors';
 import { MAX_INTERACTION_SCROLL_AMOUNT_PX } from '../shared/interaction-types';
+import type {
+  CdpAccessibilityTreeResponse,
+  CdpDomSnapshotResponse,
+} from '../observation/cdp-types';
 import type { InteractionCdpClient } from '../observation/interaction-cdp-client';
 import {
   assertScrollIntoViewViewport,
@@ -26,7 +30,57 @@ function boxModel() {
   return { model: { content: [100, 100, 120, 100, 120, 120, 100, 120] } };
 }
 
-function createCdpStub() {
+function liveSelectSources(optionBackendNodeIds: number[], selectedBackendNodeId: number): {
+  accessibilityTree: CdpAccessibilityTreeResponse;
+  domSnapshot: CdpDomSnapshotResponse;
+} {
+  const strings = ['HTML', 'SELECT', 'OPTION', 'selected', ''];
+  const parentIndex = [-1, 0];
+  const nodeType = [1, 1];
+  const nodeName = [0, 1];
+  const nodeValue = [4, 4];
+  const backendNodeId = [1, 10];
+  const attributes: number[][] = [[], []];
+  const axNodes: CdpAccessibilityTreeResponse['nodes'] = [
+    { nodeId: 'select', role: { value: 'combobox' }, backendDOMNodeId: 10 },
+  ];
+
+  for (const [index, optionId] of optionBackendNodeIds.entries()) {
+    parentIndex.push(1);
+    nodeType.push(1);
+    nodeName.push(2);
+    nodeValue.push(4);
+    backendNodeId.push(optionId);
+    attributes.push(optionId === selectedBackendNodeId ? [3, 4] : []);
+    axNodes.push({
+      nodeId: `option-${index}`,
+      role: { value: 'option' },
+      backendDOMNodeId: optionId,
+      properties:
+        optionId === selectedBackendNodeId
+          ? [{ name: 'selected', value: { type: 'boolean', value: true } }]
+          : [],
+    });
+  }
+
+  return {
+    accessibilityTree: { nodes: axNodes },
+    domSnapshot: {
+      strings,
+      documents: [
+        {
+          frameId: 'frame-1',
+          nodes: { parentIndex, nodeType, nodeName, nodeValue, backendNodeId, attributes },
+          layout: { nodeIndex: [], bounds: [], styles: [] },
+        },
+      ],
+    },
+  };
+}
+
+function createCdpStub(
+  sources = liveSelectSources([11, 12, 13], 11),
+) {
   const calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
 
   const cdp: InteractionCdpClient = {
@@ -37,6 +91,14 @@ function createCdpStub() {
     getBoxModel: async (backendNodeId: number) => {
       calls.push({ method: 'DOM.getBoxModel', params: { backendNodeId } });
       return boxModel();
+    },
+    getAccessibilityTree: async () => {
+      calls.push({ method: 'Accessibility.getFullAXTree' });
+      return sources.accessibilityTree;
+    },
+    captureDomSnapshot: async () => {
+      calls.push({ method: 'DOMSnapshot.captureSnapshot' });
+      return sources.domSnapshot;
     },
     dispatchMouseEvent: async (params) => {
       calls.push({ method: 'Input.dispatchMouseEvent', params: { ...params } });
@@ -138,7 +200,7 @@ describe('interaction primitives', () => {
     );
   });
 
-  it('selects by opening the select then navigating with keyboard', async () => {
+  it('selects by live backend identity, not filtered catalog position', async () => {
     const { cdp, calls } = createCdpStub();
 
     await executeAdapterSelect(cdp, {
@@ -151,16 +213,54 @@ describe('interaction primitives', () => {
       optionTarget: {
         tabId: 'tab-1',
         frameId: 'frame-1',
-        backendNodeId: 11,
+        backendNodeId: 13,
         documentRevision: 'frame-1:loader-1',
       },
-      optionCatalogIndex: 1,
     });
+
+    const methods = calls.map((call) => call.method);
+    assert.equal(methods.includes('Accessibility.getFullAXTree'), true);
+    assert.equal(methods.includes('DOMSnapshot.captureSnapshot'), true);
+    const preflightIndex = methods.indexOf('Accessibility.getFullAXTree');
+    const mouseIndex = methods.indexOf('Input.dispatchMouseEvent');
+    assert.ok(preflightIndex >= 0 && mouseIndex > preflightIndex);
 
     const mouseEvents = calls.filter((call) => call.method === 'Input.dispatchMouseEvent');
     assert.equal(mouseEvents.length, 3);
     assert.equal(calls.filter((call) => call.method === 'DOM.getBoxModel').length, 1);
-    assert.equal(calls.filter((call) => call.method === 'Input.dispatchKeyEvent').length, 4);
+    const keyEvents = calls.filter((call) => call.method === 'Input.dispatchKeyEvent');
+    assert.equal(keyEvents.filter((call) => call.params?.key === 'ArrowDown').length, 4);
+    assert.equal(keyEvents.filter((call) => call.params?.key === 'Enter').length, 2);
+  });
+
+  it('fails closed before mouse input when the granted option is gone', async () => {
+    const { cdp, calls } = createCdpStub(liveSelectSources([11, 12], 11));
+
+    await assert.rejects(
+      () =>
+        executeAdapterSelect(cdp, {
+          selectTarget: {
+            tabId: 'tab-1',
+            frameId: 'frame-1',
+            backendNodeId: 10,
+            documentRevision: 'frame-1:loader-1',
+          },
+          optionTarget: {
+            tabId: 'tab-1',
+            frameId: 'frame-1',
+            backendNodeId: 13,
+            documentRevision: 'frame-1:loader-1',
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof InteractionError);
+        assert.equal(error.code, 'TARGET_NOT_FOUND');
+        return true;
+      },
+    );
+
+    assert.equal(calls.filter((call) => call.method === 'Input.dispatchMouseEvent').length, 0);
+    assert.equal(calls.filter((call) => call.method === 'Input.dispatchKeyEvent').length, 0);
   });
 
   it('scrolls viewport with bounded wheel deltas and rejects oversized amounts', () => {
@@ -254,7 +354,6 @@ describe('interaction primitives', () => {
             backendNodeId: 11,
             documentRevision: 'frame-1:loader-1',
           },
-          optionCatalogIndex: 0,
         }),
       (error: unknown) => {
         assert.ok(error instanceof InteractionError);
@@ -284,7 +383,6 @@ describe('interaction primitives', () => {
             backendNodeId: 11,
             documentRevision: 'frame-1:loader-2',
           },
-          optionCatalogIndex: 0,
         }),
       (error: unknown) => {
         assert.ok(error instanceof InteractionError);
@@ -314,7 +412,6 @@ describe('interaction primitives', () => {
             backendNodeId: 11,
             documentRevision: 'frame-1:loader-1',
           },
-          optionCatalogIndex: 0,
         }),
       (error: unknown) => {
         assert.ok(error instanceof InteractionError);

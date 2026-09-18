@@ -84,6 +84,7 @@ function createFakeAdapter(options: {
     scrollIntoView: number;
     observePage: number;
   };
+  lastSelectRequest: { current?: import('../browser/interaction-adapter-types').AdapterSelectRequest };
 } {
   const counts = {
     click: 0,
@@ -93,6 +94,9 @@ function createFakeAdapter(options: {
     scrollIntoView: 0,
     observePage: 0,
   };
+
+  const lastSelectRequest: { current?: import('../browser/interaction-adapter-types').AdapterSelectRequest } =
+    {};
 
   const adapter: BrowserAdapter = {
     createTab: async () => 'tab-1',
@@ -126,8 +130,9 @@ function createFakeAdapter(options: {
       counts.type += 1;
       return { primitive: 'type' };
     },
-    select: async () => {
+    select: async (request) => {
       counts.select += 1;
+      lastSelectRequest.current = request;
       return { primitive: 'select' };
     },
     scroll: async () => {
@@ -140,7 +145,7 @@ function createFakeAdapter(options: {
     },
   };
 
-  return { adapter, counts };
+  return { adapter, counts, lastSelectRequest };
 }
 
 function createExecutor(adapter: BrowserAdapter, registry = new TargetRegistry()) {
@@ -367,6 +372,51 @@ describe('InteractionExecutor', () => {
 
     assert.equal(result.status, 'denied');
     assert.equal(counts.select, 0);
+  });
+
+  it('passes exact option backend identity to the adapter without a catalog index', async () => {
+    const { adapter, counts, lastSelectRequest } = createFakeAdapter();
+    const { executor, registry } = createExecutor(adapter);
+    registry.replaceObservation('tab-1', 'obs-1', [
+      record('select-1', 10),
+      record('option-a', 11),
+      record('option-b', 12),
+      record('option-c', 13),
+    ]);
+
+    const result = await executor.execute({
+      proposal: {
+        kind: 'select',
+        targetId: 'select-1',
+        optionTargetId: 'option-c',
+        tabId: 'tab-1',
+        observationId: 'obs-1',
+        documentRevision: 'rev-1',
+      },
+      observation: observation([
+        node({
+          role: 'combobox',
+          tag: 'select',
+          targetId: 'select-1',
+          name: 'Color',
+          nativeOptions: [
+            { targetId: 'option-a', name: 'A', selected: true },
+            { targetId: 'option-c', name: 'C' },
+          ],
+        }),
+        node({ role: 'option', tag: 'option', targetId: 'option-a', name: 'A', states: { selected: true } }),
+        node({ role: 'option', tag: 'option', targetId: 'option-c', name: 'C' }),
+      ]),
+    });
+
+    assert.equal(result.status, 'succeeded');
+    assert.equal(counts.select, 1);
+    assert.equal(lastSelectRequest.current?.selectTarget.backendNodeId, 10);
+    assert.equal(lastSelectRequest.current?.optionTarget.backendNodeId, 13);
+    assert.equal(
+      lastSelectRequest.current !== undefined && 'optionCatalogIndex' in lastSelectRequest.current,
+      false,
+    );
   });
 
   it('executes safe navigation links with NAVIGATE authority', async () => {

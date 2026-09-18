@@ -66,12 +66,38 @@ describe('V3 security gates', () => {
     const cdpClient = readSrc('src/observation/interaction-cdp-client.ts');
     assert.match(cdpClient, /Page\.getFrameTree/);
     assert.match(cdpClient, /DOM\.getBoxModel/);
+    assert.match(cdpClient, /Accessibility\.getFullAXTree/);
+    assert.match(cdpClient, /DOMSnapshot\.captureSnapshot/);
     assert.match(cdpClient, /Input\.dispatchMouseEvent/);
     assert.match(cdpClient, /Input\.dispatchKeyEvent/);
     assert.match(cdpClient, /Input\.insertText/);
+    const allowedMethods = [
+      'Page.getFrameTree',
+      'DOM.getBoxModel',
+      'Accessibility.getFullAXTree',
+      'DOMSnapshot.captureSnapshot',
+      'Input.dispatchMouseEvent',
+      'Input.dispatchKeyEvent',
+      'Input.insertText',
+    ];
+    const unionMatch = cdpClient.match(/type AllowedInteractionCdpMethod =([\s\S]*?);/);
+    assert.ok(unionMatch?.[1]);
+    const unionMethods = [...unionMatch[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
+    assert.deepEqual(unionMethods, allowedMethods);
     assert.equal(cdpClient.includes('DOM.resolveNode'), false);
     assert.equal(cdpClient.includes('Runtime.evaluate'), false);
     assert.equal(cdpClient.includes('Target.attachToTarget'), false);
+  });
+
+  it('does not treat filtered nativeOptions indexes as mechanical authority', () => {
+    const executor = readSrc('src/interaction/interaction-executor.ts');
+    const adapterTypes = readSrc('src/browser/interaction-adapter-types.ts');
+    const primitives = readSrc('src/browser/interaction-primitives.ts');
+    assert.equal(executor.includes('optionCatalogIndex'), false);
+    assert.equal(executor.includes('resolveOptionCatalogIndex'), false);
+    assert.equal(adapterTypes.includes('optionCatalogIndex'), false);
+    assert.equal(primitives.includes('optionCatalogIndex'), false);
+    assert.match(primitives, /deriveNativeSelectKeyboardPlan/);
   });
 
   it('keeps production AI code free of browser interaction authority', () => {

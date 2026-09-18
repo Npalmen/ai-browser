@@ -5,7 +5,7 @@ import { AiRequestController } from '../main/ai-request-controller';
 import { parseAgentModelOutput } from '../ai/interaction-output-schema';
 import { TargetRegistry } from '../observation/target-registry';
 import { V3_TAB_ID, V3_TYPED_FIXTURE_VALUE } from './fixture-constants';
-import { findNativeOption, findNodeByName } from './context-helpers';
+import { findNativeOption, findNodeByName, parseInteractiveContextFromMessages } from './context-helpers';
 import {
   createFakeAdapter,
   createInteractiveChain,
@@ -200,6 +200,84 @@ describe('V3 chain acceptance', () => {
     }
     assert.equal(result.result.status, 'succeeded');
     assert.equal(counts.select, 1);
+
+    const event = lastAudit(audit);
+    assert.equal(event.policyOutcome, 'ALLOW_INTERACT');
+    assert.equal(event.grantIssued, true);
+    assert.equal(event.adapterPrimitiveInvoked, true);
+  });
+
+  it('authorizes a filtered-catalog option without using catalog position as mechanical authority', async () => {
+    const selectTarget = 'target-select';
+    const optionA = 'target-option-a';
+    const optionC = 'target-option-c';
+    const page = observation([
+      node({
+        role: 'combobox',
+        tag: 'select',
+        targetId: selectTarget,
+        name: 'Exact color',
+        nativeOptions: [
+          { targetId: optionA, name: 'Alpha', selected: true },
+          { targetId: optionC, name: 'Charlie' },
+        ],
+      }),
+      node({ role: 'option', tag: 'option', targetId: optionA, name: 'Alpha', states: { selected: true } }),
+      node({ role: 'option', tag: 'option', targetId: optionC, name: 'Charlie' }),
+    ]);
+    const registry = new TargetRegistry();
+    registry.replaceObservation(V3_TAB_ID, page.observationId, [
+      registryRecord(selectTarget, 10),
+      registryRecord(optionA, 11),
+      registryRecord('target-option-b', 12),
+      registryRecord(optionC, 13),
+    ]);
+    let selectRequest: { optionTarget?: { backendNodeId: number } } | undefined;
+    const { adapter, counts } = createFakeAdapter({
+      onSelect: (request) => {
+        selectRequest = request;
+      },
+    });
+    const runtime = new RecordingInteractionModelRuntime((context) => {
+      const option = findNativeOption(context, 'Exact color', 'Charlie');
+      assert.equal(
+        context.nodes
+          .find((node) => node.targetId === option.selectTargetId)
+          ?.nativeOptions?.map((entry) => entry.name)
+          .join(','),
+        'Alpha,Charlie',
+      );
+      return {
+        kind: 'interaction',
+        proposal: {
+          kind: 'select',
+          targetId: option.selectTargetId,
+          optionTargetId: option.optionTargetId,
+        },
+      };
+    });
+    const { agent, audit } = createInteractiveChain({
+      adapter,
+      targetRegistry: registry,
+      runtime,
+      observation: page,
+    });
+
+    const result = await agent.interact({ tabId: V3_TAB_ID, instruction: 'Choose Charlie' });
+    assert.equal(result.kind, 'interaction');
+    if (result.kind !== 'interaction') {
+      return;
+    }
+    assert.equal(result.result.status, 'succeeded');
+    assert.equal(counts.select, 1);
+    assert.equal(selectRequest?.optionTarget?.backendNodeId, 13);
+    assert.equal(selectRequest !== undefined && 'optionCatalogIndex' in selectRequest, false);
+    const visibleContext = JSON.stringify(
+      parseInteractiveContextFromMessages(runtime.requests[0]!.messages),
+    );
+    assert.doesNotMatch(visibleContext, /backendNodeId/);
+    assert.doesNotMatch(visibleContext, /keyboardDelta/);
+    assert.doesNotMatch(visibleContext, /optionCatalogIndex/);
 
     const event = lastAudit(audit);
     assert.equal(event.policyOutcome, 'ALLOW_INTERACT');

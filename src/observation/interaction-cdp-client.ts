@@ -1,13 +1,27 @@
 import type { WebContents } from 'electron';
 
 import { InteractionError } from '../shared/interaction-errors';
-import type { CdpFrameTreeResponse } from './cdp-types';
+import type {
+  CdpAccessibilityTreeResponse,
+  CdpDomSnapshotResponse,
+  CdpFrameTreeResponse,
+} from './cdp-types';
 import type { CdpGetBoxModelResponse } from './interaction-cdp-types';
 import { CDP_PROTOCOL_VERSION } from './cdp-client';
+
+const DOM_SNAPSHOT_CAPTURE_PARAMS = {
+  computedStyles: ['display', 'visibility', 'opacity'],
+  includePaintOrder: false,
+  includeDOMRects: true,
+  includeBlendedBackgroundColors: false,
+  includeTextColorOpacities: false,
+} as const;
 
 type AllowedInteractionCdpMethod =
   | 'Page.getFrameTree'
   | 'DOM.getBoxModel'
+  | 'Accessibility.getFullAXTree'
+  | 'DOMSnapshot.captureSnapshot'
   | 'Input.dispatchMouseEvent'
   | 'Input.dispatchKeyEvent'
   | 'Input.insertText';
@@ -41,6 +55,17 @@ export class InteractionCdpClient {
 
   async getBoxModel(backendNodeId: number): Promise<CdpGetBoxModelResponse> {
     return this.sendCommand('DOM.getBoxModel', { backendNodeId }) as Promise<CdpGetBoxModelResponse>;
+  }
+
+  async getAccessibilityTree(): Promise<CdpAccessibilityTreeResponse> {
+    return this.sendCommand('Accessibility.getFullAXTree') as Promise<CdpAccessibilityTreeResponse>;
+  }
+
+  async captureDomSnapshot(): Promise<CdpDomSnapshotResponse> {
+    return this.sendCommand(
+      'DOMSnapshot.captureSnapshot',
+      DOM_SNAPSHOT_CAPTURE_PARAMS,
+    ) as Promise<CdpDomSnapshotResponse>;
   }
 
   async dispatchMouseEvent(params: InteractionMouseEventParams): Promise<void> {

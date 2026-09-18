@@ -69,6 +69,13 @@ describe('resolveInteractionFixtureRoute', () => {
     const frameChild = resolveInteractionFixtureRoute('/interaction/frame-child.html');
     assert.ok(frameChild);
     assert.equal(frameChild.absolutePath, path.join(INTERACTION_FIXTURE_DIR, 'frame-child.html'));
+
+    const exactSelect = resolveInteractionFixtureRoute('/interaction/select-exact-target.html');
+    assert.ok(exactSelect);
+    assert.equal(
+      exactSelect.absolutePath,
+      path.join(INTERACTION_FIXTURE_DIR, 'select-exact-target.html'),
+    );
   });
 
   it('rejects unknown and traversal paths for interaction routes', () => {

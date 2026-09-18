@@ -13,6 +13,7 @@ import {
 import { collectFrameTreeInfo, isSupportedInteractionFrame } from '../interaction/frame-support';
 import { extractDocumentIdentity } from '../observation/document-identity';
 import type { InteractionCdpClient } from '../observation/interaction-cdp-client';
+import { deriveNativeSelectKeyboardPlan } from '../interaction/native-select-preflight';
 import type {
   AdapterClickRequest,
   AdapterInteractionResult,
@@ -133,9 +134,28 @@ export async function executeAdapterSelect(
   assertAdapterTarget(request.selectTarget);
   assertAdapterTarget(request.optionTarget);
   assertSelectTargetPair(request);
-  await assertDocumentRevision(cdp, request.selectTarget.documentRevision);
+
+  const frameTree = await cdp.getFrameTree();
+  const identity = extractDocumentIdentity(frameTree);
+  if (identity.revision !== request.selectTarget.documentRevision) {
+    throw new InteractionError('PAGE_CHANGED', 'Document revision changed before interaction.');
+  }
+
   await assertSupportedFrame(cdp, request.selectTarget.frameId);
   await assertSupportedFrame(cdp, request.optionTarget.frameId);
+
+  const [accessibilityTree, domSnapshot] = await Promise.all([
+    cdp.getAccessibilityTree(),
+    cdp.captureDomSnapshot(),
+  ]);
+  const plan = deriveNativeSelectKeyboardPlan({
+    selectBackendNodeId: request.selectTarget.backendNodeId,
+    optionBackendNodeId: request.optionTarget.backendNodeId,
+    expectedFrameId: request.selectTarget.frameId,
+    mainFrameId: identity.mainFrameId,
+    accessibilityTree,
+    domSnapshot,
+  });
 
   const selectBox = await preflightTargetBox(
     cdp,
@@ -162,15 +182,11 @@ export async function executeAdapterSelect(
     clickCount: 1,
   });
 
-  if (!Number.isInteger(request.optionCatalogIndex)) {
-    throw new InteractionError('INVALID_INTERACTION_PROPOSAL', 'Select option catalog index is invalid.');
-  }
-
-  const steps = Math.abs(request.optionCatalogIndex);
+  const steps = Math.abs(plan.keyboardDelta);
   for (let step = 0; step < steps; step += 1) {
-    if (request.optionCatalogIndex > 0) {
+    if (plan.keyboardDelta > 0) {
       await dispatchArrowDown(cdp);
-    } else if (request.optionCatalogIndex < 0) {
+    } else if (plan.keyboardDelta < 0) {
       await dispatchArrowUp(cdp);
     }
   }

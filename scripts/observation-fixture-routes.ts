@@ -43,6 +43,10 @@ const INTERACTION_ROUTE_MAP: Record<string, { fileName: string; contentType: str
     fileName: 'cross-origin-parent.html',
     contentType: 'text/html; charset=utf-8',
   },
+  '/interaction/select-exact-target.html': {
+    fileName: 'select-exact-target.html',
+    contentType: 'text/html; charset=utf-8',
+  },
 };
 
 export interface ResolvedFixtureFile {

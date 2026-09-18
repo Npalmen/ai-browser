@@ -17,6 +17,7 @@ import {
   V3_PROMPT_INJECTION_CANARY,
   V3_PROMPT_INJECTION_PATH,
   V3_SAFE_INTERACT_PATH,
+  V3_SELECT_EXACT_TARGET_PATH,
   V3_SENSITIVE_FIELDS_PATH,
   V3_TAB_ID,
   V3_TYPED_FIXTURE_VALUE,
@@ -248,6 +249,88 @@ async function run(): Promise<void> {
     assert.equal(scrollAudit.policyOutcome, 'ALLOW_NAVIGATE');
     assert.equal(scrollAudit.grantedAuthority, 'NAVIGATE');
     assert.equal(scrollAudit.adapterPrimitiveInvoked, true);
+    assertDebuggerDetached(window);
+
+    await adapter.navigate(tabId, `${baseUrl}${V3_SELECT_EXACT_TARGET_PATH}`);
+    await waitForObservation(adapter, tabId);
+    audit.clear();
+    const registry = adapter.getInteractionTargetRegistry();
+    let grantedExact:
+      | { optionTargetId: string; backendNodeId?: number }
+      | undefined;
+    const exactRuntime = new RecordingInteractionModelRuntime((context) => {
+      const selectNode = context.nodes.find((node) =>
+        node.nativeOptions?.some((option) => option.name === 'Charlie'),
+      );
+      assert.ok(
+        selectNode?.targetId && selectNode.nativeOptions,
+        `no exported select with Charlie: ${JSON.stringify(
+          context.nodes.map((node) => ({
+            name: node.name,
+            tag: node.tag,
+            options: node.nativeOptions,
+          })),
+        )}`,
+      );
+      assert.deepEqual(
+        selectNode.nativeOptions.map((option) => option.name),
+        ['Alpha', 'Charlie'],
+        `model-visible catalog leaked omitted option: ${JSON.stringify(selectNode.nativeOptions)}`,
+      );
+      const option = selectNode.nativeOptions.find((entry) => entry.name === 'Charlie');
+      assert.ok(option, 'Charlie was not exported in nativeOptions');
+      const observationId = registry.getCurrentObservationId(tabId);
+      const record =
+        observationId === null
+          ? null
+          : registry.resolve(tabId, observationId, option.targetId);
+      grantedExact = {
+        optionTargetId: option.targetId,
+        backendNodeId: record?.backendNodeId,
+      };
+      return {
+        kind: 'interaction',
+        proposal: {
+          kind: 'select',
+          targetId: selectNode.targetId,
+          optionTargetId: option.targetId,
+        },
+      };
+    });
+    const exactAgent = new InteractiveAgent({
+      observationSource: {
+        observePage: (requestedTabId, options) => adapter.observePage(requestedTabId, options),
+      },
+      modelRuntime: exactRuntime,
+      interactionExecutor: executor,
+      allowScreenshotExport: false,
+    });
+    const exactResult = await exactAgent.interact({ tabId, instruction: 'Choose Charlie' });
+    assert.equal(exactResult.kind, 'interaction');
+    if (exactResult.kind !== 'interaction') {
+      throw new Error('Expected interaction result for exact select');
+    }
+    assert.equal(
+      exactResult.result.status,
+      'succeeded',
+      `exact select status=${exactResult.result.status} error=${exactResult.result.errorCode ?? 'none'}`,
+    );
+    assert.ok(grantedExact?.backendNodeId, 'granted option backendNodeId was not recorded');
+    const exactObservation = exactResult.result.observation!;
+    const exactSelectNode = exactObservation.nodes.find((node) =>
+      node.nativeOptions?.some((option) => option.name === 'Charlie' && option.selected === true),
+    );
+    assert.ok(exactSelectNode, 'Charlie was not the selected option after execution');
+    assert.equal(
+      exactSelectNode.nativeOptions?.some((option) => option.name === 'Alpha' && option.selected === true),
+      false,
+    );
+    const selectedCharlie = exactSelectNode.nativeOptions?.find((option) => option.name === 'Charlie');
+    const afterRecord =
+      selectedCharlie === undefined
+        ? null
+        : registry.resolve(tabId, exactObservation.observationId, selectedCharlie.targetId);
+    assert.equal(afterRecord?.backendNodeId, grantedExact.backendNodeId);
     assertDebuggerDetached(window);
 
     await adapter.navigate(tabId, `${baseUrl}${V3_POLICY_DENY_PATH}`);

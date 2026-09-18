@@ -219,10 +219,6 @@ export class InteractionExecutor {
         await this.deps.adapter.select({
           selectTarget: toAdapterTargetRef(policyContext!.resolvedSelect!),
           optionTarget: toAdapterTargetRef(policyContext!.resolvedOption!),
-          optionCatalogIndex: resolveOptionCatalogIndex(
-            policyContext!.resolvedSelect!.node,
-            proposal.optionTargetId,
-          ),
           selectObservedBounds: toObservedBounds(policyContext!.resolvedSelect!.node),
           optionObservedBounds: toObservedBounds(policyContext!.resolvedOption!.node),
         });
@@ -415,21 +411,6 @@ export class InteractionExecutor {
       throw new InteractionError('REQUEST_CANCELLED', 'Interaction request was cancelled.');
     }
   }
-}
-
-function resolveOptionCatalogIndex(
-  selectNode: ObservationNode,
-  optionTargetId: string,
-): number {
-  const options = selectNode.nativeOptions ?? [];
-  const targetIndex = options.findIndex((option) => option.targetId === optionTargetId);
-  if (targetIndex < 0) {
-    throw new InteractionError('UNSUPPORTED_TARGET', 'Select option is not in the native option catalog.');
-  }
-
-  const selectedIndex = options.findIndex((option) => option.selected === true);
-  const startIndex = selectedIndex >= 0 ? selectedIndex : 0;
-  return targetIndex - startIndex;
 }
 
 function toAdapterTargetRef(resolved: ResolvedInteractionTarget): AdapterTargetRef {
