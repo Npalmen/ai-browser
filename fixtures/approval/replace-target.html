@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>V4 Replacement Target Fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>V4 Replacement Target Fixture</h1>
+    <button type="button" id="buy-now">Buy now</button>
+    <span id="buy-marker" hidden>V4_REPLACE_MUTATED</span>
+    <script>
+      window.__v4Markers = { buy: 0 };
+      function bindBuy(button) {
+        button.addEventListener('click', function () {
+          window.__v4Markers.buy += 1;
+          document.getElementById('buy-marker').hidden = false;
+        });
+      }
+      bindBuy(document.getElementById('buy-now'));
+      window.__v4ReplaceBuyButton = function () {
+        var old = document.getElementById('buy-now');
+        if (old) {
+          old.remove();
+        }
+        var next = document.createElement('button');
+        next.type = 'button';
+        next.id = 'buy-now';
+        next.textContent = 'Buy now';
+        bindBuy(next);
+        document.body.appendChild(next);
+      };
+    </script>
+  </body>
+</html>

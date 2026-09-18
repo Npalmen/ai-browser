@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>V4 Consequential Select Fixture</title>
+  </head>
+  <body>
+    <h1>V4 Consequential Select Fixture</h1>
+    <label>
+      Account action
+      <select id="account-action">
+        <option value="keep">Keep account</option>
+        <option value="delete">Delete account</option>
+      </select>
+    </label>
+    <span id="select-marker" hidden>V4_SELECT_MUTATED</span>
+    <script>
+      window.__v4Markers = { select: 0 };
+      document.getElementById('account-action').addEventListener('change', function () {
+        window.__v4Markers.select += 1;
+        document.getElementById('select-marker').hidden = false;
+      });
+    </script>
+  </body>
+</html>

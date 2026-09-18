@@ -3,8 +3,10 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 
 import {
+  APPROVAL_FIXTURE_DIR,
   INTERACTION_FIXTURE_DIR,
   OBSERVATION_FIXTURE_DIR,
+  resolveApprovalFixtureRoute,
   resolveFixtureRoute,
   resolveInteractionFixtureRoute,
   resolveObservationFixtureRoute,
@@ -85,10 +87,32 @@ describe('resolveInteractionFixtureRoute', () => {
   });
 });
 
+describe('resolveApprovalFixtureRoute', () => {
+  it('maps known approval fixture routes to files under the approval directory', () => {
+    const consequential = resolveApprovalFixtureRoute('/approval/consequential.html');
+    assert.ok(consequential);
+    assert.equal(consequential.absolutePath, path.join(APPROVAL_FIXTURE_DIR, 'consequential.html'));
+
+    const injection = resolveApprovalFixtureRoute('/approval/prompt-injection.html');
+    assert.ok(injection);
+    assert.equal(injection.absolutePath, path.join(APPROVAL_FIXTURE_DIR, 'prompt-injection.html'));
+
+    const replace = resolveApprovalFixtureRoute('/approval/replace-target.html');
+    assert.ok(replace);
+    assert.equal(replace.absolutePath, path.join(APPROVAL_FIXTURE_DIR, 'replace-target.html'));
+  });
+
+  it('rejects unknown and traversal paths for approval routes', () => {
+    assert.equal(resolveApprovalFixtureRoute('/approval/unknown.html'), null);
+    assert.equal(resolveApprovalFixtureRoute('/approval/../../package.json'), null);
+  });
+});
+
 describe('resolveFixtureRoute', () => {
-  it('resolves both observation and interaction routes', () => {
+  it('resolves observation, interaction, and approval routes', () => {
     assert.ok(resolveFixtureRoute('/'));
     assert.ok(resolveFixtureRoute('/interaction/safe-interact.html'));
+    assert.ok(resolveFixtureRoute('/approval/consequential.html'));
     assert.equal(resolveFixtureRoute('/not-a-fixture'), null);
   });
 });

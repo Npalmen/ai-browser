@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>V4 Consequential Approval Fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+      }
+      button,
+      select {
+        display: block;
+        margin: 8px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>V4 Consequential Approval Fixture</h1>
+
+    <button type="button" id="send-message">Send message</button>
+    <span id="send-marker" hidden>V4_SEND_MUTATED</span>
+
+    <form id="submit-form">
+      <button type="submit" id="submit-btn">Submit form</button>
+    </form>
+    <span id="submit-marker" hidden>V4_SUBMIT_MUTATED</span>
+
+    <button type="button" id="buy-now">Buy now</button>
+    <span id="buy-marker" hidden>V4_BUY_MUTATED</span>
+
+    <button type="button" id="confirm-purchase">Confirm purchase</button>
+    <span id="purchase-marker" hidden>V4_PURCHASE_MUTATED</span>
+
+    <button type="button" id="delete-account">Delete</button>
+    <span id="delete-marker" hidden>V4_DELETE_MUTATED</span>
+
+    <button type="button" id="publish">Publish</button>
+    <span id="publish-marker" hidden>V4_PUBLISH_MUTATED</span>
+
+    <button type="button" id="book">Book</button>
+    <span id="book-marker" hidden>V4_BOOK_MUTATED</span>
+
+    <button type="button" id="reserve">Reserve</button>
+    <span id="reserve-marker" hidden>V4_RESERVE_MUTATED</span>
+
+    <button type="button" id="save-changes">Save changes</button>
+    <span id="account-marker" hidden>V4_ACCOUNT_MUTATED</span>
+
+    <script>
+      window.__v4Markers = {
+        send: 0,
+        submit: 0,
+        buy: 0,
+        purchase: 0,
+        delete: 0,
+        publish: 0,
+        book: 0,
+        reserve: 0,
+        account: 0,
+      };
+      function mark(key, id) {
+        window.__v4Markers[key] += 1;
+        var el = document.getElementById(id);
+        if (el) {
+          el.hidden = false;
+        }
+      }
+      document.getElementById('send-message').addEventListener('click', function () {
+        mark('send', 'send-marker');
+      });
+      document.getElementById('submit-form').addEventListener('submit', function (event) {
+        event.preventDefault();
+        mark('submit', 'submit-marker');
+      });
+      document.getElementById('buy-now').addEventListener('click', function () {
+        mark('buy', 'buy-marker');
+      });
+      document.getElementById('confirm-purchase').addEventListener('click', function () {
+        mark('purchase', 'purchase-marker');
+      });
+      document.getElementById('delete-account').addEventListener('click', function () {
+        mark('delete', 'delete-marker');
+      });
+      document.getElementById('publish').addEventListener('click', function () {
+        mark('publish', 'publish-marker');
+      });
+      document.getElementById('book').addEventListener('click', function () {
+        mark('book', 'book-marker');
+      });
+      document.getElementById('reserve').addEventListener('click', function () {
+        mark('reserve', 'reserve-marker');
+      });
+      document.getElementById('save-changes').addEventListener('click', function () {
+        mark('account', 'account-marker');
+      });
+      window.__v4SelfNavigate = function (path) {
+        location.href = path;
+      };
+    </script>
+  </body>
+</html>

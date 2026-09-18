@@ -43,10 +43,15 @@ export class ApprovalLifecycle {
       return false;
     }
 
-    this.emitSafely({
-      type: 'approval-required',
-      approval: toPendingApprovalView(snapshot.action),
-    });
+    try {
+      this.deps.emit({
+        type: 'approval-required',
+        approval: toPendingApprovalView(snapshot.action),
+      });
+    } catch {
+      // Failed renderer emission is not a successful presentation.
+      return true;
+    }
     this.recordPresentedSafely(action.approvalId);
     return true;
   }

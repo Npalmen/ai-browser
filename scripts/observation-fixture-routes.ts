@@ -2,6 +2,7 @@ import path from 'node:path';
 
 export const OBSERVATION_FIXTURE_DIR = path.resolve(process.cwd(), 'fixtures', 'observation');
 export const INTERACTION_FIXTURE_DIR = path.resolve(process.cwd(), 'fixtures', 'interaction');
+export const APPROVAL_FIXTURE_DIR = path.resolve(process.cwd(), 'fixtures', 'approval');
 
 const OBSERVATION_ROUTE_MAP: Record<string, { fileName: string; contentType: string }> = {
   '/': { fileName: 'index.html', contentType: 'text/html; charset=utf-8' },
@@ -49,6 +50,33 @@ const INTERACTION_ROUTE_MAP: Record<string, { fileName: string; contentType: str
   },
 };
 
+const APPROVAL_ROUTE_MAP: Record<string, { fileName: string; contentType: string }> = {
+  '/approval/consequential.html': {
+    fileName: 'consequential.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/approval/prompt-injection.html': {
+    fileName: 'prompt-injection.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/approval/replace-target.html': {
+    fileName: 'replace-target.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/approval/navigate-action.html': {
+    fileName: 'navigate-action.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/approval/after-purchase.html': {
+    fileName: 'after-purchase.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/approval/consequential-select.html': {
+    fileName: 'consequential-select.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+};
+
 export interface ResolvedFixtureFile {
   absolutePath: string;
   contentType: string;
@@ -88,8 +116,14 @@ export function resolveInteractionFixtureRoute(requestPath: string): ResolvedFix
   return resolveMappedFixtureRoute(requestPath, INTERACTION_FIXTURE_DIR, INTERACTION_ROUTE_MAP);
 }
 
+export function resolveApprovalFixtureRoute(requestPath: string): ResolvedFixtureFile | null {
+  return resolveMappedFixtureRoute(requestPath, APPROVAL_FIXTURE_DIR, APPROVAL_ROUTE_MAP);
+}
+
 export function resolveFixtureRoute(requestPath: string): ResolvedFixtureFile | null {
   return (
-    resolveObservationFixtureRoute(requestPath) ?? resolveInteractionFixtureRoute(requestPath)
+    resolveObservationFixtureRoute(requestPath) ??
+    resolveInteractionFixtureRoute(requestPath) ??
+    resolveApprovalFixtureRoute(requestPath)
   );
 }

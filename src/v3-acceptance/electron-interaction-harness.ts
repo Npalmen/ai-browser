@@ -85,6 +85,10 @@ function lastAuditEvent(audit: InMemoryInteractionAuditSink) {
 }
 
 async function run(): Promise<void> {
+  app.commandLine.appendSwitch('disable-renderer-backgrounding');
+  app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+  app.commandLine.appendSwitch('disable-background-timer-throttling');
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
   app.disableHardwareAcceleration();
   await app.whenReady();
 
@@ -102,6 +106,9 @@ async function run(): Promise<void> {
       webviewTag: false,
     },
   });
+  window.setAlwaysOnTop(true);
+  window.show();
+  window.focus();
   const adapter = new ElectronBrowserAdapter(window);
   const audit = new InMemoryInteractionAuditSink();
   const executor = new InteractionExecutor({

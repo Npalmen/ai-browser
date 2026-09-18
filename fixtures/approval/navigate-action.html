@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>V4 Navigating Purchase Fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>V4 Navigating Purchase Fixture</h1>
+    <button type="button" id="buy-now">Buy now</button>
+    <script>
+      window.__v4Markers = { buy: 0 };
+      document.getElementById('buy-now').addEventListener('click', function () {
+        window.__v4Markers.buy += 1;
+        location.href = 'after-purchase.html';
+      });
+    </script>
+  </body>
+</html>

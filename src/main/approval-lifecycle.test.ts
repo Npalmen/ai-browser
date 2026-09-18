@@ -141,6 +141,31 @@ describe('ApprovalLifecycle', () => {
     assert.equal(manager.getByApprovalId(action.approvalId)?.state, 'pending');
   });
 
+  it('does not record approval-presented when renderer emission throws', () => {
+    const harness = createHarness();
+    const action = prepare(harness.manager);
+    const lifecycle = new ApprovalLifecycle({
+      manager: harness.manager,
+      auditRecorder: new ApprovalAuditRecorder({
+        manager: harness.manager,
+        audit: harness.audit,
+        now: () => harness.clock.now,
+      }),
+      emit: () => {
+        throw new Error('renderer emit failed');
+      },
+      now: () => harness.clock.now,
+    });
+
+    assert.equal(lifecycle.present(action), true);
+    assert.equal(harness.manager.getByApprovalId(action.approvalId)?.state, 'pending');
+    assert.equal(
+      harness.audit.getEvents().some((event) => event.eventType === 'approval-presented'),
+      false,
+    );
+    assert.equal(harness.manager.getSnapshot(action.approvalId)?.executionGrant, undefined);
+  });
+
   it('does not copy secrets from prepared identity into the renderer view', () => {
     const harness = createHarness();
     const action = prepare(harness.manager, { description: 'Buy now' });
