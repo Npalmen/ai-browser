@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>V5 Multi-Step Fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+      }
+      button {
+        display: block;
+        margin: 8px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>V5 Multi-Step Fixture</h1>
+    <button type="button" id="safe-a">Safe control A</button>
+    <button type="button" id="buy-now">Buy now</button>
+    <button type="button" id="publish">Publish</button>
+    <script>
+      window.__v5Markers = { safeA: 0, safeB: 0, buy: 0, publish: 0, typed: 0 };
+      document.getElementById('safe-a').addEventListener('click', function () {
+        window.__v5Markers.safeA += 1;
+      });
+      document.getElementById('buy-now').addEventListener('click', function () {
+        window.__v5Markers.buy += 1;
+      });
+      document.getElementById('publish').addEventListener('click', function () {
+        window.__v5Markers.publish += 1;
+      });
+    </script>
+  </body>
+</html>

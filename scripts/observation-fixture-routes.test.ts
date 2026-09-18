@@ -3,9 +3,11 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 
 import {
+  AGENT_RUN_FIXTURE_DIR,
   APPROVAL_FIXTURE_DIR,
   INTERACTION_FIXTURE_DIR,
   OBSERVATION_FIXTURE_DIR,
+  resolveAgentRunFixtureRoute,
   resolveApprovalFixtureRoute,
   resolveFixtureRoute,
   resolveInteractionFixtureRoute,
@@ -108,11 +110,29 @@ describe('resolveApprovalFixtureRoute', () => {
   });
 });
 
+describe('resolveAgentRunFixtureRoute', () => {
+  it('maps known agent-run fixture routes to files under the agent-run directory', () => {
+    const twoSafe = resolveAgentRunFixtureRoute('/agent-run/two-safe.html');
+    assert.ok(twoSafe);
+    assert.equal(twoSafe.absolutePath, path.join(AGENT_RUN_FIXTURE_DIR, 'two-safe.html'));
+
+    const navA = resolveAgentRunFixtureRoute('/agent-run/safe-navigation-a.html');
+    assert.ok(navA);
+    assert.equal(navA.absolutePath, path.join(AGENT_RUN_FIXTURE_DIR, 'safe-navigation-a.html'));
+  });
+
+  it('rejects unknown and traversal paths for agent-run routes', () => {
+    assert.equal(resolveAgentRunFixtureRoute('/agent-run/unknown.html'), null);
+    assert.equal(resolveAgentRunFixtureRoute('/agent-run/../../package.json'), null);
+  });
+});
+
 describe('resolveFixtureRoute', () => {
-  it('resolves observation, interaction, and approval routes', () => {
+  it('resolves observation, interaction, approval, and agent-run routes', () => {
     assert.ok(resolveFixtureRoute('/'));
     assert.ok(resolveFixtureRoute('/interaction/safe-interact.html'));
     assert.ok(resolveFixtureRoute('/approval/consequential.html'));
+    assert.ok(resolveFixtureRoute('/agent-run/two-safe.html'));
     assert.equal(resolveFixtureRoute('/not-a-fixture'), null);
   });
 });

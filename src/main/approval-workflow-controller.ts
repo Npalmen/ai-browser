@@ -31,6 +31,12 @@ export class ApprovalWorkflowController {
     if (!decisionResult.ok || decisionResult.decision === 'reject') {
       if (decisionResult.ok && decisionResult.decision === 'reject') {
         this.notifyAgentRunSafely(decisionResult.approvalId, 'rejected');
+      } else if (!decisionResult.ok) {
+        if (decisionResult.error.code === 'APPROVAL_EXPIRED') {
+          this.notifyAgentRunSafely(input.approvalId, 'expired');
+        } else if (decisionResult.error.code === 'APPROVAL_STALE') {
+          this.notifyAgentRunSafely(input.approvalId, 'stale');
+        }
       }
       return decisionResult;
     }

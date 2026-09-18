@@ -3,6 +3,7 @@ import path from 'node:path';
 export const OBSERVATION_FIXTURE_DIR = path.resolve(process.cwd(), 'fixtures', 'observation');
 export const INTERACTION_FIXTURE_DIR = path.resolve(process.cwd(), 'fixtures', 'interaction');
 export const APPROVAL_FIXTURE_DIR = path.resolve(process.cwd(), 'fixtures', 'approval');
+export const AGENT_RUN_FIXTURE_DIR = path.resolve(process.cwd(), 'fixtures', 'agent-run');
 
 const OBSERVATION_ROUTE_MAP: Record<string, { fileName: string; contentType: string }> = {
   '/': { fileName: 'index.html', contentType: 'text/html; charset=utf-8' },
@@ -46,6 +47,33 @@ const INTERACTION_ROUTE_MAP: Record<string, { fileName: string; contentType: str
   },
   '/interaction/select-exact-target.html': {
     fileName: 'select-exact-target.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+};
+
+const AGENT_RUN_ROUTE_MAP: Record<string, { fileName: string; contentType: string }> = {
+  '/agent-run/two-safe.html': {
+    fileName: 'two-safe.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/agent-run/safe-navigation-a.html': {
+    fileName: 'safe-navigation-a.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/agent-run/safe-navigation-b.html': {
+    fileName: 'safe-navigation-b.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/agent-run/multi-step.html': {
+    fileName: 'multi-step.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/agent-run/prompt-injection.html': {
+    fileName: 'prompt-injection.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/agent-run/repeat-safe.html': {
+    fileName: 'repeat-safe.html',
     contentType: 'text/html; charset=utf-8',
   },
 };
@@ -120,10 +148,15 @@ export function resolveApprovalFixtureRoute(requestPath: string): ResolvedFixtur
   return resolveMappedFixtureRoute(requestPath, APPROVAL_FIXTURE_DIR, APPROVAL_ROUTE_MAP);
 }
 
+export function resolveAgentRunFixtureRoute(requestPath: string): ResolvedFixtureFile | null {
+  return resolveMappedFixtureRoute(requestPath, AGENT_RUN_FIXTURE_DIR, AGENT_RUN_ROUTE_MAP);
+}
+
 export function resolveFixtureRoute(requestPath: string): ResolvedFixtureFile | null {
   return (
     resolveObservationFixtureRoute(requestPath) ??
     resolveInteractionFixtureRoute(requestPath) ??
-    resolveApprovalFixtureRoute(requestPath)
+    resolveApprovalFixtureRoute(requestPath) ??
+    resolveAgentRunFixtureRoute(requestPath)
   );
 }

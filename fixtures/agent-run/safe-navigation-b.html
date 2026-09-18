@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>V5 Safe Navigation B</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>V5 Safe Navigation Page B</h1>
+    <p id="page-marker">V5_PAGE_B_MARKER</p>
+    <button type="button" id="safe-b">Safe control B</button>
+    <script>
+      window.__v5Markers = { safeA: 0, safeB: 0, buy: 0, publish: 0, typed: 0 };
+      document.getElementById('safe-b').addEventListener('click', function () {
+        window.__v5Markers.safeB += 1;
+      });
+    </script>
+  </body>
+</html>

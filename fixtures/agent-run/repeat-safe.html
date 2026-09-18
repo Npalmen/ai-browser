@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>V5 Repeat Safe Action Fixture</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>V5 Repeat Safe Action</h1>
+    <button type="button" id="repeat-safe">Repeat safe</button>
+    <script>
+      window.__v5Markers = { safeA: 0, safeB: 0, buy: 0, publish: 0, typed: 0 };
+      document.getElementById('repeat-safe').addEventListener('click', function () {
+        window.__v5Markers.safeA += 1;
+      });
+    </script>
+  </body>
+</html>
