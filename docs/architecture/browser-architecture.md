@@ -558,33 +558,47 @@ No monorepo packages, no `packages/browser-core`, no plugin host.
 
 ## 13. Migration path
 
+Historical note: an earlier draft of this section numbered INTERACT as V2 and PREPARE/APPROVAL/EXECUTE as V3. That numbering is **superseded**. Repository milestones, matching completed plans and ADRs, are:
+
 ```text
-V0  Basic desktop browser shell
+V0  Browser Shell                         complete
     Electron window, app-ui chrome, WebContentsView tabs,
     navigate/back/forward, separate sessions. No agent.
 
-V1  AI can observe and navigate
-    BrowserAdapter + observation + agent loop
-    tools limited to OBSERVE and NAVIGATE
-    remote models allowed; page export policy exists as a hook
+V1  OBSERVE                               complete
+    BrowserAdapter + PageObservation (ADR-002)
+    local observation only; no model
 
-V2  AI can interact with pages
-    click / type / select / scroll through adapter
-    INTERACT grants; fail-closed classification
-    still no implicit EXECUTE
+V2  REASON / read-only                    complete
+    ReadOnlyAgent over exported observation (ADR-003)
+    no page mutation
 
-V3  Permissioned external actions
-    PREPARE_ACTION, APPROVAL UI, EXECUTE
-    audit of granted side effects
+V3  INTERACT                              complete
+    one bounded safe NAVIGATE / INTERACT action (ADR-004)
+    consequential clicks return DEFER_EXECUTE (denied in product UI)
 
-V4  More autonomous multi-step workflows
-    task state, repeated observe→act loops, tighter policy
-    still no unrestricted primitives
+V4  PREPARE_ACTION / APPROVAL / EXECUTE   specified in ADR-005
+    one prepared consequential click
+    → explicit trusted-app approval
+    → one exact ExecuteGrant
+    → existing bounded click primitive
+    not an autonomous loop
+
+V5  agent loop
+    multi-step observe→act orchestration (future)
+
+V6  autonomous tasks                      (future)
+
+V7  persistent workflows                  (future)
+
+V8  AI-native browser                     (future)
 
 Later  Deeper Chromium integration if justified
     ChromiumBrowserAdapter or CEF adapter
     agent, actions, approval, model provider reused
 ```
+
+ADR-004 specifies V3 INTERACT. ADR-005 specifies V4 PREPARE_ACTION, APPROVAL, and EXECUTE. V4 PREPARE_ACTION freezes one already-bound consequential click; it does not fill forms or run multi-step checkout. Multi-step tasks are V5+.
 
 ### 13.1 Must be correct now
 
@@ -690,4 +704,4 @@ This architecture implements `.cursor/rules/browser-agent-safety.mdc`: action le
 
 It follows `AGENTS.md` and `.cursor/rules/execution.mdc`: smallest correct implementation, explicit permissions, and semantic action classification.
 
-The runtime choice is locked in `docs/architecture/ADR-001-browser-runtime.md` (Status: Accepted).
+The runtime choice is locked in `docs/architecture/ADR-001-browser-runtime.md` (Status: Accepted). V3 INTERACT is locked in `docs/architecture/ADR-004-interaction-authority.md`. V4 PREPARE_ACTION / APPROVAL / EXECUTE is locked in `docs/architecture/ADR-005-approval-execute-authority.md`.
