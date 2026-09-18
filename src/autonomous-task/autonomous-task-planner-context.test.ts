@@ -10,7 +10,7 @@ import {
   TRUSTED_TASK_STATE_OPEN,
   UNTRUSTED_MODEL_SUBGOAL_RESULTS_OPEN,
   USER_TASK_CLARIFICATION_OPEN,
-  type AutonomousTaskPlannerContextInput,
+  type AutonomousTaskPlannerMessageContext,
 } from './autonomous-task-planner-context';
 import { AUTONOMOUS_TASK_PLANNER_SYSTEM_PROMPT } from './autonomous-task-planner-system-prompt';
 import type { AutonomousTaskSnapshot } from './autonomous-task-types';
@@ -37,8 +37,8 @@ function snapshot(overrides: Partial<AutonomousTaskSnapshot> = {}): AutonomousTa
 }
 
 function contextInput(
-  overrides: Partial<AutonomousTaskPlannerContextInput> = {},
-): AutonomousTaskPlannerContextInput {
+  overrides: Partial<AutonomousTaskPlannerMessageContext> = {},
+): AutonomousTaskPlannerMessageContext {
   return {
     snapshot: snapshot(),
     ownedTabs: [{ alias: 'task-tab-1', ownershipKind: 'adopted' }],

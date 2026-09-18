@@ -57,7 +57,13 @@ export interface PlannerOwnedTaskTab {
   readonly ownershipKind: TaskTabOwnershipKind;
 }
 
-export interface AutonomousTaskPlannerContextInput {
+export interface AutonomousTaskPlannerInput {
+  readonly trustedProgress?: readonly TrustedTaskProgressEntry[];
+  readonly modelSubgoalResults?: readonly ModelSubgoalResult[];
+  readonly userClarification?: string;
+}
+
+export interface AutonomousTaskPlannerMessageContext {
   readonly snapshot: AutonomousTaskSnapshot;
   readonly ownedTabs: readonly PlannerOwnedTaskTab[];
   readonly trustedProgress?: readonly TrustedTaskProgressEntry[];
@@ -86,7 +92,7 @@ const UNTRUSTED_MODEL_SUBGOAL_RESULTS_DISCLAIMER = [
 ].join(' ');
 
 export function buildAutonomousTaskPlannerMessages(
-  input: AutonomousTaskPlannerContextInput,
+  input: AutonomousTaskPlannerMessageContext,
 ): ModelMessage[] {
   const objective = requireBoundedObjective(input.snapshot.objective);
   const messages: ModelMessage[] = [

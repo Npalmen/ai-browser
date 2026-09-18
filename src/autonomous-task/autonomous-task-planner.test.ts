@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -11,7 +11,7 @@ import { InMemoryAutonomousTaskAuditSink } from './autonomous-task-audit';
 import { AutonomousTaskCoordinator } from './autonomous-task-coordinator';
 import type { AutonomousTaskDecision } from './autonomous-task-decision';
 import type { AutonomousTaskPlannerRuntime } from './autonomous-task-planner-runtime';
-import type { AutonomousTaskPlannerContextInput } from './autonomous-task-planner-context';
+import { AUTONOMOUS_TASK_OBJECTIVE_OPEN } from './autonomous-task-planner-context';
 import {
   AutonomousTaskPlanner,
   MAX_AUTONOMOUS_TASK_MODEL_ATTEMPTS,
@@ -23,6 +23,9 @@ import {
   type AutonomousTaskRef,
   type AutonomousTaskSnapshot,
 } from './autonomous-task-types';
+
+const REAL_OBJECTIVE_CANARY = 'REAL_OBJECTIVE_CANARY';
+const FORGED_OBJECTIVE_CANARY = 'FORGED_OBJECTIVE_CANARY';
 
 class Deferred<T = void> {
   readonly promise: Promise<T>;
@@ -123,21 +126,6 @@ function requireApplied(result: AutonomousTaskMutationResult): AutonomousTaskSna
   return result.snapshot;
 }
 
-function plannerContext(
-  harness: Harness,
-  snapshot: AutonomousTaskSnapshot,
-  overrides: Partial<AutonomousTaskPlannerContextInput> = {},
-): AutonomousTaskPlannerContextInput {
-  return {
-    snapshot,
-    ownedTabs: harness.coordinator.getOwnedTabs(snapshot.taskId).map((tab) => ({
-      alias: tab.alias,
-      ownershipKind: tab.ownershipKind,
-    })),
-    ...overrides,
-  };
-}
-
 function plannerOf(input: {
   harness?: Harness;
   runtime?: FakePlannerRuntime;
@@ -185,11 +173,15 @@ function isModelError(code: ModelErrorCode) {
   return (error: unknown) => error instanceof ModelError && error.code === code;
 }
 
+function requestBody(runtime: FakePlannerRuntime): string {
+  return JSON.stringify(runtime.requests[0]?.messages ?? []);
+}
+
 describe('AutonomousTaskPlanner decisions', () => {
   it('returns a validated delegate decision for an owned alias', async () => {
     const { planner, harness, runtime } = plannerOf({});
     const task = start(harness);
-    const result = await planner.plan(refOf(task), plannerContext(harness, task));
+    const result = await planner.plan(refOf(task));
 
     assert.equal(result.status, 'decision');
     if (result.status === 'decision') {
@@ -212,10 +204,7 @@ describe('AutonomousTaskPlanner decisions', () => {
     const { planner, harness } = plannerOf({ runtime });
     const task = start(harness);
 
-    await assert.rejects(
-      () => planner.plan(refOf(task), plannerContext(harness, task)),
-      isModelError('MODEL_OUTPUT_INVALID'),
-    );
+    await assert.rejects(() => planner.plan(refOf(task)), isModelError('MODEL_OUTPUT_INVALID'));
     assert.equal(runtime.requests.length, 1);
     assert.equal(harness.coordinator.getTask(task.taskId)?.plannerStepCount, 0);
   });
@@ -236,10 +225,123 @@ describe('AutonomousTaskPlanner decisions', () => {
       runtime,
     });
 
-    const result = await planner.plan(refOf(second), plannerContext(harness, second));
+    const result = await planner.plan(refOf(second));
     assert.equal(result.status, 'decision');
     assert.equal(harness.coordinator.resolveTaskTabAlias(first.taskId, 'task-tab-1')?.tabId, 'tab-a');
     assert.equal(harness.coordinator.resolveTaskTabAlias(second.taskId, 'task-tab-1')?.tabId, 'tab-c');
+  });
+});
+
+describe('AutonomousTaskPlanner trusted state boundary', () => {
+  it('uses the coordinator objective and cannot be replaced by caller input', async () => {
+    const runtime = new FakePlannerRuntime();
+    const { planner, harness } = plannerOf({ runtime });
+    const task = start(harness, 'tab-1', REAL_OBJECTIVE_CANARY);
+
+    await planner.plan(refOf(task));
+
+    const body = requestBody(runtime);
+    assert.equal(body.includes(REAL_OBJECTIVE_CANARY), true);
+    assert.equal(body.includes(FORGED_OBJECTIVE_CANARY), false);
+    assert.equal(body.includes(AUTONOMOUS_TASK_OBJECTIVE_OPEN), true);
+  });
+
+  it('derives counters and owned tabs from the coordinator only', async () => {
+    const runtime = new FakePlannerRuntime();
+    const { planner, harness } = plannerOf({ runtime });
+    const task = start(harness, 'tab-a', REAL_OBJECTIVE_CANARY);
+    requireApplied(harness.coordinator.adoptTaskTab(refOf(task), 'tab-b', 'task-created'));
+    requireApplied(harness.coordinator.recordPlannerStepCompleted(refOf(task)));
+
+    await planner.plan(refOf(harness.coordinator.getTask(task.taskId)!));
+
+    const body = requestBody(runtime);
+    assert.match(body, /plannerStepCount: 1/);
+    assert.match(body, /childRunCount: 0/);
+    assert.match(body, /ownedTabCount: 2/);
+    assert.match(body, /alias: task-tab-1, ownershipKind: adopted/);
+    assert.match(body, /alias: task-tab-2, ownershipKind: task-created/);
+    assert.equal(body.includes('plannerStepCount: 99'), false);
+    assert.equal(body.includes('FORGED_TAB_CANARY'), false);
+  });
+
+  it('drops released owned tabs from the next planner context', async () => {
+    const runtime = new FakePlannerRuntime();
+    const { planner, harness } = plannerOf({ runtime });
+    const task = start(harness, 'tab-a');
+    requireApplied(harness.coordinator.adoptTaskTab(refOf(task), 'tab-b', 'task-created'));
+
+    await planner.plan(refOf(task));
+    const firstBody = requestBody(runtime);
+    assert.match(firstBody, /alias: task-tab-2, ownershipKind: task-created/);
+
+    requireApplied(
+      harness.coordinator.releaseTaskTab(refOf(harness.coordinator.getTask(task.taskId)!), 'task-tab-2'),
+    );
+    runtime.requests.length = 0;
+    await planner.plan(refOf(harness.coordinator.getTask(task.taskId)!));
+
+    const secondBody = requestBody(runtime);
+    assert.equal(secondBody.includes('task-tab-2'), false);
+    assert.match(secondBody, /ownedTabCount: 1/);
+  });
+
+  it('exposes only the active task workspace when another task is paused', async () => {
+    const runtime = new FakePlannerRuntime();
+    const harness = createHarness();
+    const taskA = start(harness, 'tab-a', 'task A objective');
+    requireApplied(harness.coordinator.adoptTaskTab(refOf(taskA), 'tab-b', 'task-created'));
+    requireApplied(harness.coordinator.pauseAtSafeBoundary(refOf(taskA)));
+    const taskB = start(harness, 'tab-c', 'task B objective');
+    const planner = new AutonomousTaskPlanner({
+      coordinator: harness.coordinator,
+      runtime,
+    });
+
+    await planner.plan(refOf(taskB));
+
+    const body = requestBody(runtime);
+    assert.match(body, /task B objective/);
+    assert.equal(body.includes('task A objective'), false);
+    assert.match(body, /alias: task-tab-1, ownershipKind: adopted/);
+    assert.equal(body.includes('task-tab-2'), false);
+    assert.match(body, /ownedTabCount: 1/);
+  });
+
+  it('rejects fake trusted-progress aliases before runtime', async () => {
+    const runtime = new FakePlannerRuntime();
+    const { planner, harness } = plannerOf({ runtime });
+    const task = start(harness);
+
+    await assert.rejects(
+      () =>
+        planner.plan(refOf(task), {
+          trustedProgress: [{ kind: 'child-run-completed', taskTabAlias: 'task-tab-99' }],
+        }),
+      isModelError('MODEL_REQUEST_FAILED'),
+    );
+    assert.equal(runtime.requests.length, 0);
+  });
+
+  it('rejects fake model-result aliases before runtime', async () => {
+    const runtime = new FakePlannerRuntime();
+    const { planner, harness } = plannerOf({ runtime });
+    const task = start(harness);
+
+    await assert.rejects(
+      () =>
+        planner.plan(refOf(task), {
+          modelSubgoalResults: [
+            {
+              kind: 'model-subgoal-result',
+              taskTabAlias: 'task-tab-99',
+              text: 'untrusted summary',
+            },
+          ],
+        }),
+      isModelError('MODEL_REQUEST_FAILED'),
+    );
+    assert.equal(runtime.requests.length, 0);
   });
 });
 
@@ -261,7 +363,7 @@ describe('AutonomousTaskPlanner fallback and budget', () => {
     const { planner, harness } = plannerOf({ runtime, catalog: fallbackCatalog() });
     const task = start(harness);
 
-    const result = await planner.plan(refOf(task), plannerContext(harness, task));
+    const result = await planner.plan(refOf(task));
     assert.equal(result.status, 'decision');
     if (result.status === 'decision') {
       assert.equal(result.decision.kind, 'complete');
@@ -277,13 +379,39 @@ describe('AutonomousTaskPlanner fallback and budget', () => {
     const { planner, harness } = plannerOf({ runtime, catalog: fallbackCatalog() });
     const task = start(harness);
 
-    await assert.rejects(
-      () => planner.plan(refOf(task), plannerContext(harness, task)),
-      isModelError('MODEL_UNAVAILABLE'),
-    );
+    await assert.rejects(() => planner.plan(refOf(task)), isModelError('MODEL_UNAVAILABLE'));
     assert.equal(runtime.requests.length, MAX_AUTONOMOUS_TASK_MODEL_ATTEMPTS);
     assert.equal(harness.coordinator.getTask(task.taskId)?.plannerStepCount, 0);
     assert.equal(harness.coordinator.getTask(task.taskId)?.state, 'planning');
+  });
+
+  it('ignores fallback when the task generation becomes stale before the retry', async () => {
+    const harness = createHarness();
+    const task = start(harness);
+    const ref = refOf(task);
+    const runtime = new FakePlannerRuntime(async (_request, _options, callIndex) => {
+      if (callIndex === 1) {
+        const paused = requireApplied(harness.coordinator.pauseAtSafeBoundary(ref));
+        requireApplied(harness.coordinator.resumeTask(refOf(paused)));
+        throw new ModelError('MODEL_UNAVAILABLE', 'unavailable');
+      }
+      return {
+        decision: { kind: 'complete' as const, answer: 'Should not count' },
+        resolvedProviderModelId: 'test/fallback',
+        latencyMs: 1,
+      };
+    });
+    const planner = new AutonomousTaskPlanner({
+      coordinator: harness.coordinator,
+      runtime,
+      catalog: fallbackCatalog(),
+    });
+
+    const result = await planner.plan(ref);
+    assert.deepEqual(result, { status: 'ignored' });
+    assert.equal(runtime.requests.length, 1);
+    assert.equal(harness.coordinator.getTask(task.taskId)?.plannerStepCount, 0);
+    assert.equal(harness.coordinator.getTask(task.taskId)?.generation, 2);
   });
 
   it('returns the eighth valid decision while keeping the task in planning', async () => {
@@ -296,8 +424,7 @@ describe('AutonomousTaskPlanner fallback and budget', () => {
     }
     assert.equal(harness.coordinator.getTask(task.taskId)?.plannerStepCount, 7);
 
-    const snapshot = harness.coordinator.getTask(task.taskId)!;
-    const result = await planner.plan(current, plannerContext(harness, snapshot));
+    const result = await planner.plan(current);
     assert.equal(result.status, 'decision');
     assert.equal(harness.coordinator.getTask(task.taskId)?.plannerStepCount, 8);
     assert.equal(harness.coordinator.getTask(task.taskId)?.state, 'planning');
@@ -316,11 +443,7 @@ describe('AutonomousTaskPlanner fallback and budget', () => {
     assert.equal(harness.coordinator.getTask(task.taskId)?.plannerStepCount, 8);
     assert.equal(harness.coordinator.getTask(task.taskId)?.state, 'planning');
 
-    const snapshot = harness.coordinator.getTask(task.taskId)!;
-    await assert.rejects(
-      () => planner.plan(current, plannerContext(harness, snapshot)),
-      isModelError('MODEL_REQUEST_FAILED'),
-    );
+    await assert.rejects(() => planner.plan(current), isModelError('MODEL_REQUEST_FAILED'));
     assert.equal(runtime.requests.length, 0);
     assert.equal(harness.coordinator.getTask(task.taskId)?.plannerStepCount, 8);
   });
@@ -345,9 +468,7 @@ describe('AutonomousTaskPlanner cancellation and stale generation', () => {
     const { planner, harness } = plannerOf({ runtime });
     const task = start(harness);
     const controller = new AbortController();
-    const pending = planner.plan(refOf(task), plannerContext(harness, task), {
-      signal: controller.signal,
-    });
+    const pending = planner.plan(refOf(task), {}, { signal: controller.signal });
     await modelStarted.promise;
     controller.abort();
     releaseModel.resolve();
@@ -368,10 +489,7 @@ describe('AutonomousTaskPlanner cancellation and stale generation', () => {
     controller.abort();
 
     await assert.rejects(
-      () =>
-        planner.plan(refOf(task), plannerContext(harness, task), {
-          signal: controller.signal,
-        }),
+      () => planner.plan(refOf(task), {}, { signal: controller.signal }),
       isModelError('REQUEST_CANCELLED'),
     );
     assert.equal(harness.coordinator.getTask(task.taskId)?.plannerStepCount, 0);
@@ -396,7 +514,7 @@ describe('AutonomousTaskPlanner cancellation and stale generation', () => {
     const { planner, harness } = plannerOf({ runtime });
     const task = start(harness);
     const gen1 = refOf(task);
-    const pending = planner.plan(gen1, plannerContext(harness, task));
+    const pending = planner.plan(gen1);
     await modelStarted.promise;
     const resumed = requireApplied(harness.coordinator.pauseAtSafeBoundary(gen1));
     requireApplied(harness.coordinator.resumeTask(refOf(resumed)));

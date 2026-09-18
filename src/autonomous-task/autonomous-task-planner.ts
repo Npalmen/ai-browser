@@ -15,12 +15,16 @@ import type { AutonomousTaskPlannerRuntime } from './autonomous-task-planner-run
 import {
   buildAutonomousTaskPlannerMessages,
   estimateAutonomousTaskPlannerInputTokens,
-  type AutonomousTaskPlannerContextInput,
+  type AutonomousTaskPlannerInput,
+  type AutonomousTaskPlannerMessageContext,
+  type ModelSubgoalResult,
+  type TrustedTaskProgressEntry,
 } from './autonomous-task-planner-context';
 import {
   isAutonomousTaskApplied,
   type AutonomousTaskId,
   type AutonomousTaskRef,
+  type AutonomousTaskSnapshot,
 } from './autonomous-task-types';
 
 export const MAX_AUTONOMOUS_TASK_MODEL_ATTEMPTS = 2;
@@ -64,7 +68,7 @@ export class AutonomousTaskPlanner {
 
   async plan(
     ref: AutonomousTaskRef,
-    context: AutonomousTaskPlannerContextInput,
+    input: AutonomousTaskPlannerInput = {},
     options: { signal?: AbortSignal } = {},
   ): Promise<AutonomousTaskPlannerResult> {
     const signal = options.signal ?? new AbortController().signal;
@@ -93,13 +97,20 @@ export class AutonomousTaskPlanner {
     }
 
     throwIfCancelled(signal);
-    const prepared = this.prepareModelCall(context);
+    this.validateEphemeralAliases(ref.taskId, input);
+    const messageContext = this.buildTrustedMessageContext(ref, inspected.snapshot, input);
+    const prepared = this.prepareModelCall(messageContext);
     throwIfCancelled(signal);
 
-    const { decision, alias } = await this.generateWithFallback({
+    const generated = await this.generateWithFallback({
       signal,
       prepared,
+      ref,
     });
+    if (generated.status === 'ignored') {
+      return { status: 'ignored' };
+    }
+    const { decision, alias } = generated;
     throwIfCancelled(signal);
 
     const validated = this.validateDecisionForTask(ref.taskId, decision);
@@ -121,6 +132,53 @@ export class AutonomousTaskPlanner {
     };
   }
 
+  private buildTrustedMessageContext(
+    ref: AutonomousTaskRef,
+    snapshot: AutonomousTaskSnapshot,
+    input: AutonomousTaskPlannerInput,
+  ): AutonomousTaskPlannerMessageContext {
+    return {
+      snapshot,
+      ownedTabs: this.coordinator.getOwnedTabs(ref.taskId).map((tab) => ({
+        alias: tab.alias,
+        ownershipKind: tab.ownershipKind,
+      })),
+      trustedProgress: input.trustedProgress,
+      modelSubgoalResults: input.modelSubgoalResults,
+      userClarification: input.userClarification,
+    };
+  }
+
+  private validateEphemeralAliases(
+    taskId: AutonomousTaskId,
+    input: AutonomousTaskPlannerInput,
+  ): void {
+    for (const entry of input.trustedProgress ?? []) {
+      this.requireOwnedTaskTabAlias(taskId, entry.taskTabAlias, 'trusted progress');
+    }
+    for (const result of input.modelSubgoalResults ?? []) {
+      this.requireOwnedTaskTabAlias(taskId, result.taskTabAlias, 'model subgoal result');
+    }
+  }
+
+  private requireOwnedTaskTabAlias(
+    taskId: AutonomousTaskId,
+    alias: string,
+    source: string,
+  ): void {
+    if (this.coordinator.resolveTaskTabAlias(taskId, alias) === undefined) {
+      throw new ModelError(
+        'MODEL_REQUEST_FAILED',
+        `Planner ${source} references unknown task tab alias: ${alias}`,
+      );
+    }
+  }
+
+  private isCurrentPlanningTask(ref: AutonomousTaskRef): boolean {
+    const inspected = this.coordinator.inspectTask(ref);
+    return inspected.status === 'current' && inspected.snapshot.state === 'planning';
+  }
+
   private validateDecisionForTask(
     taskId: AutonomousTaskId,
     decision: AutonomousTaskDecision,
@@ -138,7 +196,7 @@ export class AutonomousTaskPlanner {
     return decision;
   }
 
-  private prepareModelCall(context: AutonomousTaskPlannerContextInput): PreparedModelCall {
+  private prepareModelCall(context: AutonomousTaskPlannerMessageContext): PreparedModelCall {
     const messages = buildAutonomousTaskPlannerMessages(context);
     let route = routeModelRequest(
       {
@@ -187,14 +245,21 @@ export class AutonomousTaskPlanner {
   private async generateWithFallback(input: {
     signal: AbortSignal;
     prepared: PreparedModelCall;
-  }): Promise<{ decision: AutonomousTaskDecision; alias: ModelAlias }> {
+    ref: AutonomousTaskRef;
+  }): Promise<
+    | { status: 'ignored' }
+    | { status: 'decision'; decision: AutonomousTaskDecision; alias: ModelAlias }
+  > {
     let prepared = input.prepared;
     let lastError: ModelError | undefined;
 
     for (let attempt = 1; attempt <= MAX_AUTONOMOUS_TASK_MODEL_ATTEMPTS; attempt += 1) {
+      if (!this.isCurrentPlanningTask(input.ref)) {
+        return { status: 'ignored' };
+      }
       const result = await this.attemptGenerate(prepared, input.signal);
       if (result.ok) {
-        return { decision: result.decision, alias: prepared.profile.alias };
+        return { status: 'decision', decision: result.decision, alias: prepared.profile.alias };
       }
       lastError = result.error;
       throwIfCancelled(input.signal);
@@ -277,3 +342,5 @@ function throwIfCancelled(signal: AbortSignal): void {
 function cancelledError(): ModelError {
   return new ModelError('REQUEST_CANCELLED', 'The request was cancelled.');
 }
+
+export type { AutonomousTaskPlannerInput, TrustedTaskProgressEntry, ModelSubgoalResult };
