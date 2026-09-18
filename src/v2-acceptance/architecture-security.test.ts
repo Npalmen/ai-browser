@@ -118,6 +118,25 @@ describe('V2 architecture and preload security', () => {
     assert.match(runtime, /allowScreenshotExport:\s*false/);
   });
 
+  it('does not expose primitive interaction IPC channels', () => {
+    const contract = readSrc('src/shared/ipc-contract.ts');
+    for (const forbidden of [
+      'ai:click',
+      'ai:type',
+      'ai:select',
+      'ai:scroll',
+      'ai:execute',
+      'ai:run-proposal',
+      'ai:grant',
+    ]) {
+      assert.equal(contract.includes(forbidden), false, forbidden);
+    }
+    const preload = readSrc('src/preload/app-preload.ts');
+    for (const forbidden of ['click:', 'type:', 'select:', 'scroll:', 'execute:', 'runInteraction']) {
+      assert.equal(preload.includes(forbidden), false, forbidden);
+    }
+  });
+
   it('renders assistant output as React text children', () => {
     const panel = readSrc('src/app-ui/AiSidePanel.tsx');
     assert.equal(panel.includes('dangerouslySetInnerHTML'), false);

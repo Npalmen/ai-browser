@@ -33,7 +33,7 @@ describe('V2 IPC input fail-closed', () => {
 
   it('rejects askCurrentPage for a nonexistent tab', () => {
     const result = parseAskCurrentPageRequest(
-      { tabId: 'missing', question: 'What is this?' },
+      { tabId: 'missing', question: 'What is this?', mode: 'read' },
       ACTIVE,
     );
     assert.equal(result.ok, false);
@@ -46,7 +46,7 @@ describe('V2 IPC input fail-closed', () => {
 
   it('rejects askCurrentPage for a non-active tab', () => {
     const result = parseAskCurrentPageRequest(
-      { tabId: 'tab-other', question: 'What is this?' },
+      { tabId: 'tab-other', question: 'What is this?', mode: 'read' },
       ACTIVE,
     );
     assert.equal(result.ok, false);
@@ -57,10 +57,43 @@ describe('V2 IPC input fail-closed', () => {
 
   it('accepts askCurrentPage only for the active existing tab', () => {
     const result = parseAskCurrentPageRequest(
-      { tabId: 'tab-live', question: '  What is this?  ' },
+      { tabId: 'tab-live', question: '  What is this?  ', mode: 'read' },
       ACTIVE,
     );
-    assert.deepEqual(result, { ok: true, tabId: 'tab-live', question: 'What is this?' });
+    assert.deepEqual(result, {
+      ok: true,
+      tabId: 'tab-live',
+      question: 'What is this?',
+      mode: 'read',
+    });
+  });
+
+  it('rejects missing mode and unknown primitive-like fields', () => {
+    assert.equal(
+      parseAskCurrentPageRequest({ tabId: 'tab-live', question: 'What is this?' }, ACTIVE).ok,
+      false,
+    );
+    assert.equal(
+      parseAskCurrentPageRequest(
+        { tabId: 'tab-live', question: 'do it', mode: 'execute' },
+        ACTIVE,
+      ).ok,
+      false,
+    );
+    assert.equal(
+      parseAskCurrentPageRequest(
+        { tabId: 'tab-live', question: 'do it', mode: 'interact', targetId: 'target-1' },
+        ACTIVE,
+      ).ok,
+      false,
+    );
+    assert.equal(
+      parseAskCurrentPageRequest(
+        { tabId: 'tab-live', question: 'do it', mode: 'interact', kind: 'click' },
+        ACTIVE,
+      ).ok,
+      false,
+    );
   });
 });
 

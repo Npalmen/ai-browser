@@ -219,8 +219,9 @@ export function App() {
     const rendererRequestId = crypto.randomUUID();
     setTabAiState((current) => appendUserQuestion(current, tabId, question, rendererRequestId));
 
+    const mode = activeAi.mode;
     void window.aiAssistant
-      .askCurrentPage({ tabId, question })
+      .askCurrentPage({ tabId, question, mode })
       .then((result) => {
         if (!result.ok) {
           setTabAiState((current) =>
@@ -385,8 +386,10 @@ export function App() {
           hasActiveTab={Boolean(activeTab)}
           entries={activeAi.entries}
           isAsking={activeAi.activeAskId !== null}
+          mode={activeAi.mode}
           draft={activeAi.draft}
           onDraftChange={(value) => updateActiveTabAi((current) => ({ ...current, draft: value }))}
+          onModeChange={(mode) => updateActiveTabAi((current) => ({ ...current, mode }))}
           onAsk={handleAsk}
           onStop={handleStop}
           onClear={handleClear}

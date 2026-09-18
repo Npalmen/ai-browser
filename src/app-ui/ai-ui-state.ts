@@ -1,7 +1,7 @@
-import type { AiAnswerEvent, AiSafeError } from '../shared/ai-types';
+import type { AiAnswerEvent, AiRequestMode, AiSafeError } from '../shared/ai-types';
 import type { TabId } from '../shared/browser-types';
 
-export type AiAssistantStatus = 'streaming' | 'complete' | 'cancelled' | 'error';
+export type AiAssistantStatus = 'streaming' | 'complete' | 'cancelled' | 'error' | 'denied';
 
 export interface AiTranscriptEntry {
   id: string;
@@ -17,6 +17,7 @@ export interface TabAiUiState {
   entries: AiTranscriptEntry[];
   activeAskId: string | null;
   draft: string;
+  mode: AiRequestMode;
   latestAskId: string | null;
   staleAskIds: ReadonlySet<string>;
   latestSubmissionId: string | null;
@@ -30,6 +31,7 @@ export function emptyTabAiState(): TabAiUiState {
     entries: [],
     activeAskId: null,
     draft: '',
+    mode: 'read',
     latestAskId: null,
     staleAskIds: new Set(),
     latestSubmissionId: null,
@@ -123,7 +125,7 @@ export function applyAiAnswerEvent(
     return state;
   }
 
-  if (event.type === 'answer-started') {
+  if (event.type === 'answer-started' || event.type === 'interaction-started') {
     return withTab(state, event.tabId, establishAsk(tab, event.askId, createId));
   }
 
@@ -244,6 +246,38 @@ function applyAskProgress(tab: TabAiUiState, event: Exclude<AiAnswerEvent, { typ
       status: 'error',
       errorMessage: event.error.message,
     };
+  } else if (event.type === 'interaction-completed') {
+    if (isTerminal(entry.status)) {
+      return tab;
+    }
+    updated = {
+      ...entry,
+      status: 'complete',
+      text: 'Interaction completed.',
+      truncatedContext: event.truncatedContext,
+    };
+  } else if (event.type === 'interaction-denied') {
+    if (isTerminal(entry.status)) {
+      return tab;
+    }
+    updated = {
+      ...entry,
+      status: 'denied',
+      text: 'Action not performed.',
+      errorMessage: event.error.message,
+      truncatedContext: event.truncatedContext,
+    };
+  } else if (event.type === 'interaction-failed') {
+    if (isTerminal(entry.status)) {
+      return tab;
+    }
+    updated = {
+      ...entry,
+      status: 'error',
+      text: 'Interaction failed.',
+      errorMessage: event.error.message,
+      truncatedContext: event.truncatedContext,
+    };
   }
 
   if (!updated) {
@@ -277,6 +311,7 @@ function clearTabConversation(tab: TabAiUiState): TabAiUiState {
     entries: [],
     activeAskId: null,
     draft: '',
+    mode: 'read',
     latestAskId: null,
     staleAskIds,
     latestSubmissionId: null,
@@ -300,7 +335,12 @@ function findAssistantIndex(entries: readonly AiTranscriptEntry[], askId: string
 }
 
 function isTerminal(status: AiAssistantStatus | undefined): boolean {
-  return status === 'complete' || status === 'cancelled' || status === 'error';
+  return (
+    status === 'complete' ||
+    status === 'cancelled' ||
+    status === 'error' ||
+    status === 'denied'
+  );
 }
 
 function createEntryId(): string {

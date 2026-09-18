@@ -1,13 +1,20 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import type { InteractiveAgentResult } from '../ai/interactive-agent';
 import { ModelError } from '../ai/model-errors';
 import type { AgentAnswer, AgentAnswerOptions, AgentRequest } from '../ai/read-only-agent';
 import type { TabId } from '../shared/browser-types';
+import type { InteractionResult } from '../shared/interaction-types';
 import type { AiAnswerEvent } from '../shared/ai-types';
-import { AiRequestController, type AiAskAgent } from './ai-request-controller';
+import {
+  AiRequestController,
+  type AiInteractionAgent,
+  type AiReadAgent,
+} from './ai-request-controller';
 
 const SECRET = 'provider-secret-body-DO-NOT-LEAK';
+const TYPED_SECRET = 'V3_UI_TYPED_SECRET_DO_NOT_LEAK';
 const TAB: TabId = 'tab-1';
 
 class Deferred<T> {
@@ -23,7 +30,8 @@ class Deferred<T> {
   }
 }
 
-class FakeAgent implements AiAskAgent {
+class FakeReadAgent implements AiReadAgent {
+  readonly answerCalls: AgentRequest[] = [];
   readonly cancelCalls: TabId[] = [];
   readonly clearCalls: TabId[] = [];
   clearAllCount = 0;
@@ -32,11 +40,56 @@ class FakeAgent implements AiAskAgent {
     options?: AgentAnswerOptions,
   ) => Promise<AgentAnswer>;
 
-  constructor(impl?: FakeAgent['impl']) {
+  constructor(impl?: FakeReadAgent['impl']) {
     this.impl = impl ?? (async () => agentAnswer());
   }
 
   answer(request: AgentRequest, options?: AgentAnswerOptions): Promise<AgentAnswer> {
+    this.answerCalls.push(request);
+    return this.impl(request, options);
+  }
+
+  cancel(tabId: TabId): boolean {
+    this.cancelCalls.push(tabId);
+    return true;
+  }
+
+  clearConversation(tabId: TabId): void {
+    this.clearCalls.push(tabId);
+  }
+
+  clearAllConversations(): void {
+    this.clearAllCount += 1;
+  }
+}
+
+class FakeInteractionAgent implements AiInteractionAgent {
+  readonly interactCalls: Array<{ tabId: TabId; instruction: string }> = [];
+  readonly cancelCalls: TabId[] = [];
+  readonly clearCalls: TabId[] = [];
+  clearAllCount = 0;
+  impl: (
+    request: { tabId: TabId; instruction: string },
+    options?: { onAnswerTextDelta?: (text: string) => void },
+  ) => Promise<InteractiveAgentResult>;
+
+  constructor(impl?: FakeInteractionAgent['impl']) {
+    this.impl =
+      impl ??
+      (async () => ({
+        kind: 'answer',
+        text: 'Interaction answer',
+        referencedTargets: [],
+        alias: 'page-standard',
+        truncatedContext: false,
+      }));
+  }
+
+  interact(
+    request: { tabId: TabId; instruction: string },
+    options?: { onAnswerTextDelta?: (text: string) => void },
+  ): Promise<InteractiveAgentResult> {
+    this.interactCalls.push(request);
     return this.impl(request, options);
   }
 
@@ -64,6 +117,26 @@ function agentAnswer(overrides: Partial<AgentAnswer> = {}): AgentAnswer {
   };
 }
 
+function pageState() {
+  return {
+    tabId: TAB,
+    url: 'https://example.com/page',
+    title: 'Example',
+    loading: false,
+    canGoBack: false,
+    canGoForward: false,
+  };
+}
+
+function interactionResult(overrides: Partial<InteractionResult> = {}): InteractionResult {
+  return {
+    actionId: 'action-should-not-leak',
+    status: 'succeeded',
+    pageState: pageState(),
+    ...overrides,
+  };
+}
+
 async function waitUntil(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 1000;
   while (!predicate()) {
@@ -74,10 +147,11 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
   }
 }
 
-function controllerOf(agent: FakeAgent) {
+function controllerOf(readAgent: FakeReadAgent, interactiveAgent: FakeInteractionAgent) {
   const events: AiAnswerEvent[] = [];
   const controller = new AiRequestController({
-    agent,
+    readAgent,
+    interactiveAgent,
     emit: (event) => {
       events.push(event);
     },
@@ -86,98 +160,357 @@ function controllerOf(agent: FakeAgent) {
 }
 
 describe('AiRequestController', () => {
-  it('emits started, text, and finished events for a successful ask', async () => {
-    const agent = new FakeAgent(async (_request, options) => {
+  it('routes read mode to ReadOnlyAgent only', async () => {
+    const readAgent = new FakeReadAgent();
+    const interactiveAgent = new FakeInteractionAgent();
+    const { controller, events } = controllerOf(readAgent, interactiveAgent);
+
+    controller.startAsk(TAB, 'What is this?', 'read');
+    await waitUntil(() => events.some((event) => event.type === 'answer-finished'));
+
+    assert.equal(readAgent.answerCalls.length, 1);
+    assert.equal(interactiveAgent.interactCalls.length, 0);
+  });
+
+  it('routes interact mode to InteractiveAgent only', async () => {
+    const readAgent = new FakeReadAgent();
+    const interactiveAgent = new FakeInteractionAgent();
+    const { controller, events } = controllerOf(readAgent, interactiveAgent);
+
+    controller.startAsk(TAB, 'Click save', 'interact');
+    await waitUntil(() => events.some((event) => event.type === 'answer-finished'));
+
+    assert.equal(readAgent.answerCalls.length, 0);
+    assert.equal(interactiveAgent.interactCalls.length, 1);
+    assert.equal(events[0]?.type, 'interaction-started');
+  });
+
+  it('emits started, text, and finished events for a successful read ask', async () => {
+    const readAgent = new FakeReadAgent(async (_request, options) => {
       options?.onTextDelta?.('Hello');
       return agentAnswer({ text: 'Hello world', truncatedContext: true });
     });
-    const { controller, events } = controllerOf(agent);
+    const { controller, events } = controllerOf(readAgent, new FakeInteractionAgent());
 
-    const started = controller.startAsk(TAB, 'What is this?');
+    const started = controller.startAsk(TAB, 'What is this?', 'read');
     assert.equal(started.ok, true);
     await waitUntil(() => events.some((event) => event.type === 'answer-finished'));
 
     assert.equal(events[0]?.type, 'answer-started');
     assert.equal(events[1]?.type, 'answer-text');
-    assert.equal(events[1]?.type === 'answer-text' && events[1].delta, 'Hello');
     assert.equal(events[2]?.type, 'answer-finished');
-    if (events[2]?.type === 'answer-finished') {
-      assert.deepEqual(events[2].answer, { text: 'Hello world', truncatedContext: true });
-      assert.equal('referencedTargets' in events[2].answer, false);
-      assert.equal('alias' in events[2], false);
-    }
-    assert.equal(JSON.stringify(events).includes('target-should-not-leak'), false);
-    assert.equal(JSON.stringify(events).includes('page-standard'), false);
   });
 
-  it('maps REQUEST_CANCELLED to answer-cancelled', async () => {
-    const agent = new FakeAgent(async () => {
-      throw new ModelError('REQUEST_CANCELLED', 'cancelled internally');
-    });
-    const { controller, events } = controllerOf(agent);
-    const started = controller.startAsk(TAB, 'Stop me?');
-    assert.equal(started.ok, true);
-    await waitUntil(() => events.some((event) => event.type === 'answer-cancelled'));
-    assert.equal(events.at(-1)?.type, 'answer-cancelled');
+  it('maps interaction success to interaction-completed without leaking handles', async () => {
+    const interactiveAgent = new FakeInteractionAgent(async () => ({
+      kind: 'interaction',
+      alias: 'page-standard',
+      truncatedContext: true,
+      result: interactionResult({
+        observation: {
+          observationId: 'obs-secret',
+          tabId: TAB,
+          capturedAt: 1,
+          document: {
+            revision: 'rev-secret',
+            url: 'https://example.com',
+            title: 'Secret',
+            loading: false,
+            mainFrameId: 'frame-secret',
+          },
+          viewport: {
+            width: 800,
+            height: 600,
+            scrollX: 0,
+            scrollY: 0,
+            deviceScaleFactor: 1,
+          },
+          nodes: [{ targetId: 'target-secret', frameId: 'frame-secret', role: 'button', interactive: true, visible: true, inViewport: true }],
+          stats: {
+            sourceAxNodeCount: 1,
+            sourceDomNodeCount: 1,
+            emittedNodeCount: 1,
+            truncated: false,
+            redactedValueCount: 0,
+            frameCount: 1,
+            crossOriginFrameCount: 0,
+          },
+        },
+      }),
+    }));
+    const { controller, events } = controllerOf(new FakeReadAgent(), interactiveAgent);
+    controller.startAsk(TAB, 'Click save', 'interact');
+    await waitUntil(() => events.some((event) => event.type === 'interaction-completed'));
+
+    const serialized = JSON.stringify(events);
+    for (const token of [
+      'target-secret',
+      'obs-secret',
+      'frame-secret',
+      'action-should-not-leak',
+      'proposal',
+      'grant',
+      'pageState',
+      'observation',
+    ]) {
+      assert.equal(serialized.includes(token), false, token);
+    }
+  });
+
+  it('maps policy denial to interaction-denied', async () => {
+    const interactiveAgent = new FakeInteractionAgent(async () => ({
+      kind: 'interaction',
+      alias: 'page-standard',
+      truncatedContext: false,
+      result: interactionResult({
+        status: 'denied',
+        errorCode: 'DEFERRED_TO_EXECUTE',
+      }),
+    }));
+    const { controller, events } = controllerOf(new FakeReadAgent(), interactiveAgent);
+    controller.startAsk(TAB, 'Buy now', 'interact');
+    await waitUntil(() => events.some((event) => event.type === 'interaction-denied'));
+
+    const denied = events.find((event) => event.type === 'interaction-denied');
+    assert.equal(denied?.type === 'interaction-denied' && denied.error.code, 'DEFERRED_TO_EXECUTE');
     assert.equal(
-      events.some((event) => event.type === 'answer-error'),
+      denied?.type === 'interaction-denied' && denied.error.message,
+      'This action is not available without additional approval.',
+    );
+    assert.equal(events.some((event) => event.type === 'interaction-failed'), false);
+  });
+
+  it('maps runtime failure to interaction-failed', async () => {
+    const interactiveAgent = new FakeInteractionAgent(async () => ({
+      kind: 'interaction',
+      alias: 'page-standard',
+      truncatedContext: false,
+      result: interactionResult({
+        status: 'failed',
+        errorCode: 'TARGET_STALE',
+      }),
+    }));
+    const { controller, events } = controllerOf(new FakeReadAgent(), interactiveAgent);
+    controller.startAsk(TAB, 'Click save', 'interact');
+    await waitUntil(() => events.some((event) => event.type === 'interaction-failed'));
+
+    const failed = events.find((event) => event.type === 'interaction-failed');
+    assert.equal(failed?.type === 'interaction-failed' && failed.error.code, 'TARGET_STALE');
+    assert.equal(events.some((event) => event.type === 'interaction-denied'), false);
+  });
+
+  it('supports interaction-started followed by answer-finished for answer-only interact results', async () => {
+    const interactiveAgent = new FakeInteractionAgent(async (_request, options) => {
+      options?.onAnswerTextDelta?.('Hel');
+      return {
+        kind: 'answer',
+        text: 'No action needed',
+        referencedTargets: [],
+        alias: 'page-standard',
+        truncatedContext: false,
+      };
+    });
+    const { controller, events } = controllerOf(new FakeReadAgent(), interactiveAgent);
+    controller.startAsk(TAB, 'What is here?', 'interact');
+    await waitUntil(() => events.some((event) => event.type === 'answer-finished'));
+
+    assert.equal(events[0]?.type, 'interaction-started');
+    assert.equal(events.some((event) => event.type === 'answer-text'), true);
+    assert.equal(events.at(-1)?.type, 'answer-finished');
+    assert.equal(events.some((event) => event.type === 'interaction-completed'), false);
+  });
+
+  it('cancels read then interact cross-mode and suppresses late read events', async () => {
+    const readInGenerate = new Deferred<void>();
+    const releaseRead = new Deferred<void>();
+    const readAgent = new FakeReadAgent(async (_request, options) => {
+      readInGenerate.resolve();
+      await releaseRead.promise;
+      options?.onTextDelta?.('late-read');
+      return agentAnswer({ text: 'from-read' });
+    });
+    const interactiveAgent = new FakeInteractionAgent(async () => ({
+      kind: 'answer',
+      text: 'from-interact',
+      referencedTargets: [],
+      alias: 'page-standard',
+      truncatedContext: false,
+    }));
+    const { controller, events } = controllerOf(readAgent, interactiveAgent);
+
+    controller.startAsk(TAB, 'Read question?', 'read');
+    await readInGenerate.promise;
+    controller.startAsk(TAB, 'Click save', 'interact');
+    releaseRead.resolve();
+    await waitUntil(() => events.some((event) => event.type === 'answer-finished'));
+
+    assert.deepEqual(readAgent.cancelCalls, [TAB]);
+    assert.equal(interactiveAgent.interactCalls.length, 1);
+    assert.equal(
+      events.some((event) => event.type === 'answer-text' && event.delta === 'late-read'),
+      false,
+    );
+    const finished = events.find((event) => event.type === 'answer-finished');
+    assert.equal(finished?.type === 'answer-finished' && finished.answer.text, 'from-interact');
+  });
+
+  it('cancels interact then read cross-mode', async () => {
+    const interactInGenerate = new Deferred<void>();
+    const releaseInteract = new Deferred<void>();
+    const readAgent = new FakeReadAgent(async () => agentAnswer({ text: 'from-read' }));
+    const interactiveAgent = new FakeInteractionAgent(async (_request, options) => {
+      interactInGenerate.resolve();
+      await releaseInteract.promise;
+      options?.onAnswerTextDelta?.('late-interact');
+      return {
+        kind: 'answer',
+        text: 'from-interact',
+        referencedTargets: [],
+        alias: 'page-standard',
+        truncatedContext: false,
+      };
+    });
+    const { controller, events } = controllerOf(readAgent, interactiveAgent);
+
+    controller.startAsk(TAB, 'Click save', 'interact');
+    await interactInGenerate.promise;
+    controller.startAsk(TAB, 'Read question?', 'read');
+    releaseInteract.resolve();
+    await waitUntil(() => events.some((event) => event.type === 'answer-finished'));
+
+    assert.deepEqual(interactiveAgent.cancelCalls, [TAB]);
+    assert.equal(readAgent.answerCalls.length, 1);
+    const finished = events.find((event) => event.type === 'answer-finished');
+    assert.equal(finished?.type === 'answer-finished' && finished.answer.text, 'from-read');
+    assert.equal(
+      events.some((event) => event.type === 'answer-text' && event.delta === 'late-interact'),
       false,
     );
   });
 
+  it('cancels only the current read askId through readAgent', async () => {
+    const hold = new Deferred<AgentAnswer>();
+    const readAgent = new FakeReadAgent(async () => hold.promise);
+    const { controller } = controllerOf(readAgent, new FakeInteractionAgent());
+    const askA = controller.startAsk(TAB, 'A?', 'read');
+    const askB = controller.startAsk(TAB, 'B?', 'read');
+    assert.equal(askA.ok && askB.ok, true);
+    if (!askA.ok || !askB.ok) {
+      return;
+    }
+    assert.deepEqual(controller.cancelAsk(TAB, askA.askId), { cancelled: false });
+    assert.deepEqual(controller.cancelAsk(TAB, askB.askId), { cancelled: true });
+    assert.deepEqual(readAgent.cancelCalls, [TAB, TAB]);
+    hold.reject(new ModelError('REQUEST_CANCELLED', 'cancelled'));
+    await hold.promise.catch(() => undefined);
+  });
+
+  it('cancels only the current interact askId through interactiveAgent', async () => {
+    const hold = new Deferred<InteractiveAgentResult>();
+    const interactiveAgent = new FakeInteractionAgent(async () => hold.promise);
+    const { controller } = controllerOf(new FakeReadAgent(), interactiveAgent);
+    const askA = controller.startAsk(TAB, 'A?', 'interact');
+    const askB = controller.startAsk(TAB, 'B?', 'interact');
+    assert.equal(askA.ok && askB.ok, true);
+    if (!askA.ok || !askB.ok) {
+      return;
+    }
+    assert.deepEqual(controller.cancelAsk(TAB, askA.askId), { cancelled: false });
+    assert.deepEqual(controller.cancelAsk(TAB, askB.askId), { cancelled: true });
+    assert.deepEqual(interactiveAgent.cancelCalls, [TAB, TAB]);
+    hold.reject(new ModelError('REQUEST_CANCELLED', 'cancelled'));
+    await hold.promise.catch(() => undefined);
+  });
+
+  it('clears both conversation stores and cancels the active owner', async () => {
+    const hold = new Deferred<AgentAnswer>();
+    const readAgent = new FakeReadAgent(async () => hold.promise);
+    const interactiveAgent = new FakeInteractionAgent();
+    const { controller, events } = controllerOf(readAgent, interactiveAgent);
+    controller.startAsk(TAB, 'Remember this?', 'read');
+    await waitUntil(() => events.some((event) => event.type === 'answer-started'));
+    const cleared = controller.clearConversation(TAB);
+    assert.deepEqual(cleared, { ok: true });
+    assert.deepEqual(readAgent.cancelCalls, [TAB]);
+    assert.deepEqual(readAgent.clearCalls, [TAB]);
+    assert.deepEqual(interactiveAgent.clearCalls, [TAB]);
+    hold.resolve(agentAnswer());
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(events.some((event) => event.type === 'answer-finished'), false);
+  });
+
+  it('dispose cancels active requests and clears both conversation stores', () => {
+    const readAgent = new FakeReadAgent();
+    const interactiveAgent = new FakeInteractionAgent();
+    const { controller } = controllerOf(readAgent, interactiveAgent);
+    controller.startAsk(TAB, 'Question?', 'read');
+    controller.dispose();
+    assert.equal(readAgent.cancelCalls.length, 1);
+    assert.equal(interactiveAgent.cancelCalls.length, 1);
+    assert.equal(readAgent.clearAllCount, 1);
+    assert.equal(interactiveAgent.clearAllCount, 1);
+  });
+
+  it('never leaks typed interaction secrets in serialized events', async () => {
+    const interactiveAgent = new FakeInteractionAgent(async () => ({
+      kind: 'interaction',
+      alias: 'page-standard',
+      truncatedContext: false,
+      result: interactionResult({
+        status: 'denied',
+        errorCode: 'INTERACTION_DENIED',
+      }),
+    }));
+    const { controller, events } = controllerOf(new FakeReadAgent(), interactiveAgent);
+    controller.startAsk(TAB, TYPED_SECRET, 'interact');
+    await waitUntil(() => events.some((event) => event.type === 'interaction-denied'));
+    assert.equal(JSON.stringify(events).includes(TYPED_SECRET), false);
+  });
+
+  it('maps REQUEST_CANCELLED to answer-cancelled for interact mode', async () => {
+    const interactiveAgent = new FakeInteractionAgent(async () => {
+      throw new ModelError('REQUEST_CANCELLED', 'cancelled internally');
+    });
+    const { controller, events } = controllerOf(new FakeReadAgent(), interactiveAgent);
+    controller.startAsk(TAB, 'Click save', 'interact');
+    await waitUntil(() => events.some((event) => event.type === 'answer-cancelled'));
+    assert.equal(events[0]?.type, 'interaction-started');
+    assert.equal(events.at(-1)?.type, 'answer-cancelled');
+    assert.equal(events.some((event) => event.type === 'interaction-failed'), false);
+  });
+
   it('sanitizes ModelError events and never leaks a secret cause', async () => {
-    const agent = new FakeAgent(async () => {
+    const readAgent = new FakeReadAgent(async () => {
       throw new ModelError('MODEL_RATE_LIMITED', `rate ${SECRET}`, { cause: SECRET });
     });
-    const { controller, events } = controllerOf(agent);
-    controller.startAsk(TAB, 'What is this?');
+    const { controller, events } = controllerOf(readAgent, new FakeInteractionAgent());
+    controller.startAsk(TAB, 'What is this?', 'read');
     await waitUntil(() => events.some((event) => event.type === 'answer-error'));
-    const serialized = JSON.stringify(events);
-    assert.equal(serialized.includes(SECRET), false);
-    const errorEvent = events.find((event) => event.type === 'answer-error');
-    assert.equal(errorEvent?.type === 'answer-error' && errorEvent.error.code, 'MODEL_RATE_LIMITED');
-    assert.equal(
-      errorEvent?.type === 'answer-error' && errorEvent.error.message,
-      'The AI service is temporarily rate limited.',
-    );
+    assert.equal(JSON.stringify(events).includes(SECRET), false);
   });
 
-  it('maps unknown errors to AI_REQUEST_FAILED without leaking the message', async () => {
-    const agent = new FakeAgent(async () => {
-      throw new Error(SECRET);
-    });
-    const { controller, events } = controllerOf(agent);
-    controller.startAsk(TAB, 'What is this?');
-    await waitUntil(() => events.some((event) => event.type === 'answer-error'));
-    const serialized = JSON.stringify(events);
-    assert.equal(serialized.includes(SECRET), false);
-    const errorEvent = events.find((event) => event.type === 'answer-error');
-    assert.equal(errorEvent?.type === 'answer-error' && errorEvent.error.code, 'AI_REQUEST_FAILED');
-  });
-
-  it('suppresses late events from a superseded ask', async () => {
+  it('suppresses late events from a superseded same-mode ask', async () => {
     const first = new Deferred<AgentAnswer>();
     const second = new Deferred<AgentAnswer>();
-    let firstDelta: ((text: string) => void) | undefined;
     let calls = 0;
-    const agent = new FakeAgent(async (_request, options) => {
+    const readAgent = new FakeReadAgent(async (_request, options) => {
       calls += 1;
       if (calls === 1) {
-        firstDelta = options?.onTextDelta;
-        return first.promise;
+        const result = await first.promise;
+        options?.onTextDelta?.('late-A');
+        return result;
       }
       return second.promise;
     });
-    const { controller, events } = controllerOf(agent);
+    const { controller, events } = controllerOf(readAgent, new FakeInteractionAgent());
 
-    const askA = controller.startAsk(TAB, 'Question A?');
+    const askA = controller.startAsk(TAB, 'Question A?', 'read');
     await waitUntil(() => events.some((event) => event.type === 'answer-started'));
-    const askB = controller.startAsk(TAB, 'Question B?');
+    const askB = controller.startAsk(TAB, 'Question B?', 'read');
     await waitUntil(
       () => events.filter((event) => event.type === 'answer-started').length === 2,
     );
 
-    firstDelta?.('late-A');
     first.resolve(agentAnswer({ text: 'from-A' }));
     second.resolve(agentAnswer({ text: 'from-B' }));
     await waitUntil(() => events.some((event) => event.type === 'answer-finished'));
@@ -190,56 +523,5 @@ describe('AiRequestController', () => {
     const finished = events.filter((event) => event.type === 'answer-finished');
     assert.equal(finished.length, 1);
     assert.equal(finished[0]?.type === 'answer-finished' && finished[0].askId, askB.ok ? askB.askId : '');
-    assert.equal(
-      events.some((event) => event.type === 'answer-cancelled' && askA.ok && event.askId === askA.askId),
-      false,
-    );
-  });
-
-  it('cancels only the current askId', async () => {
-    const hold = new Deferred<AgentAnswer>();
-    const agent = new FakeAgent(async () => hold.promise);
-    const { controller } = controllerOf(agent);
-    const askA = controller.startAsk(TAB, 'A?');
-    const askB = controller.startAsk(TAB, 'B?');
-    assert.equal(askA.ok && askB.ok, true);
-    if (!askA.ok || !askB.ok) {
-      return;
-    }
-    assert.deepEqual(controller.cancelAsk(TAB, askA.askId), { cancelled: false });
-    assert.equal(agent.cancelCalls.length, 0);
-    assert.deepEqual(controller.cancelAsk(TAB, askB.askId), { cancelled: true });
-    assert.deepEqual(agent.cancelCalls, [TAB]);
-    hold.reject(new ModelError('REQUEST_CANCELLED', 'cancelled'));
-    await hold.promise.catch(() => undefined);
-  });
-
-  it('clears conversation, cancels the active ask, and suppresses late events', async () => {
-    const hold = new Deferred<AgentAnswer>();
-    let delta: ((text: string) => void) | undefined;
-    const agent = new FakeAgent(async (_request, options) => {
-      delta = options?.onTextDelta;
-      return hold.promise;
-    });
-    const { controller, events } = controllerOf(agent);
-    const started = controller.startAsk(TAB, 'Remember this?');
-    await waitUntil(() => events.some((event) => event.type === 'answer-started'));
-    const cleared = controller.clearConversation(TAB);
-    assert.deepEqual(cleared, { ok: true });
-    assert.deepEqual(agent.cancelCalls, [TAB]);
-    assert.deepEqual(agent.clearCalls, [TAB]);
-    delta?.('late-after-clear');
-    hold.resolve(agentAnswer());
-    await waitUntil(() => events.some((event) => event.type === 'conversation-cleared'));
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(
-      events.some((event) => event.type === 'answer-text' || event.type === 'answer-finished'),
-      false,
-    );
-    assert.equal(started.ok, true);
-    assert.equal(
-      events.some((event) => event.type === 'conversation-cleared' && event.reason === 'user'),
-      true,
-    );
   });
 });

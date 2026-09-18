@@ -13,7 +13,7 @@ import {
   emptyTabAiState,
   purgeClosedTabs,
 } from '../app-ui/ai-ui-state';
-import { AiRequestController } from '../main/ai-request-controller';
+import { readOnlyController } from './controller-fixtures';
 import { toAiSafeError } from '../main/ai-safe-error';
 import type { AiAnswerEvent } from '../shared/ai-types';
 import type { PageObservation } from '../shared/observation-types';
@@ -163,15 +163,12 @@ describe('V2 deterministic chain acceptance', () => {
       allowScreenshotExport: false,
     });
     const events: AiAnswerEvent[] = [];
-    const controller = new AiRequestController({
-      agent,
-      emit: (event) => {
-        events.push(event);
-      },
+    const controller = readOnlyController(agent, (event) => {
+      events.push(event);
     });
 
     let ui = appendUserQuestion({}, V2_TAB_ID, V2_QUESTION, 'sub-1');
-    const started = controller.startAsk(V2_TAB_ID, V2_QUESTION);
+    const started = controller.startAsk(V2_TAB_ID, V2_QUESTION, 'read');
     assert.equal(started.ok, true);
     if (!started.ok) {
       return;
@@ -268,9 +265,9 @@ describe('V2 lifecycle acceptance', () => {
       allowScreenshotExport: false,
     });
     const events: AiAnswerEvent[] = [];
-    const controller = new AiRequestController({ agent, emit: (event) => events.push(event) });
+    const controller = readOnlyController(agent, (event) => events.push(event));
     let ui = appendUserQuestion({}, V2_TAB_ID, V2_QUESTION, 'sub-cancel');
-    const started = controller.startAsk(V2_TAB_ID, V2_QUESTION);
+    const started = controller.startAsk(V2_TAB_ID, V2_QUESTION, 'read');
     assert.equal(started.ok, true);
     if (!started.ok) {
       return;
@@ -302,9 +299,9 @@ describe('V2 lifecycle acceptance', () => {
       allowScreenshotExport: false,
     });
     const events: AiAnswerEvent[] = [];
-    const controller = new AiRequestController({ agent, emit: (event) => events.push(event) });
+    const controller = readOnlyController(agent, (event) => events.push(event));
     let ui = appendUserQuestion({}, V2_TAB_ID, V2_QUESTION, 'sub-clear');
-    controller.startAsk(V2_TAB_ID, V2_QUESTION);
+    controller.startAsk(V2_TAB_ID, V2_QUESTION, 'read');
     await waitUntil(() => events.some((event) => event.type === 'answer-started'));
     const cleared = controller.clearConversation(V2_TAB_ID);
     assert.deepEqual(cleared, { ok: true });
@@ -324,10 +321,10 @@ describe('V2 lifecycle acceptance', () => {
       allowScreenshotExport: false,
     });
     const events: AiAnswerEvent[] = [];
-    const controller = new AiRequestController({ agent, emit: (event) => events.push(event) });
+    const controller = readOnlyController(agent, (event) => events.push(event));
     let ui = appendUserQuestion({}, 'tab-a', 'Question A?', 'sub-a');
     ui = appendUserQuestion(ui, 'tab-b', 'Question B?', 'sub-b');
-    controller.startAsk('tab-a', 'Question A?');
+    controller.startAsk('tab-a', 'Question A?', 'read');
     await waitUntil(() => events.some((event) => event.type === 'answer-started'));
     controller.handleTabClosed('tab-a');
     for (const event of events) {

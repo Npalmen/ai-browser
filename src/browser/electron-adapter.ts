@@ -59,6 +59,11 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     private readonly options: ElectronBrowserAdapterOptions = {},
   ) {}
 
+  /** Main-process composition only: shared target registry for observation and interaction. */
+  getInteractionTargetRegistry(): TargetRegistry {
+    return this.targetRegistry;
+  }
+
   async createTab(input?: { url?: string }): Promise<TabId> {
     this.assertNotDisposed();
 

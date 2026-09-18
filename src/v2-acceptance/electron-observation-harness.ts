@@ -11,7 +11,7 @@ import {
   applyAiAnswerEvent,
   emptyTabAiState,
 } from '../app-ui/ai-ui-state';
-import { AiRequestController } from '../main/ai-request-controller';
+import { readOnlyController } from './controller-fixtures';
 import { startObservationFixtureServer } from '../../scripts/observation-fixture-server';
 import type { AiAnswerEvent } from '../shared/ai-types';
 import { assertRendererSafeEvents, assertSecureModelMessages } from './assert-v2-security';
@@ -145,15 +145,12 @@ async function run(): Promise<void> {
     });
 
     const events: AiAnswerEvent[] = [];
-    const controller = new AiRequestController({
-      agent,
-      emit: (event) => {
-        events.push(event);
-      },
+    const controller = readOnlyController(agent, (event) => {
+      events.push(event);
     });
 
     let ui = appendUserQuestion({}, V2_TAB_ID, V2_QUESTION, 'electron-sub-1');
-    const started = controller.startAsk(V2_TAB_ID, V2_QUESTION);
+    const started = controller.startAsk(V2_TAB_ID, V2_QUESTION, 'read');
     assert.equal(started.ok, true);
     if (!started.ok) {
       throw new Error('startAsk failed');

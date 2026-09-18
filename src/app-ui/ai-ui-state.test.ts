@@ -296,6 +296,77 @@ describe('AI UI event ordering', () => {
     assert.equal(tab(state).staleSubmissionIds.has(SUB_A), true);
   });
 
+  it('Case L: interaction-started then interaction-completed yields one assistant entry', () => {
+    const createId = ids();
+    let state: AiUiState = {};
+    state = appendUserQuestion(state, TAB, 'Click save', SUB_A, createId);
+    state = applyAiAnswerEvent(
+      state,
+      { type: 'interaction-started', askId: ASK_A, tabId: TAB },
+      createId,
+    );
+    state = applyAiAnswerEvent(
+      state,
+      { type: 'interaction-completed', askId: ASK_A, tabId: TAB, truncatedContext: false },
+      createId,
+    );
+
+    assert.equal(assistants(state).length, 1);
+    assert.equal(assistants(state)[0]?.text, 'Interaction completed.');
+    assert.equal(assistants(state)[0]?.status, 'complete');
+    assert.equal(tab(state).activeAskId, null);
+  });
+
+  it('Case M: interaction-started then denied uses denied status', () => {
+    const createId = ids();
+    let state: AiUiState = {};
+    state = appendUserQuestion(state, TAB, 'Buy now', SUB_A, createId);
+    state = applyAiAnswerEvent(
+      state,
+      { type: 'interaction-started', askId: ASK_A, tabId: TAB },
+      createId,
+    );
+    state = applyAiAnswerEvent(
+      state,
+      {
+        type: 'interaction-denied',
+        askId: ASK_A,
+        tabId: TAB,
+        truncatedContext: false,
+        error: {
+          code: 'DEFERRED_TO_EXECUTE',
+          message: 'This action is not available without additional approval.',
+        },
+      },
+      createId,
+    );
+
+    assert.equal(assistants(state).length, 1);
+    assert.equal(assistants(state)[0]?.status, 'denied');
+    assert.equal(assistants(state)[0]?.text, 'Action not performed.');
+    assert.equal(
+      assistants(state)[0]?.errorMessage,
+      'This action is not available without additional approval.',
+    );
+  });
+
+  it('Case N: interaction-started then answer-finished keeps one assistant entry', () => {
+    const createId = ids();
+    let state: AiUiState = {};
+    state = appendUserQuestion(state, TAB, 'What is here?', SUB_A, createId);
+    state = applyAiAnswerEvent(
+      state,
+      { type: 'interaction-started', askId: ASK_A, tabId: TAB },
+      createId,
+    );
+    state = applyAiAnswerEvent(state, delta(ASK_A, 'Hello'), createId);
+    state = applyAiAnswerEvent(state, finished(ASK_A, 'Hello world'), createId);
+
+    assert.equal(assistants(state).length, 1);
+    assert.equal(assistants(state)[0]?.text, 'Hello world');
+    assert.equal(assistants(state)[0]?.status, 'complete');
+  });
+
   it('keeps tab transcripts isolated', () => {
     const createId = ids();
     let state: AiUiState = {};

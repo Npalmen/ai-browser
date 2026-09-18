@@ -1,6 +1,6 @@
 import type { FormEvent, KeyboardEvent } from 'react';
 
-import { AI_SIDE_PANEL_WIDTH_PX } from '../shared/ai-types';
+import { AI_SIDE_PANEL_WIDTH_PX, type AiRequestMode } from '../shared/ai-types';
 
 import type { AiTranscriptEntry } from './ai-ui-state';
 
@@ -8,8 +8,10 @@ export function AiSidePanel(props: {
   hasActiveTab: boolean;
   entries: AiTranscriptEntry[];
   isAsking: boolean;
+  mode: AiRequestMode;
   draft: string;
   onDraftChange: (value: string) => void;
+  onModeChange: (mode: AiRequestMode) => void;
   onAsk: () => void;
   onStop: () => void;
   onClear: () => void;
@@ -58,22 +60,55 @@ export function AiSidePanel(props: {
         </div>
       </header>
 
+      <div className="ai-mode-selector" role="group" aria-label="AI request mode">
+        <button
+          type="button"
+          className={`ai-mode-button ${props.mode === 'read' ? 'ai-mode-button-active' : ''}`}
+          disabled={props.isAsking}
+          aria-pressed={props.mode === 'read'}
+          onClick={() => props.onModeChange('read')}
+        >
+          Ask
+        </button>
+        <button
+          type="button"
+          className={`ai-mode-button ${props.mode === 'interact' ? 'ai-mode-button-active' : ''}`}
+          disabled={props.isAsking}
+          aria-pressed={props.mode === 'interact'}
+          onClick={() => props.onModeChange('interact')}
+        >
+          Act
+        </button>
+      </div>
+
       <div className="ai-panel-body">
         {props.entries.length === 0 ? (
-          <p className="ai-empty-state">Ask a question about the current page.</p>
+          <p className="ai-empty-state">
+            {props.mode === 'interact'
+              ? 'Describe one action for the current page.'
+              : 'Ask a question about the current page.'}
+          </p>
         ) : (
           props.entries.map((entry) => (
             <article
               key={entry.id}
               className={`ai-message ai-message-${entry.role}${
                 entry.status === 'error' ? ' ai-message-error' : ''
-              }${entry.status === 'cancelled' ? ' ai-message-cancelled' : ''}`}
+              }${entry.status === 'cancelled' ? ' ai-message-cancelled' : ''}${
+                entry.status === 'denied' ? ' ai-message-denied' : ''
+              }`}
             >
               <div className="ai-message-label">
                 {entry.role === 'user' ? 'You' : assistantLabel(entry)}
               </div>
-              {entry.role === 'assistant' && entry.status === 'error' ? (
-                <div className="ai-message-text">{entry.errorMessage ?? 'The AI request failed.'}</div>
+              {entry.role === 'assistant' &&
+              (entry.status === 'error' || entry.status === 'denied') ? (
+                <div className="ai-message-text">
+                  {entry.text}
+                  {entry.errorMessage ? (
+                    <div className="ai-message-error-detail">{entry.errorMessage}</div>
+                  ) : null}
+                </div>
               ) : (
                 <div className="ai-message-text">{entry.text}</div>
               )}
@@ -91,7 +126,9 @@ export function AiSidePanel(props: {
         <textarea
           className="ai-question-input"
           value={props.draft}
-          placeholder="Ask about this page"
+          placeholder={
+            props.mode === 'interact' ? 'Describe one action' : 'Ask about this page'
+          }
           disabled={!props.hasActiveTab}
           rows={3}
           onChange={(event) => props.onDraftChange(event.target.value)}
@@ -104,7 +141,7 @@ export function AiSidePanel(props: {
             </button>
           ) : (
             <button type="submit" className="ai-panel-button ai-panel-button-primary" disabled={!canAsk}>
-              Ask
+              {props.mode === 'interact' ? 'Act' : 'Ask'}
             </button>
           )}
         </div>
@@ -119,6 +156,9 @@ function assistantLabel(entry: AiTranscriptEntry): string {
   }
   if (entry.status === 'cancelled') {
     return 'Assistant (cancelled)';
+  }
+  if (entry.status === 'denied') {
+    return 'Assistant';
   }
   if (entry.status === 'error') {
     return 'Assistant';

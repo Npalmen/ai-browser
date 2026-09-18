@@ -231,6 +231,33 @@ body {
   gap: 4px;
 }
 
+.ai-mode-selector {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px 0;
+}
+
+.ai-mode-button {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ai-mode-button-active {
+  background: #e5e7eb;
+}
+
+.ai-mode-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .ai-panel-body {
   flex: 1;
   min-height: 0;
@@ -267,6 +294,16 @@ body {
 }
 
 .ai-message-cancelled .ai-message-text {
+  color: #6b7280;
+}
+
+.ai-message-denied .ai-message-text {
+  color: #92400e;
+}
+
+.ai-message-error-detail {
+  margin-top: 6px;
+  font-size: 12px;
   color: #6b7280;
 }
 

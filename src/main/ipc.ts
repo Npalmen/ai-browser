@@ -92,7 +92,7 @@ export function registerBrowserShellIpc(): void {
       if (!controller) {
         return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };
       }
-      return controller.startAsk(parsed.tabId, parsed.question);
+      return controller.startAsk(parsed.tabId, parsed.question, parsed.mode);
     } catch (error) {
       return { ok: false, error: toAiSafeError(error) };
     }

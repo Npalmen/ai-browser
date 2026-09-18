@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { ModelError } from '../ai/model-errors';
+import { InteractionError } from '../shared/interaction-errors';
 import { ObservationError } from '../shared/observation-types';
-import { aiSafeError, toAiSafeError } from './ai-safe-error';
+import { aiSafeError, toAiSafeError, toAiSafeErrorFromInteractionCode } from './ai-safe-error';
 
 const SECRET = 'provider-secret-body-DO-NOT-LEAK';
 
@@ -24,6 +25,17 @@ describe('toAiSafeError', () => {
     assert.deepEqual(
       toAiSafeError(new ObservationError('PAGE_CHANGED_DURING_OBSERVATION', SECRET)),
       aiSafeError('PAGE_CHANGED_DURING_OBSERVATION'),
+    );
+  });
+
+  it('maps interaction codes to stable safe messages', () => {
+    assert.deepEqual(
+      toAiSafeError(new InteractionError('TARGET_SENSITIVE', SECRET)),
+      aiSafeError('TARGET_SENSITIVE'),
+    );
+    assert.deepEqual(
+      toAiSafeErrorFromInteractionCode('DEFERRED_TO_EXECUTE'),
+      aiSafeError('DEFERRED_TO_EXECUTE'),
     );
   });
 
