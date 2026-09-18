@@ -1,7 +1,17 @@
 import type { AiAnswerEvent, AiRequestMode, AiSafeError } from '../shared/ai-types';
 import type { TabId } from '../shared/browser-types';
 
-export type AiAssistantStatus = 'streaming' | 'complete' | 'cancelled' | 'error' | 'denied' | 'approval';
+export type AiAssistantStatus =
+  | 'streaming'
+  | 'working'
+  | 'awaiting-approval'
+  | 'complete'
+  | 'cancelled'
+  | 'error'
+  | 'denied'
+  | 'blocked'
+  | 'unknown'
+  | 'approval';
 
 export interface AiTranscriptEntry {
   id: string;
@@ -19,6 +29,7 @@ export interface TabAiUiState {
   draft: string;
   mode: AiRequestMode;
   latestAskId: string | null;
+  latestRunId: string | null;
   staleAskIds: ReadonlySet<string>;
   latestSubmissionId: string | null;
   staleSubmissionIds: ReadonlySet<string>;
@@ -33,6 +44,7 @@ export function emptyTabAiState(): TabAiUiState {
     draft: '',
     mode: 'read',
     latestAskId: null,
+    latestRunId: null,
     staleAskIds: new Set(),
     latestSubmissionId: null,
     staleSubmissionIds: new Set(),
@@ -124,9 +136,21 @@ export function applyAiAnswerEvent(
   if (tab.staleAskIds.has(event.askId)) {
     return state;
   }
+  if ('runId' in event && tab.latestRunId && tab.latestRunId !== event.runId && event.type !== 'agent-run-started') {
+    return state;
+  }
 
-  if (event.type === 'answer-started' || event.type === 'interaction-started') {
-    return withTab(state, event.tabId, establishAsk(tab, event.askId, createId));
+  if (
+    event.type === 'answer-started' ||
+    event.type === 'interaction-started' ||
+    event.type === 'agent-run-started'
+  ) {
+    const established = establishAsk(tab, event.askId, createId);
+    const withRun =
+      event.type === 'agent-run-started'
+        ? applyAskProgress({ ...established, latestRunId: event.runId }, event)
+        : established;
+    return withTab(state, event.tabId, withRun);
   }
 
   if (tab.latestAskId !== null && tab.latestAskId !== event.askId) {
@@ -288,6 +312,79 @@ function applyAskProgress(tab: TabAiUiState, event: Exclude<AiAnswerEvent, { typ
       text: 'Approval required before this action can be performed.',
       truncatedContext: event.truncatedContext,
     };
+  } else if (event.type === 'agent-run-started') {
+    if (isTerminal(entry.status)) {
+      return tab;
+    }
+    updated = {
+      ...entry,
+      status: 'working',
+      text: entry.text || 'Working…',
+    };
+  } else if (event.type === 'agent-run-progress') {
+    if (isTerminal(entry.status) || entry.status === 'awaiting-approval') {
+      return tab;
+    }
+    updated = {
+      ...entry,
+      status: 'working',
+      text: 'Continuing on the updated page…',
+    };
+  } else if (event.type === 'agent-run-awaiting-approval') {
+    if (isTerminal(entry.status)) {
+      return tab;
+    }
+    updated = {
+      ...entry,
+      status: 'awaiting-approval',
+      text: 'Waiting for approval…',
+    };
+  } else if (event.type === 'agent-run-completed') {
+    if (entry.status === 'cancelled' || entry.status === 'error' || entry.status === 'unknown') {
+      return tab;
+    }
+    updated = {
+      ...entry,
+      status: 'complete',
+      text: event.answer.text,
+      truncatedContext: event.answer.truncatedContext,
+    };
+  } else if (event.type === 'agent-run-cancelled') {
+    if (entry.status === 'complete' || entry.status === 'error' || entry.status === 'unknown') {
+      return tab;
+    }
+    updated = {
+      ...entry,
+      status: 'cancelled',
+      text: cancelledCopy(event.reason),
+    };
+  } else if (event.type === 'agent-run-blocked') {
+    if (isTerminal(entry.status)) {
+      return tab;
+    }
+    updated = {
+      ...entry,
+      status: 'blocked',
+      text: blockedCopy(event.reason),
+    };
+  } else if (event.type === 'agent-run-failed') {
+    if (entry.status === 'complete' || entry.status === 'cancelled' || entry.status === 'unknown') {
+      return tab;
+    }
+    updated = {
+      ...entry,
+      status: 'error',
+      text: failedCopy(event.reason),
+    };
+  } else if (event.type === 'agent-run-execution-state-unknown') {
+    if (entry.status === 'complete') {
+      return tab;
+    }
+    updated = {
+      ...entry,
+      status: 'unknown',
+      text: 'The last approved action may have occurred. The task was stopped to avoid repeating it.',
+    };
   }
 
   if (!updated) {
@@ -323,6 +420,7 @@ function clearTabConversation(tab: TabAiUiState): TabAiUiState {
     draft: '',
     mode: 'read',
     latestAskId: null,
+    latestRunId: null,
     staleAskIds,
     latestSubmissionId: null,
     staleSubmissionIds,
@@ -350,8 +448,48 @@ function isTerminal(status: AiAssistantStatus | undefined): boolean {
     status === 'cancelled' ||
     status === 'error' ||
     status === 'denied' ||
-    status === 'approval'
+    status === 'approval' ||
+    status === 'blocked' ||
+    status === 'unknown'
   );
+}
+
+export function blockedCopy(reason: string): string {
+  switch (reason) {
+    case 'STEP_LIMIT_REACHED':
+      return 'This task reached its step limit.';
+    case 'AGENT_LOOP_NO_PROGRESS':
+      return 'This task stopped because it was not making progress.';
+    case 'POLICY_BLOCKED':
+      return 'This action is not allowed.';
+    case 'UNSUPPORTED_ACTION':
+      return 'This action is not supported.';
+    case 'ACTION_STALE':
+      return 'The page changed before this action could be performed.';
+    case 'APPROVAL_REJECTED':
+      return 'The action was not approved.';
+    case 'APPROVAL_EXPIRED':
+      return 'The approval expired.';
+    default:
+      return 'This task was blocked.';
+  }
+}
+
+function failedCopy(reason: string): string {
+  if (reason === 'ACTION_FAILED') {
+    return 'The action could not be completed.';
+  }
+  return 'The assistant could not complete this task.';
+}
+
+function cancelledCopy(reason: string): string {
+  if (reason === 'TRUSTED_CHROME_NAVIGATION') {
+    return 'Stopped because the page was navigated.';
+  }
+  if (reason === 'TAB_CLOSED' || reason === 'RENDERER_CRASH') {
+    return 'Stopped because the tab is no longer available.';
+  }
+  return '';
 }
 
 function createEntryId(): string {

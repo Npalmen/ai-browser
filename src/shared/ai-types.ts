@@ -4,6 +4,26 @@ export const AI_SIDE_PANEL_WIDTH_PX = 360;
 
 export type AiRequestMode = 'read' | 'interact';
 
+export type AgentRunUiId = string;
+
+export type AgentRunUiBlockedReason =
+  | 'STEP_LIMIT_REACHED'
+  | 'AGENT_LOOP_NO_PROGRESS'
+  | 'POLICY_BLOCKED'
+  | 'UNSUPPORTED_ACTION'
+  | 'ACTION_STALE'
+  | 'APPROVAL_REJECTED'
+  | 'APPROVAL_EXPIRED';
+
+export type AgentRunUiCancelledReason =
+  | 'USER_CANCELLED'
+  | 'SUPERSEDED'
+  | 'TAB_CLOSED'
+  | 'RENDERER_CRASH'
+  | 'TRUSTED_CHROME_NAVIGATION';
+
+export type AgentRunUiFailedReason = 'MODEL_FAILED' | 'ACTION_FAILED';
+
 export type AiSafeErrorCode =
   | 'MODEL_NOT_CONFIGURED'
   | 'MODEL_UNAVAILABLE'
@@ -152,4 +172,68 @@ export type AiAnswerEvent =
       askId: string;
       tabId: TabId;
       truncatedContext: boolean;
+    }
+  | {
+      type: 'agent-run-started';
+      askId: string;
+      runId: AgentRunUiId;
+      tabId: TabId;
+      modelStepCount: number;
+      actionAttemptCount: number;
+      approvalCount: number;
+    }
+  | {
+      type: 'agent-run-progress';
+      askId: string;
+      runId: AgentRunUiId;
+      tabId: TabId;
+      modelStepCount: number;
+      actionAttemptCount: number;
+      approvalCount: number;
+    }
+  | {
+      type: 'agent-run-awaiting-approval';
+      askId: string;
+      runId: AgentRunUiId;
+      tabId: TabId;
+      modelStepCount: number;
+      actionAttemptCount: number;
+      approvalCount: number;
+    }
+  | {
+      type: 'agent-run-completed';
+      askId: string;
+      runId: AgentRunUiId;
+      tabId: TabId;
+      answer: {
+        text: string;
+        truncatedContext: boolean;
+      };
+    }
+  | {
+      type: 'agent-run-cancelled';
+      askId: string;
+      runId: AgentRunUiId;
+      tabId: TabId;
+      reason: AgentRunUiCancelledReason;
+    }
+  | {
+      type: 'agent-run-blocked';
+      askId: string;
+      runId: AgentRunUiId;
+      tabId: TabId;
+      reason: AgentRunUiBlockedReason;
+    }
+  | {
+      type: 'agent-run-failed';
+      askId: string;
+      runId: AgentRunUiId;
+      tabId: TabId;
+      reason: AgentRunUiFailedReason;
+    }
+  | {
+      type: 'agent-run-execution-state-unknown';
+      askId: string;
+      runId: AgentRunUiId;
+      tabId: TabId;
     };

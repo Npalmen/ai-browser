@@ -49,6 +49,7 @@ interface InternalAgentRun {
   terminalReason?: AgentRunTerminalReason;
   lastSuccessfulActionFingerprint?: string;
   pendingApprovalId?: string;
+  cancellationRequested?: AgentRunCancelledReason;
 }
 
 interface ApprovalWaiter {
@@ -142,6 +143,40 @@ export class AgentRunCoordinator {
   getRunRefForApproval(approvalId: string): AgentRunRef | undefined {
     const binding = this.approvalBindings.get(approvalId);
     return binding ? Object.freeze({ ...binding }) : undefined;
+  }
+
+  getPendingApprovalId(ref: AgentRunRef): string | undefined {
+    const record = this.byRunId.get(ref.runId);
+    if (
+      record === undefined ||
+      record.tabId !== ref.tabId ||
+      record.generation !== ref.generation
+    ) {
+      return undefined;
+    }
+    return record.pendingApprovalId;
+  }
+
+  hasApprovalWaiter(approvalId: string): boolean {
+    return this.approvalWaiters.has(approvalId);
+  }
+
+  requestCancellationAfterDispatch(
+    ref: AgentRunRef,
+    reason: AgentRunCancelledReason = 'USER_CANCELLED',
+  ): AgentRunMutationResult {
+    const record = this.resolveLatestMatchingRun(ref);
+    if (record === undefined) {
+      return ignored();
+    }
+    if (isTerminalAgentRunState(record.state) || this.activeByTab.get(record.tabId) !== record.runId) {
+      return ignored();
+    }
+    if (record.state !== 'awaiting-approval') {
+      return ignored();
+    }
+    record.cancellationRequested = reason;
+    return applied(record);
   }
 
   markCompleted(ref: AgentRunRef): AgentRunMutationResult {
@@ -330,6 +365,7 @@ export class AgentRunCoordinator {
     }
     const binding = this.approvalBindings.get(approvalId);
     if (binding === undefined) {
+      this.releaseSettledWaiter(approvalId);
       return ignored();
     }
     const record = this.byRunId.get(binding.runId);
@@ -339,31 +375,47 @@ export class AgentRunCoordinator {
       record.generation !== binding.generation ||
       this.tabGenerations.get(record.tabId) !== record.generation
     ) {
+      this.releaseSettledWaiter(approvalId);
       return ignored();
     }
     if (isTerminalAgentRunState(record.state) || this.activeByTab.get(record.tabId) !== record.runId) {
+      this.releaseSettledWaiter(approvalId);
       return ignored();
     }
     if (record.state !== 'awaiting-approval' || record.pendingApprovalId !== approvalId) {
+      this.releaseSettledWaiter(approvalId);
       return ignored();
     }
 
+    let result: AgentRunMutationResult;
     switch (outcome) {
       case 'executed':
-        return this.resumeAfterApprovedExecution(approvalId, record.generation);
+        result =
+          record.cancellationRequested !== undefined
+            ? this.transitionRecord(record, 'cancelled', record.cancellationRequested)
+            : this.resumeAfterApprovedExecution(approvalId, record.generation);
+        break;
       case 'rejected':
-        return this.transitionRecord(record, 'blocked', 'APPROVAL_REJECTED');
+        result = this.transitionRecord(record, 'blocked', 'APPROVAL_REJECTED');
+        break;
       case 'expired':
-        return this.transitionRecord(record, 'blocked', 'APPROVAL_EXPIRED');
+        result = this.transitionRecord(record, 'blocked', 'APPROVAL_EXPIRED');
+        break;
       case 'stale':
-        return this.transitionRecord(record, 'blocked', 'ACTION_STALE');
+        result = this.transitionRecord(record, 'blocked', 'ACTION_STALE');
+        break;
       case 'failed':
-        return this.transitionRecord(record, 'failed', 'ACTION_FAILED');
+        result = this.transitionRecord(record, 'failed', 'ACTION_FAILED');
+        break;
       case 'execution-state-unknown':
-        return this.transitionRecord(record, 'execution-state-unknown', 'EXECUTION_STATE_UNKNOWN');
+        result = this.transitionRecord(record, 'execution-state-unknown', 'EXECUTION_STATE_UNKNOWN');
+        break;
       default:
-        return ignored();
+        result = ignored();
+        break;
     }
+    this.releaseSettledWaiter(approvalId);
+    return result;
   }
 
   waitForApprovalOutcome(
@@ -607,6 +659,14 @@ export class AgentRunCoordinator {
     }
     waiter.settled = result;
     waiter.resolve(result);
+  }
+
+  private releaseSettledWaiter(approvalId: string): void {
+    const waiter = this.approvalWaiters.get(approvalId);
+    if (waiter === undefined || waiter.settled === undefined) {
+      return;
+    }
+    this.approvalWaiters.delete(approvalId);
   }
 
   private audit(eventType: AgentRunAuditEventType, record: InternalAgentRun): void {

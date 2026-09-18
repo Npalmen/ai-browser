@@ -2,10 +2,12 @@ import { ApprovalAuditRecorder } from '../approval/approval-audit-recorder';
 import { InMemoryApprovalAuditSink } from '../approval/approval-audit';
 import { ApprovalManager } from '../approval/approval-manager';
 import { ExecuteExecutor } from '../approval/execute-executor';
-import { InteractionCoordinator } from '../approval/interaction-coordinator';
 import { PrepareActionService } from '../approval/prepare-action-service';
-import { InteractiveAgent } from '../ai/interactive-agent';
+import { AgentRunCoordinator } from '../agent-run/agent-run-coordinator';
+import { SafeAgentLoop } from '../agent-run/safe-agent-loop';
+import { InteractiveStepAgent } from '../ai/interactive-step-agent';
 import { ReadOnlyAgent } from '../ai/read-only-agent';
+import { ConversationStore } from '../ai/conversation-store';
 import { AiSdkGatewayRuntime } from '../ai/providers/ai-sdk-gateway';
 import { ElectronBrowserAdapter } from '../browser/electron-adapter';
 import { InMemoryInteractionAuditSink } from '../interaction/interaction-audit';
@@ -17,6 +19,8 @@ import { AI_IPC_CHANNELS, APPROVAL_IPC_CHANNELS } from '../shared/ipc-contract';
 import { ApprovalController } from './approval-controller';
 import { ApprovalLifecycle } from './approval-lifecycle';
 import { ApprovalWorkflowController } from './approval-workflow-controller';
+import { AgentRunApprovalBridge } from './agent-run-approval-bridge';
+import { AgentRunController } from './agent-run-controller';
 import { AiRequestController } from './ai-request-controller';
 import { getMainBrowserWindow } from './browser-runtime';
 
@@ -30,11 +34,16 @@ interface ApprovalRuntime {
 }
 
 let controller: AiRequestController | null = null;
+let agentRunController: AgentRunController | null = null;
 let adapter: ElectronBrowserAdapter | null = null;
 let approvalRuntime: ApprovalRuntime | null = null;
 
 export function getAiController(): AiRequestController | null {
   return controller;
+}
+
+export function getAgentRunController(): AgentRunController | null {
+  return agentRunController;
 }
 
 export function getApprovalController(): ApprovalController | null {
@@ -47,6 +56,10 @@ export function getApprovalWorkflowController(): ApprovalWorkflowController | nu
 
 export function invalidateApprovalTab(tabId: TabId): void {
   approvalRuntime?.lifecycle.invalidateTab(tabId);
+}
+
+export function cancelAgentRunForTrustedChromeNavigation(tabId: TabId): void {
+  agentRunController?.cancelForTrustedChromeNavigation(tabId);
 }
 
 export function initializeAiRuntime(browserAdapter: ElectronBrowserAdapter): void {
@@ -66,21 +79,20 @@ export function initializeAiRuntime(browserAdapter: ElectronBrowserAdapter): voi
   const manager = new ApprovalManager();
   const audit = new InMemoryApprovalAuditSink();
   const recorder = new ApprovalAuditRecorder({ manager, audit });
+  const agentRunCoordinator = new AgentRunCoordinator();
   const lifecycle = new ApprovalLifecycle({
     manager,
     auditRecorder: recorder,
     emit: emitApprovalEvent,
+    notifyAgentRunOutcome: (approvalId, outcome) => {
+      agentRunCoordinator.notifyApprovalOutcome(approvalId, outcome);
+    },
   });
   const prepareActionService = new PrepareActionService({ manager, audit });
   const interactionExecutor = new InteractionExecutor({
     adapter: browserAdapter,
     targetRegistry: browserAdapter.getInteractionTargetRegistry(),
     audit: new InMemoryInteractionAuditSink(),
-  });
-  const coordinator = new InteractionCoordinator({
-    interactionExecutor,
-    prepareActionService,
-    approvalPresenter: lifecycle,
   });
   const executeExecutor = new ExecuteExecutor({
     adapter: browserAdapter,
@@ -99,18 +111,39 @@ export function initializeAiRuntime(browserAdapter: ElectronBrowserAdapter): voi
     executeExecutor,
     auditRecorder: recorder,
     emit: emitApprovalEvent,
+    agentRun: agentRunCoordinator,
   });
-  const interactiveAgent = new InteractiveAgent({
+  const stepAgent = new InteractiveStepAgent({
     observationSource,
     modelRuntime: gatewayRuntime,
-    interactionExecutor: coordinator,
     allowScreenshotExport: false,
+  });
+  const approvalBridge = new AgentRunApprovalBridge({
+    coordinator: agentRunCoordinator,
+    prepareActionService,
+    lifecycle,
+    manager,
+    auditRecorder: recorder,
+    emit: emitApprovalEvent,
+  });
+  const loop = new SafeAgentLoop({
+    coordinator: agentRunCoordinator,
+    stepAgent,
+    interactionExecutor,
+    approvalPort: approvalBridge,
+  });
+  agentRunController = new AgentRunController({
+    coordinator: agentRunCoordinator,
+    loop,
+    conversationStore: new ConversationStore(),
+    manager,
+    lifecycle,
+    emit: emitAiAnswerEvent,
   });
   controller = new AiRequestController({
     readAgent,
-    interactiveAgent,
+    agentRuns: agentRunController,
     emit: emitAiAnswerEvent,
-    invalidateApprovalsForTab: invalidateApprovalTab,
   });
 
   approvalRuntime = {
@@ -133,6 +166,7 @@ export function setAiPanelOpen(open: boolean): void {
 export function disposeAiRuntime(): void {
   controller?.dispose();
   controller = null;
+  agentRunController = null;
   adapter = null;
   approvalRuntime = null;
 }

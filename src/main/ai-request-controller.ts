@@ -40,14 +40,39 @@ export interface AiInteractionAgent {
   clearAllConversations(): void;
 }
 
+export interface AiAgentRunPort {
+  start(
+    tabId: TabId,
+    instruction: string,
+    options: { readonly askId: string },
+  ): Promise<
+    | {
+        readonly status: 'started';
+        readonly run: { readonly runId: string };
+        readonly completion: Promise<unknown>;
+      }
+    | {
+        readonly status: 'ignored';
+      }
+  >;
+  cancel(tabId: TabId, reason?: 'USER_CANCELLED' | 'SUPERSEDED'): boolean;
+  cancelActive(tabId: TabId, reason?: 'USER_CANCELLED' | 'SUPERSEDED'): Promise<void>;
+  clearConversation(tabId: TabId): void;
+  handleTabClosed(tabId: TabId): void;
+  handleRendererCrash(tabId: TabId): void;
+  dispose(): void;
+}
+
 interface TabAskState {
   askId: string;
   mode: AiRequestMode;
+  runId?: string;
 }
 
 export class AiRequestController {
   private readonly readAgent: AiReadAgent;
-  private readonly interactiveAgent: AiInteractionAgent;
+  private readonly interactiveAgent: AiInteractionAgent | undefined;
+  private readonly agentRuns: AiAgentRunPort | undefined;
   private readonly emit: (event: AiAnswerEvent) => void;
   private readonly invalidateApprovalsForTab?: (tabId: TabId) => void;
   private readonly currentAsks = new Map<TabId, TabAskState>();
@@ -55,12 +80,14 @@ export class AiRequestController {
 
   constructor(input: {
     readAgent: AiReadAgent;
-    interactiveAgent: AiInteractionAgent;
+    interactiveAgent?: AiInteractionAgent;
+    agentRuns?: AiAgentRunPort;
     emit: (event: AiAnswerEvent) => void;
     invalidateApprovalsForTab?: (tabId: TabId) => void;
   }) {
     this.readAgent = input.readAgent;
     this.interactiveAgent = input.interactiveAgent;
+    this.agentRuns = input.agentRuns;
     this.emit = input.emit;
     this.invalidateApprovalsForTab = input.invalidateApprovalsForTab;
   }
@@ -70,12 +97,22 @@ export class AiRequestController {
       return { ok: false, error: toAiSafeError(new Error('disposed')) };
     }
 
-    this.invalidateApprovalsForTab?.(tabId);
-    this.cancelCurrentAgent(tabId);
+    if (this.agentRuns) {
+      this.readAgent.cancel(tabId);
+      if (mode === 'read') {
+        this.agentRuns.cancel(tabId, 'SUPERSEDED');
+      }
+    } else {
+      this.invalidateApprovalsForTab?.(tabId);
+      this.cancelCurrentAgent(tabId);
+    }
+
     const askId = crypto.randomUUID();
     this.currentAsks.set(tabId, { askId, mode });
     if (mode === 'read') {
       void this.runReadAsk(tabId, askId, question);
+    } else if (this.agentRuns) {
+      void this.runAgentRunAsk(tabId, askId, question);
     } else {
       void this.runInteractAsk(tabId, askId, question);
     }
@@ -95,11 +132,15 @@ export class AiRequestController {
       return { ok: false, error: toAiSafeError(new Error('disposed')) };
     }
 
+    if (this.agentRuns) {
+      this.agentRuns.clearConversation(tabId);
+    } else {
+      this.cancelCurrentAgent(tabId);
+    }
     this.invalidateApprovalsForTab?.(tabId);
-    this.cancelCurrentAgent(tabId);
     this.currentAsks.delete(tabId);
     this.readAgent.clearConversation(tabId);
-    this.interactiveAgent.clearConversation(tabId);
+    this.interactiveAgent?.clearConversation(tabId);
     this.emit({
       type: 'conversation-cleared',
       tabId,
@@ -112,16 +153,33 @@ export class AiRequestController {
     if (this.disposed) {
       return;
     }
+    this.readAgent.cancel(tabId);
+    if (this.agentRuns) {
+      this.agentRuns.handleTabClosed(tabId);
+    } else {
+      this.cancelCurrentAgent(tabId);
+    }
     this.invalidateApprovalsForTab?.(tabId);
-    this.cancelCurrentAgent(tabId);
     this.currentAsks.delete(tabId);
     this.readAgent.clearConversation(tabId);
-    this.interactiveAgent.clearConversation(tabId);
+    this.interactiveAgent?.clearConversation(tabId);
     this.emit({
       type: 'conversation-cleared',
       tabId,
       reason: 'tab-close',
     });
+  }
+
+  handleRendererCrash(tabId: TabId): void {
+    if (this.disposed) {
+      return;
+    }
+    this.readAgent.cancel(tabId);
+    this.interactiveAgent?.cancel(tabId);
+    this.agentRuns?.handleRendererCrash(tabId);
+    this.currentAsks.delete(tabId);
+    this.readAgent.clearConversation(tabId);
+    this.interactiveAgent?.clearConversation(tabId);
   }
 
   dispose(): void {
@@ -133,27 +191,42 @@ export class AiRequestController {
     this.currentAsks.clear();
     for (const tabId of tabIds) {
       this.readAgent.cancel(tabId);
-      this.interactiveAgent.cancel(tabId);
+      this.interactiveAgent?.cancel(tabId);
     }
+    this.agentRuns?.dispose();
     this.readAgent.clearAllConversations();
-    this.interactiveAgent.clearAllConversations();
+    this.interactiveAgent?.clearAllConversations();
   }
 
   private cancelCurrentAgent(tabId: TabId): void {
     const current = this.currentAsks.get(tabId);
     if (!current) {
+      if (this.agentRuns) {
+        this.agentRuns.cancel(tabId, 'SUPERSEDED');
+      }
       return;
     }
     this.cancelAgentForMode(tabId, current.mode);
   }
 
   private cancelAgentForMode(tabId: TabId, mode: AiRequestMode): boolean {
-    return mode === 'read'
-      ? this.readAgent.cancel(tabId)
-      : this.interactiveAgent.cancel(tabId);
+    if (mode === 'read') {
+      return this.readAgent.cancel(tabId);
+    }
+    if (this.agentRuns) {
+      return this.agentRuns.cancel(tabId, 'USER_CANCELLED');
+    }
+    return this.interactiveAgent?.cancel(tabId) ?? false;
   }
 
   private async runReadAsk(tabId: TabId, askId: string, question: string): Promise<void> {
+    if (this.agentRuns) {
+      await this.agentRuns.cancelActive(tabId, 'SUPERSEDED');
+      if (this.currentAsks.get(tabId)?.askId !== askId) {
+        return;
+      }
+    }
+
     this.emitIfCurrent(tabId, askId, {
       type: 'answer-started',
       askId,
@@ -209,7 +282,46 @@ export class AiRequestController {
     }
   }
 
+  private async runAgentRunAsk(tabId: TabId, askId: string, question: string): Promise<void> {
+    if (!this.agentRuns) {
+      return;
+    }
+    try {
+      const started = await this.agentRuns.start(tabId, question, { askId });
+      if (this.currentAsks.get(tabId)?.askId !== askId) {
+        return;
+      }
+      if (started.status === 'ignored') {
+        this.emitIfCurrent(tabId, askId, {
+          type: 'answer-cancelled',
+          askId,
+          tabId,
+        });
+        return;
+      }
+      this.currentAsks.set(tabId, { askId, mode: 'interact', runId: started.run.runId });
+      await started.completion;
+    } finally {
+      if (this.currentAsks.get(tabId)?.askId === askId) {
+        this.currentAsks.delete(tabId);
+      }
+    }
+  }
+
   private async runInteractAsk(tabId: TabId, askId: string, question: string): Promise<void> {
+    if (!this.interactiveAgent) {
+      this.emitIfCurrent(tabId, askId, {
+        type: 'answer-error',
+        askId,
+        tabId,
+        error: toAiSafeError(new Error('Interactive agent is not configured.')),
+      });
+      if (this.currentAsks.get(tabId)?.askId === askId) {
+        this.currentAsks.delete(tabId);
+      }
+      return;
+    }
+
     this.emitIfCurrent(tabId, askId, {
       type: 'interaction-started',
       askId,

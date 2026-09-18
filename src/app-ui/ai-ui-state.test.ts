@@ -8,6 +8,7 @@ import {
   applyAiAnswerEvent,
   applyAskStartFailure,
   emptyTabAiState,
+  purgeClosedTabs,
   type AiUiState,
   type TabAiUiState,
 } from './ai-ui-state';
@@ -405,5 +406,203 @@ describe('AI UI event ordering', () => {
     );
     assert.equal(tab(state).activeAskId, null);
     assert.equal(JSON.stringify(assistants(state)).includes('approvalId'), false);
+  });
+});
+
+describe('V5 AgentRun UI events', () => {
+  const RUN_A = 'run-a';
+  const RUN_B = 'run-b';
+
+  function runStarted(askId = ASK_A, runId = RUN_A): AiAnswerEvent {
+    return {
+      type: 'agent-run-started',
+      askId,
+      runId,
+      tabId: TAB,
+      modelStepCount: 0,
+      actionAttemptCount: 0,
+      approvalCount: 0,
+    };
+  }
+
+  it('started and progress keep one nonterminal working entry', () => {
+    const createId = ids();
+    let state: AiUiState = {};
+    state = appendUserQuestion(state, TAB, 'Act', SUB_A, createId);
+    state = applyAiAnswerEvent(state, runStarted(), createId);
+    assert.equal(assistants(state)[0]?.status, 'working');
+    assert.equal(tab(state).activeAskId, ASK_A);
+    state = applyAiAnswerEvent(
+      state,
+      {
+        type: 'agent-run-progress',
+        askId: ASK_A,
+        runId: RUN_A,
+        tabId: TAB,
+        modelStepCount: 1,
+        actionAttemptCount: 1,
+        approvalCount: 0,
+      },
+      createId,
+    );
+    assert.equal(assistants(state).length, 1);
+    assert.equal(assistants(state)[0]?.status, 'working');
+    assert.equal(assistants(state)[0]?.text, 'Continuing on the updated page…');
+    assert.equal(tab(state).activeAskId, ASK_A);
+  });
+
+  it('awaiting approval stays nonterminal so Stop remains available', () => {
+    const createId = ids();
+    let state: AiUiState = {};
+    state = appendUserQuestion(state, TAB, 'Buy now', SUB_A, createId);
+    state = applyAiAnswerEvent(state, runStarted(), createId);
+    state = applyAiAnswerEvent(
+      state,
+      {
+        type: 'agent-run-awaiting-approval',
+        askId: ASK_A,
+        runId: RUN_A,
+        tabId: TAB,
+        modelStepCount: 1,
+        actionAttemptCount: 1,
+        approvalCount: 1,
+      },
+      createId,
+    );
+    assert.equal(assistants(state)[0]?.status, 'awaiting-approval');
+    assert.equal(assistants(state)[0]?.text, 'Waiting for approval…');
+    assert.equal(tab(state).activeAskId, ASK_A);
+  });
+
+  it('completed, blocked, failed, cancelled, and unknown set terminal statuses', () => {
+    const createId = ids();
+    let state: AiUiState = {};
+    state = appendUserQuestion(state, TAB, 'Act', SUB_A, createId);
+    state = applyAiAnswerEvent(state, runStarted(), createId);
+    state = applyAiAnswerEvent(
+      state,
+      {
+        type: 'agent-run-completed',
+        askId: ASK_A,
+        runId: RUN_A,
+        tabId: TAB,
+        answer: { text: 'Done', truncatedContext: false },
+      },
+      createId,
+    );
+    assert.equal(assistants(state)[0]?.status, 'complete');
+    assert.equal(assistants(state)[0]?.text, 'Done');
+    assert.equal(tab(state).activeAskId, null);
+
+    state = {};
+    state = applyAiAnswerEvent(state, runStarted(), createId);
+    state = applyAiAnswerEvent(
+      state,
+      {
+        type: 'agent-run-blocked',
+        askId: ASK_A,
+        runId: RUN_A,
+        tabId: TAB,
+        reason: 'APPROVAL_REJECTED',
+      },
+      createId,
+    );
+    assert.equal(assistants(state)[0]?.status, 'blocked');
+    assert.equal(tab(state).activeAskId, null);
+
+    state = {};
+    state = applyAiAnswerEvent(state, runStarted(), createId);
+    state = applyAiAnswerEvent(
+      state,
+      { type: 'agent-run-failed', askId: ASK_A, runId: RUN_A, tabId: TAB, reason: 'MODEL_FAILED' },
+      createId,
+    );
+    assert.equal(assistants(state)[0]?.status, 'error');
+
+    state = {};
+    state = applyAiAnswerEvent(state, runStarted(), createId);
+    state = applyAiAnswerEvent(
+      state,
+      {
+        type: 'agent-run-cancelled',
+        askId: ASK_A,
+        runId: RUN_A,
+        tabId: TAB,
+        reason: 'USER_CANCELLED',
+      },
+      createId,
+    );
+    assert.equal(assistants(state)[0]?.status, 'cancelled');
+
+    state = {};
+    state = applyAiAnswerEvent(state, runStarted(), createId);
+    state = applyAiAnswerEvent(
+      state,
+      { type: 'agent-run-execution-state-unknown', askId: ASK_A, runId: RUN_A, tabId: TAB },
+      createId,
+    );
+    assert.equal(assistants(state)[0]?.status, 'unknown');
+    assert.match(
+      assistants(state)[0]?.text ?? '',
+      /The last approved action may have occurred/,
+    );
+    assert.equal(JSON.stringify(assistants(state)).includes('Retry'), false);
+    assert.equal(tab(state).activeAskId, null);
+  });
+
+  it('latest run wins and late old run events are ignored', () => {
+    const createId = ids();
+    let state: AiUiState = {};
+    state = applyAiAnswerEvent(state, runStarted(ASK_A, RUN_A), createId);
+    state = applyAiAnswerEvent(state, runStarted(ASK_B, RUN_B), createId);
+    state = applyAiAnswerEvent(
+      state,
+      {
+        type: 'agent-run-completed',
+        askId: ASK_A,
+        runId: RUN_A,
+        tabId: TAB,
+        answer: { text: 'old', truncatedContext: false },
+      },
+      createId,
+    );
+    assert.equal(assistants(state).some((entry) => entry.text === 'old'), false);
+    state = applyAiAnswerEvent(
+      state,
+      {
+        type: 'agent-run-completed',
+        askId: ASK_B,
+        runId: RUN_B,
+        tabId: TAB,
+        answer: { text: 'new', truncatedContext: false },
+      },
+      createId,
+    );
+    assert.equal(assistants(state).at(-1)?.text, 'new');
+  });
+
+  it('keeps per-tab isolation and purges closed tabs', () => {
+    const createId = ids();
+    let state: AiUiState = {};
+    state = applyAiAnswerEvent(state, runStarted(ASK_A, RUN_A), createId);
+    state = applyAiAnswerEvent(
+      state,
+      { ...runStarted(ASK_B, RUN_B), tabId: 'tab-2' },
+      createId,
+    );
+    assert.equal(tab(state, TAB).activeAskId, ASK_A);
+    assert.equal(tab(state, 'tab-2').activeAskId, ASK_B);
+    state = purgeClosedTabs(state, new Set(['tab-2']));
+    assert.equal(state[TAB], undefined);
+    assert.equal(state['tab-2']?.activeAskId, ASK_B);
+  });
+
+  it('conversation clear wipes the transcript', () => {
+    const createId = ids();
+    let state: AiUiState = {};
+    state = applyAiAnswerEvent(state, runStarted(), createId);
+    state = applyAiAnswerEvent(state, { type: 'conversation-cleared', tabId: TAB, reason: 'user' }, createId);
+    assert.equal(tab(state).entries.length, 0);
+    assert.equal(tab(state).activeAskId, null);
   });
 });

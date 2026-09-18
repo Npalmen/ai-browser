@@ -114,13 +114,18 @@ export function AiSidePanel(props: {
                 entry.status === 'error' ? ' ai-message-error' : ''
               }${entry.status === 'cancelled' ? ' ai-message-cancelled' : ''}${
                 entry.status === 'denied' ? ' ai-message-denied' : ''
+              }${entry.status === 'blocked' ? ' ai-message-denied' : ''}${
+                entry.status === 'unknown' ? ' ai-message-error' : ''
               }`}
             >
               <div className="ai-message-label">
                 {entry.role === 'user' ? 'You' : assistantLabel(entry)}
               </div>
               {entry.role === 'assistant' &&
-              (entry.status === 'error' || entry.status === 'denied') ? (
+              (entry.status === 'error' ||
+                entry.status === 'denied' ||
+                entry.status === 'blocked' ||
+                entry.status === 'unknown') ? (
                 <div className="ai-message-text">
                   {entry.text}
                   {entry.errorMessage ? (
@@ -147,7 +152,7 @@ export function AiSidePanel(props: {
           placeholder={
             props.mode === 'interact' ? 'Describe one action' : 'Ask about this page'
           }
-          disabled={!props.hasActiveTab || props.approvalBusy}
+          disabled={!props.hasActiveTab || inputLocked}
           rows={3}
           onChange={(event) => props.onDraftChange(event.target.value)}
           onKeyDown={handleKeyDown}
@@ -169,16 +174,22 @@ export function AiSidePanel(props: {
 }
 
 function assistantLabel(entry: AiTranscriptEntry): string {
-  if (entry.status === 'streaming') {
+  if (entry.status === 'streaming' || entry.status === 'working') {
+    return 'Assistant';
+  }
+  if (entry.status === 'awaiting-approval') {
     return 'Assistant';
   }
   if (entry.status === 'cancelled') {
     return 'Assistant (cancelled)';
   }
-  if (entry.status === 'denied') {
+  if (entry.status === 'denied' || entry.status === 'blocked') {
     return 'Assistant';
   }
   if (entry.status === 'approval') {
+    return 'Assistant';
+  }
+  if (entry.status === 'unknown') {
     return 'Assistant';
   }
   if (entry.status === 'error') {

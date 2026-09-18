@@ -2,7 +2,7 @@ import { ipcMain } from 'electron';
 
 import { APPROVAL_IPC_CHANNELS, AI_IPC_CHANNELS, BROWSER_IPC_CHANNELS } from '../shared/ipc-contract';
 import { isAiSafeError, parseAskCurrentPageRequest, parseAskId, parsePanelOpen, parseTabId } from './ai-ipc-guards';
-import { getAiController, getApprovalWorkflowController, invalidateApprovalTab, setAiPanelOpen } from './ai-runtime';
+import { getAiController, getApprovalWorkflowController, invalidateApprovalTab, cancelAgentRunForTrustedChromeNavigation, setAiPanelOpen } from './ai-runtime';
 import { parseApprovalDecideRequest } from './approval-ipc-guards';
 import { approvalSafeError } from './approval-safe-error';
 import { aiSafeError, toAiSafeError } from './ai-safe-error';
@@ -48,8 +48,8 @@ export function registerBrowserShellIpc(): void {
     assertTrustedAppSender(event);
     await whenBrowserReady();
     const trustedTabId = assertTabId(tabId);
-    invalidateApprovalTab(trustedTabId);
     getAiController()?.handleTabClosed(trustedTabId);
+    invalidateApprovalTab(trustedTabId);
     await getBrowserAdapter().closeTab(trustedTabId);
   });
 
@@ -63,6 +63,7 @@ export function registerBrowserShellIpc(): void {
     assertTrustedAppSender(event);
     await whenBrowserReady();
     const trustedTabId = assertTabId(tabId);
+    cancelAgentRunForTrustedChromeNavigation(trustedTabId);
     invalidateApprovalTab(trustedTabId);
     await getBrowserAdapter().navigate(trustedTabId, assertUrl(url));
   });
@@ -71,6 +72,7 @@ export function registerBrowserShellIpc(): void {
     assertTrustedAppSender(event);
     await whenBrowserReady();
     const trustedTabId = assertTabId(tabId);
+    cancelAgentRunForTrustedChromeNavigation(trustedTabId);
     invalidateApprovalTab(trustedTabId);
     await getBrowserAdapter().back(trustedTabId);
   });
@@ -79,6 +81,7 @@ export function registerBrowserShellIpc(): void {
     assertTrustedAppSender(event);
     await whenBrowserReady();
     const trustedTabId = assertTabId(tabId);
+    cancelAgentRunForTrustedChromeNavigation(trustedTabId);
     invalidateApprovalTab(trustedTabId);
     await getBrowserAdapter().forward(trustedTabId);
   });
@@ -87,6 +90,7 @@ export function registerBrowserShellIpc(): void {
     assertTrustedAppSender(event);
     await whenBrowserReady();
     const trustedTabId = assertTabId(tabId);
+    cancelAgentRunForTrustedChromeNavigation(trustedTabId);
     invalidateApprovalTab(trustedTabId);
     await getBrowserAdapter().reload(trustedTabId);
   });

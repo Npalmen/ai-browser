@@ -800,6 +800,50 @@ describe('AgentRunCoordinator approval waiters and trusted outcomes', () => {
       assert.equal(waited.snapshot.terminalReason, 'USER_CANCELLED');
     }
   });
+
+  it('requestCancellationAfterDispatch keeps the run awaiting until executed then cancels', async () => {
+    const harness = createHarness();
+    const run = start(harness);
+    requireApplied(harness.coordinator.presentApproval(refOf(run), 'appr-1'));
+    const pending = harness.coordinator.waitForApprovalOutcome('appr-1', run.generation);
+    requireApplied(harness.coordinator.requestCancellationAfterDispatch(refOf(run), 'USER_CANCELLED'));
+    assert.equal(harness.coordinator.getRun(run.runId)?.state, 'awaiting-approval');
+    assert.equal(harness.coordinator.beginApprovedExecution('appr-1'), 'proceed');
+    requireApplied(harness.coordinator.notifyApprovalOutcome('appr-1', 'executed'));
+    const waited = await pending;
+    assert.equal(waited.status, 'resolved');
+    if (waited.status === 'resolved') {
+      assert.equal(waited.snapshot.state, 'cancelled');
+      assert.equal(waited.snapshot.terminalReason, 'USER_CANCELLED');
+    }
+    assert.equal(harness.coordinator.hasApprovalWaiter('appr-1'), false);
+  });
+
+  it('requestCancellationAfterDispatch yields unknown when V4 outcome is unknown', () => {
+    const harness = createHarness();
+    const run = start(harness);
+    requireApplied(harness.coordinator.presentApproval(refOf(run), 'appr-1'));
+    requireApplied(harness.coordinator.requestCancellationAfterDispatch(refOf(run), 'USER_CANCELLED'));
+    assert.equal(harness.coordinator.beginApprovedExecution('appr-1'), 'proceed');
+    const result = requireApplied(
+      harness.coordinator.notifyApprovalOutcome('appr-1', 'execution-state-unknown'),
+    );
+    assert.equal(result.state, 'execution-state-unknown');
+    assert.equal(result.terminalReason, 'EXECUTION_STATE_UNKNOWN');
+    assert.equal(harness.coordinator.hasApprovalWaiter('appr-1'), false);
+  });
+
+  it('keeps a superseded approval waiter until V4 notifies a terminal outcome', () => {
+    const harness = createHarness();
+    const first = start(harness);
+    requireApplied(harness.coordinator.presentApproval(refOf(first), 'appr-1'));
+    start(harness, 'tab-1', 'newer');
+    assert.equal(harness.coordinator.beginApprovedExecution('appr-1'), 'ignored');
+    assert.equal(harness.coordinator.hasApprovalWaiter('appr-1'), true);
+    assertIgnored(harness.coordinator.notifyApprovalOutcome('appr-1', 'stale'));
+    assert.equal(harness.coordinator.hasApprovalWaiter('appr-1'), false);
+    assert.equal(harness.coordinator.beginApprovedExecution('appr-1'), 'unrelated');
+  });
 });
 
 describe('AgentRunCoordinator source isolation', () => {

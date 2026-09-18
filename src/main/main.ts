@@ -1,6 +1,6 @@
 import { app, BrowserWindow } from 'electron';
 
-import { disposeAiRuntime, initializeAiRuntime, invalidateApprovalTab } from './ai-runtime';
+import { disposeAiRuntime, initializeAiRuntime, invalidateApprovalTab, getAiController } from './ai-runtime';
 import { initializeBrowserRuntime } from './browser-runtime';
 import { registerBrowserShellIpc } from './ipc';
 import { initializeSecurity } from './security';
@@ -12,7 +12,12 @@ async function startBrowserWindow(): Promise<void> {
     onBeforeDispose: () => {
       disposeAiRuntime();
     },
-    onTabInvalidated: (tabId) => {
+    onTabInvalidated: (tabId, reason) => {
+      if (reason === 'renderer-crash') {
+        getAiController()?.handleRendererCrash(tabId);
+      } else if (reason === 'tab-close') {
+        getAiController()?.handleTabClosed(tabId);
+      }
       invalidateApprovalTab(tabId);
     },
   });

@@ -46,6 +46,8 @@ export interface SafeAgentLoopOptions {
     tabId: TabId,
     revision: DocumentRevision,
   ) => string;
+  readonly onContinuing?: (snapshot: AgentRunSnapshot) => void;
+  readonly onAwaitingApproval?: (snapshot: AgentRunSnapshot) => void;
 }
 
 export type SafeAgentLoopResult =
@@ -182,7 +184,7 @@ export class SafeAgentLoop {
         step,
         result,
         trustedProgress,
-        options.signal,
+        options,
       );
       if (actionOutcome !== undefined) {
         return actionOutcome;
@@ -192,6 +194,8 @@ export class SafeAgentLoop {
       if (cancelledAfterAction !== undefined) {
         return cancelledAfterAction;
       }
+
+      this.notifyContinuing(ref, options);
     }
   }
 
@@ -263,13 +267,13 @@ export class SafeAgentLoop {
     step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'proposal' }>,
     result: InteractionResult,
     trustedProgress: TrustedRunProgressEntry[],
-    signal?: AbortSignal,
+    options: SafeAgentLoopOptions,
   ): Promise<SafeAgentLoopResult | undefined> {
     if (result.status === 'succeeded') {
       return this.handleSucceededAction(ref, step, result, trustedProgress);
     }
     if (result.status === 'denied') {
-      return this.handleDeniedAction(ref, step, result.errorCode, trustedProgress, signal);
+      return this.handleDeniedAction(ref, step, result.errorCode, trustedProgress, options);
     }
     return this.handleFailedAction(ref, result.errorCode);
   }
@@ -312,10 +316,10 @@ export class SafeAgentLoop {
     step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'proposal' }>,
     errorCode: InteractionErrorCode | undefined,
     trustedProgress: TrustedRunProgressEntry[],
-    signal?: AbortSignal,
+    options: SafeAgentLoopOptions,
   ): Promise<SafeAgentLoopResult | undefined> {
     if (errorCode === 'DEFERRED_TO_EXECUTE') {
-      return this.handleDeferredExecute(ref, step, trustedProgress, signal);
+      return this.handleDeferredExecute(ref, step, trustedProgress, options);
     }
     if (errorCode === 'UNSUPPORTED_TARGET') {
       return this.blockTerminal(ref, 'UNSUPPORTED_ACTION');
@@ -330,8 +334,9 @@ export class SafeAgentLoop {
     ref: AgentRunRef,
     step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'proposal' }>,
     trustedProgress: TrustedRunProgressEntry[],
-    signal?: AbortSignal,
+    options: SafeAgentLoopOptions,
   ): Promise<SafeAgentLoopResult | undefined> {
+    const signal = options.signal;
     if (this.approvalPort === undefined || step.proposal.kind !== 'click') {
       return this.blockTerminal(ref, 'UNSUPPORTED_ACTION');
     }
@@ -358,6 +363,7 @@ export class SafeAgentLoop {
     }
 
     if (prepared.status === 'awaiting-approval') {
+      this.notifyAwaitingApproval(ref, options);
       return this.waitForApprovedResume(
         ref,
         step,
@@ -427,6 +433,26 @@ export class SafeAgentLoop {
       return { status: 'ignored' };
     } finally {
       signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  private notifyContinuing(ref: AgentRunRef, options: SafeAgentLoopOptions): void {
+    if (options.onContinuing === undefined) {
+      return;
+    }
+    const inspected = this.coordinator.inspectRun(ref);
+    if (inspected.status === 'current') {
+      options.onContinuing(inspected.snapshot);
+    }
+  }
+
+  private notifyAwaitingApproval(ref: AgentRunRef, options: SafeAgentLoopOptions): void {
+    if (options.onAwaitingApproval === undefined) {
+      return;
+    }
+    const inspected = this.coordinator.inspectRun(ref);
+    if (inspected.status === 'current' && inspected.snapshot.state === 'awaiting-approval') {
+      options.onAwaitingApproval(inspected.snapshot);
     }
   }
 

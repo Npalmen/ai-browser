@@ -593,4 +593,76 @@ describe('AiRequestController', () => {
     controller.clearConversation(TAB);
     assert.deepEqual(invalidated, [TAB]);
   });
+
+  it('delegates production Act to AgentRunController instead of InteractiveAgent', async () => {
+    const interactiveAgent = new FakeInteractionAgent();
+    const starts: string[] = [];
+    const cancelActiveCalls: string[] = [];
+    const events: AiAnswerEvent[] = [];
+    const controller = new AiRequestController({
+      readAgent: new FakeReadAgent(),
+      interactiveAgent,
+      agentRuns: {
+        start: async (_tabId, instruction, options) => {
+          starts.push(instruction);
+          return {
+            status: 'started',
+            run: {
+              runId: 'run-1',
+              tabId: TAB,
+              generation: 1,
+              instruction,
+              startedAt: 1,
+              state: 'running',
+              modelStepCount: 0,
+              actionAttemptCount: 0,
+              approvalCount: 0,
+            },
+            completion: Promise.resolve({
+              status: 'completed',
+              run: {
+                runId: 'run-1',
+                tabId: TAB,
+                generation: 1,
+                instruction,
+                startedAt: 1,
+                state: 'completed',
+                modelStepCount: 1,
+                actionAttemptCount: 0,
+                approvalCount: 0,
+                terminalReason: 'COMPLETED',
+              },
+              answer: {
+                text: 'done',
+                referencedTargets: [],
+                alias: 'page-standard',
+                truncatedContext: false,
+                documentRevision: 'rev-1',
+              },
+            }),
+          };
+        },
+        cancel: () => true,
+        cancelActive: async (tabId) => {
+          cancelActiveCalls.push(tabId);
+        },
+        clearConversation: () => undefined,
+        handleTabClosed: () => undefined,
+        handleRendererCrash: () => undefined,
+        dispose: () => undefined,
+      },
+      emit: (event) => {
+        events.push(event);
+      },
+    });
+
+    controller.startAsk(TAB, 'Click save', 'interact');
+    await waitUntil(() => starts.length === 1);
+    assert.equal(interactiveAgent.interactCalls.length, 0);
+    assert.deepEqual(starts, ['Click save']);
+
+    controller.startAsk(TAB, 'What is this?', 'read');
+    await waitUntil(() => cancelActiveCalls.length === 1);
+    assert.deepEqual(cancelActiveCalls, [TAB]);
+  });
 });
