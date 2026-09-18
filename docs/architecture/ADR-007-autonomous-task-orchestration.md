@@ -641,7 +641,7 @@ fingerprint = hash(
 If planner requests an identical subgoal on unchanged task state after that subgoal already completed:
 
 ```text
-blocked / AUTONOMOUS_TASK_NO_PROGRESS
+blocked / TASK_NO_PROGRESS
 ```
 
 Do not launch another child run. A fresh explicit user reply or changed task-tab state may start a new planning epoch where repetition is valid. No fuzzy semantic similarity.
