@@ -114,9 +114,13 @@ Interaction policy          ← semantic classification (trusted metadata)
               → claimExecuteGrant (atomic; consumes the approval)
               → ExecuteGrant (single-use, authority=EXECUTE)
               → ExecuteExecutor exact validation
-                    ├─ identity/revision invalid → executing → stale (adapter 0)
-                    ├─ non-stale mechanical block → executing → failed (adapter 0)
-                    └─ valid → BrowserAdapter.click
+                    ├─ TargetRegistry identity invalid → executing → stale (adapterPrimitiveInvoked = false)
+                    ├─ session/preflight mechanical block → executing → failed (adapterPrimitiveInvoked = false)
+                    └─ BrowserAdapter.click
+                         session / revision / frame / box preflight
+                         (still adapterPrimitiveInvoked = false)
+                         → onBeforeInputDispatch (marks adapterPrimitiveInvoked = true)
+                         → Input.dispatchMouseEvent...
                          → observePage exactly once
                          → executed | execution-attempted-state-unknown
 ```
@@ -262,22 +266,38 @@ This is a distinct type from V3 `InteractionGrant` (`INTERACT` | `NAVIGATE`). Do
 
 The grant must not contain `WebContents`, CDP objects, reusable `backendNodeId` as external authority, page text, or model reasoning.
 
-`claimExecuteGrant()` and browser dispatch are **not** the same event.
+`claimExecuteGrant()` and browser **input dispatch** are **not** the same event.
 
 ```text
 claimExecuteGrant()
 = this approval has been consumed
   and no other caller can claim it
 ≠ the external side effect has been attempted
+
+BrowserAdapter.click invocation
+≠ browser input dispatch
 ```
+
+Entering `BrowserAdapter.click()` still includes debugger/session setup, document revision checks, frame checks, and live box/geometry preflight. Those stages may fail with **zero** `Input.dispatchMouseEvent` calls.
 
 The irreversible uncertainty boundary is:
 
 ```text
-immediately before BrowserAdapter.click invocation
+immediately before the first Input.dispatchMouseEvent
+of the approved click, after all read-only/session/live-target preflight
 ```
 
-that is, the executor stage that marks `adapterPrimitiveInvoked = true`.
+that is, the executor/adapter stage that marks `adapterPrimitiveInvoked = true`.
+
+`adapterPrimitiveInvoked` means:
+
+```text
+the first browser input dispatch for the approved click is about to be attempted
+```
+
+For the existing V3 click primitive, that is immediately before the first `Input.dispatchMouseEvent`, including the initial `mouseMoved`. Page JavaScript can react to hover/movement, so once that dispatch is attempted the browser may have observable effects.
+
+Do **not** set `adapterPrimitiveInvoked = true` at entry into `BrowserAdapter.click()`. A preflight failure inside click must remain `stale` or `failed` with `adapterPrimitiveInvoked = false`, never `execution-attempted-state-unknown`.
 
 `ExecuteGrant` is **single-use**. After `claimExecuteGrant()` succeeds, the grant and approval are consumed, regardless of:
 
@@ -330,9 +350,11 @@ pending
             adapterPrimitiveInvoked = false
 ```
 
-`executing → stale` and `executing → failed` are allowed **only when no BrowserAdapter mutation/input primitive has yet been invoked**.
+`executing → stale` and `executing → failed` are allowed **only when no browser input dispatch has yet been attempted** (`adapterPrimitiveInvoked = false`).
 
-Once `adapterPrimitiveInvoked = true`, the action must never transition to `stale`, `failed`, `rejected`, or `expired`. After dispatch, outcomes are limited to:
+Entering `BrowserAdapter.click()` does not by itself cross that boundary. Session setup, document revision, frame, and box-model preflight are still pre-dispatch.
+
+Once `adapterPrimitiveInvoked = true`, the action must never transition to `stale`, `failed`, `rejected`, or `expired`. After the first `Input.dispatchMouseEvent` is about to be attempted, outcomes are limited to:
 
 ```text
 executed
@@ -373,7 +395,7 @@ Do not collapse all pre-dispatch failures into `stale`.
 
 ```text
 failed
-= execution could not reach browser mutation dispatch
+= execution could not reach the first browser input dispatch
   for a non-staleness mechanical/runtime reason
 adapterPrimitiveInvoked = false
 ```
@@ -381,15 +403,23 @@ adapterPrimitiveInvoked = false
 Examples:
 
 ```text
-TargetRegistry / observationId / documentRevision / target identity mismatch
+TargetRegistry current observation mismatch
+target record missing
+record.documentRevision mismatch
+TARGET_STALE / TARGET_NOT_FOUND / PAGE_CHANGED / TAB_NOT_FOUND
+tab destroyed / exact target gone
 → stale
 
-unsupported, destroyed, or other mechanical browser condition
-that is not identity staleness
+interaction session unavailable
+debugger attach failure
+UNSUPPORTED_FRAME
+INTERACTION_IN_PROGRESS
+INTERACTION_FAILED (when the input-dispatch hook never fired)
+other browser/runtime condition preventing input dispatch
 → failed
 ```
 
-Exact later mapping may use existing V3 error codes (`TARGET_STALE`, `PAGE_CHANGED`, `TAB_NOT_FOUND`, `UNSUPPORTED_FRAME`, `INTERACTION_FAILED`, …). `failed` after a claimed grant remains single-use: the grant cannot be reclaimed.
+Do not map `INTERACTION_IN_PROGRESS`, `UNSUPPORTED_FRAME`, or `INTERACTION_FAILED` to `execution-attempted-state-unknown` if `adapterPrimitiveInvoked` is still false. `failed` after a claimed grant remains single-use: the grant cannot be reclaimed.
 
 ---
 
@@ -473,7 +503,9 @@ Defense in depth:
 | Prepare | Bound identity, `DEFER_EXECUTE`, click-only, target resolved in inference observation, category/summary | No `PreparedAction`; remain denied |
 | Decide | pending, TTL, single-use, trusted sender, not already decided | Terminal already-decided / expired / stale; no grant |
 | Claim grant | still `approved`, not already claimed, TTL remaining, identity still current if already known broken | No `ExecuteGrant`. Identity already invalid → `approved → stale` (**pre-claim stale**). TTL elapsed → `approved → expired`. |
-| Immediately before click | `TargetRegistry` exact current `observationId`, `documentRevision`, exact `targetId`, V3 live box/frame/revision preflight | Grant already claimed: `executing → stale` (identity) or `executing → failed` (non-stale mechanical). `adapterPrimitiveInvoked = false`. Grant remains consumed. |
+| Registry identity before adapter | `TargetRegistry.getCurrentObservationId(tabId) == grant.observationId`; exact `resolve(tabId, observationId, targetId)`; `record.documentRevision == grant.documentRevision` | `executing → stale`. `adapterPrimitiveInvoked = false`. Grant remains consumed. |
+| Inside `BrowserAdapter.click` preflight | debugger/session setup, `assertDocumentRevision`, `assertSupportedFrame`, live `DOM.getBoxModel` / geometry | Identity/page invalid (`TARGET_STALE`, `TARGET_NOT_FOUND`, `PAGE_CHANGED`, `TAB_NOT_FOUND`) → `executing → stale`. Other mechanical (`UNSUPPORTED_FRAME`, session/debugger, `INTERACTION_IN_PROGRESS`, `INTERACTION_FAILED` with hook unfired) → `executing → failed`. `adapterPrimitiveInvoked = false`. Grant remains consumed. |
+| Input-dispatch boundary | all read-only/session/live-target preflight succeeded | `onBeforeInputDispatch` fires exactly once; `adapterPrimitiveInvoked = true`. If the callback throws, **no** `Input.dispatchMouseEvent` may occur (fail closed). |
 
 Do **not** re-observe before execute in a way that issues a new `observationId` and rebinds authority:
 
@@ -481,7 +513,85 @@ Do **not** re-observe before execute in a way that issues a new `observationId` 
 approve → observe → find target again → execute     FORBIDDEN
 ```
 
-Use the frozen identity and bounded live mechanical preflight (same as V3 click). After the approved execution attempt, `observePage()` runs exactly once, as in V3. Old target IDs die afterward.
+Use the frozen identity and bounded live mechanical preflight (same as V3 click). Do not store full `PageObservation` on `PreparedAction`. Execution authority is:
+
+```text
+ExecuteGrant
++ current exact TargetRegistry record
++ live adapter preflight
+```
+
+The registry already holds internal exact `frameId` / `backendNodeId` for the still-current observation. Do not add coordinates to `PreparedAction` or `ExecuteGrant`. Approved V4 click may omit `observedBounds`; live `DOM.getBoxModel` remains mandatory. After the approved execution attempt, `observePage()` runs exactly once, as in V3. Old target IDs die afterward.
+
+---
+
+## Approved-click input-dispatch hook
+
+`ExecuteExecutor` must not infer dispatch from whether `BrowserAdapter.click` was called, resolved, or rejected. The authoritative stage fact is whether the internal pre-dispatch hook fired.
+
+Conceptual internal request (name may differ):
+
+```ts
+interface AdapterClickRequest {
+  target: AdapterTargetRef;
+  observedBounds?: AdapterObservedBounds;
+  onBeforeInputDispatch?: () => void;
+}
+```
+
+The callback is trusted in-process only: optional, not renderer-visible, not IPC, not model-visible, not page-visible. It must never appear on renderer DTOs, preload, app UI, or model schema.
+
+`executeAdapterClick()` invokes it **exactly once**, synchronously, after all live preflight succeeds, immediately before the first `Input.dispatchMouseEvent`:
+
+```ts
+await assertDocumentRevision(...);
+await assertSupportedFrame(...);
+const liveBox = await preflightTargetBox(...);
+const center = liveBoxCenter(liveBox);
+
+request.onBeforeInputDispatch?.();
+
+await cdp.dispatchMouseEvent({ type: 'mouseMoved', ... });
+```
+
+If the callback throws, no `Input.dispatchMouseEvent` may occur. The click attempt fails closed.
+
+The hook does **not** select a target, supply coordinates, choose a browser primitive, bypass preflight, or issue CDP. It only signals that the existing trusted click primitive has completed preflight and is crossing the input-dispatch boundary.
+
+The browser primitive remains `BrowserAdapter.click`. No `buy()` / `send()` / `delete()` / `execute()` methods.
+
+V3 `BrowserAdapter.click` requests omit the hook. V3 click behavior remains unchanged. V3 `InteractionExecutor` may keep its own `stage.adapterPrimitiveInvoked` semantics; refining V3 audit is a separate task.
+
+Phase 4 must prove:
+
+```text
+successful click → hook called exactly once
+preflight error → hook called zero times
+input failure after hook → hook called exactly once
+```
+
+The adapter primitive itself must never call the hook twice.
+
+Conceptual ExecuteExecutor sequence:
+
+```text
+claimExecuteGrant → executing (grant consumed)
+→ exact TargetRegistry identity
+   invalid → markStaleBeforeDispatch
+→ BrowserAdapter.click({
+     target from trusted TargetRecord,
+     onBeforeInputDispatch: () => markAdapterPrimitiveInvoked(executionId)
+   })
+→ if click rejects:
+     adapterPrimitiveInvoked=false → stale or failed from error class
+     adapterPrimitiveInvoked=true  → markExecutionStateUnknown
+→ if click resolves:
+     observePage exactly once
+     success → markExecuted
+     failure → markExecutionStateUnknown
+```
+
+If `mouseMoved` succeeds and a later mouse event throws, the result is `execution-attempted-state-unknown`. No retry.
 
 ---
 
@@ -498,18 +608,20 @@ result = execution-attempted-state-unknown
 
 Do not tell the UI it is safe to retry automatically.
 
-Once the executor marks `adapterPrimitiveInvoked = true`, never report `rejected`, `expired`, `stale`, or `failed` for that execution.
+Once the executor marks `adapterPrimitiveInvoked = true` (input-dispatch hook fired), never report `rejected`, `expired`, `stale`, or `failed` for that execution.
 
-| Outcome | Grant claimed? | Adapter invoked? | Meaning |
-|---------|----------------|------------------|---------|
+| Outcome | Grant claimed? | Input dispatched? (`adapterPrimitiveInvoked`) | Meaning |
+|---------|----------------|-----------------------------------------------|---------|
 | `rejected` | no | no | user rejected |
 | `expired` | no | no | TTL expired before winning approval/claim |
-| `stale` | maybe | no | exact prepared identity invalid before browser dispatch |
-| `failed` | maybe | no | non-stale failure prevented browser dispatch |
-| `executed` | yes | yes | click dispatched and fresh observation succeeded |
-| `execution-attempted-state-unknown` | yes | yes | browser dispatch attempted; final state not safely confirmed |
+| `stale` | maybe | no | exact prepared identity invalid before first Input dispatch |
+| `failed` | maybe | no | non-stale failure prevented first Input dispatch |
+| `executed` | yes | yes | first Input dispatch attempted and fresh observation succeeded |
+| `execution-attempted-state-unknown` | yes | yes | first Input dispatch attempted; final state not safely confirmed |
 
 A `stale` or `failed` result after a claimed grant remains single-use. No retry.
+
+Do not infer `adapterPrimitiveInvoked` from `BrowserAdapter.click` having been entered. Only the input-dispatch hook (or equivalent stage mark) is the truth source.
 
 ### Execution stage facts
 
@@ -518,7 +630,7 @@ Main-process / audit facts only; not renderer-visible; no executable browser han
 ```text
 grantIssued          — ApprovalDecision recorded as approve
 grantClaimed         — claimExecuteGrant succeeded
-adapterPrimitiveInvoked — BrowserAdapter.click / input dispatch started
+adapterPrimitiveInvoked — first Input.dispatchMouseEvent about to be attempted
 postObservationSucceeded — mandatory fresh observePage returned
 ```
 
@@ -548,7 +660,7 @@ Do not overload `InteractionExecutor`.
 | `ExecuteExecutor` | consumes `ExecuteGrant`; reports stage outcomes to the manager; reuses V3 click primitive + fresh observation; never mutates store state directly |
 | `AiRequestController` | trusted-app events; must not become the grant issuer |
 | `InteractiveAgent` | propose/bind; must not import `BrowserAdapter` or issue `ExecuteGrant` |
-| `BrowserAdapter` | mechanical `click` only; no `buy` / `send` / `delete` methods |
+| `BrowserAdapter` | mechanical `click` only; no `buy` / `send` / `delete` methods; optional in-process `onBeforeInputDispatch` on the click request |
 
 Preferred wiring: existing executor (or a thin orchestrator in front of it) still runs policy. When the outcome is `DEFER_EXECUTE` for a supported consequential click, `PrepareActionService` runs instead of treating that as a terminal product denial. `InteractionExecutor.execute()` must not grow an `approved` flag.
 
@@ -777,7 +889,7 @@ without exposing internal target handles to the renderer.
 
 ## TOCTOU limitations
 
-Approval binds semantic/local identity at preparation time. Execution still performs live mechanical preflight immediately before dispatch.
+Approval binds semantic/local identity at preparation time. Execution still performs live mechanical preflight immediately before the first `Input.dispatchMouseEvent`. Entering `BrowserAdapter.click()` is not that boundary.
 
 The system cannot freeze arbitrary website JavaScript. V4 does **not** claim transactional browser execution.
 
@@ -870,7 +982,8 @@ V5 agent loop
 [ ] Approve/reject race → one terminal decision
 [ ] ExecuteGrant is single-use; claimed then stale/failed cannot be reclaimed
 [ ] executing → stale/failed only when adapterPrimitiveInvoked is false
-[ ] After adapter dispatch, never stale, failed, rejected, or expired
+[ ] BrowserAdapter.click entry is not the input-dispatch boundary
+[ ] After first Input.dispatchMouseEvent boundary, never stale, failed, rejected, or expired
 [ ] No automatic EXECUTE retry
 [ ] Post-dispatch observation failure is unknown, not a retry
 [ ] Approval UI has no execution handles
@@ -920,6 +1033,8 @@ malicious model output claiming approval → rejected by schema/policy
 website navigation while pending → stale, no execution
 claimed grant then stale before dispatch → stale, grant not reclaimable
 claimed grant then mechanical fail before dispatch → failed, grant not reclaimable
+preflight inside BrowserAdapter.click with hook unfired → stale or failed, not unknown
+hook fired then input/observation unconfirmed → unknown, no retry
 post-click observation failure → unknown, no retry
 DENY and TARGET_SENSITIVE never prepare
 ```

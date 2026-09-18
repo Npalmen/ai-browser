@@ -190,7 +190,7 @@ Copied from ADR-005; implementation must not weaken them.
 10. Max one pending PreparedAction per tab; a new prepare invalidates the previous.
 11. In-memory only; restart clears pending approvals.
 12. Post-dispatch observation failure → `execution-attempted-state-unknown`, not retry. After `adapterPrimitiveInvoked = true`, never `stale`, `failed`, `rejected`, or `expired`.
-13. Grant claim ≠ browser dispatch. `executing → stale` / `executing → failed` are legal only with adapter invocation count 0.
+13. Grant claim ≠ `BrowserAdapter.click` entry ≠ first `Input.dispatchMouseEvent`. `adapterPrimitiveInvoked` is true only at the input-dispatch boundary. `executing → stale` / `executing → failed` are legal only while that fact is false.
 14. Final purchase/sign-in click may be prepared after the user manually filled secrets; secrets stay unexported.
 15. Cancel of the original AI request must not execute. Pending approval is independent after prepare, but a new same-tab AI request invalidates it.
 16. Tab close, dispose, navigation/reload → invalid/stale.
@@ -289,28 +289,101 @@ Prove website/preload cannot create or decide approvals. Prove renderer cannot s
 
 ### Phase 4 — ExecuteExecutor
 
-Consume `ExecuteGrant`:
+Consume `ExecuteGrant` after Phase 3 approval. Do not call `claimExecuteGrant` from ApprovalController. Phase 4 owns grant claim + execution.
+
+Conceptual sequence:
 
 ```text
-registry current observation
-documentRevision
-exact target
-V3 live click preflight
-Input.dispatchMouseEvent path only
-observePage once
-grant already consumed at claim; never reissue
+approval approved
+→ claimExecuteGrant()
+→ state = executing
+→ grant consumed
+
+→ resolve exact TargetRegistry record
+   tabId / observationId / targetId / documentRevision
+   currentObservationId(tabId) == grant.observationId
+   resolve(tabId, observationId, targetId)
+   record.documentRevision == grant.documentRevision
+
+→ if registry identity invalid:
+     markStaleBeforeDispatch
+     return stale
+
+→ build AdapterClickRequest from trusted TargetRecord
+   frameId / backendNodeId / documentRevision
+   no coordinates on ExecuteGrant / PreparedAction
+   observedBounds may be omitted
+
+→ BrowserAdapter.click({
+     target,
+     onBeforeInputDispatch: () => {
+       ApprovalManager.markAdapterPrimitiveInvoked(executionId)
+     }
+   })
+
+BrowserAdapter internal flow:
+   session / debugger setup
+   document revision preflight
+   frame preflight
+   live box/geometry preflight
+
+   if any of these fail:
+     callback has not fired
+     adapterPrimitiveInvoked = false
+
+   callback fires exactly once
+   Input.dispatchMouseEvent...
+
+→ if click resolves:
+     observePage(tabId) exactly once
+     success → markExecuted → executed
+     failure → markExecutionStateUnknown
+
+→ if click rejects:
+     inspect manager facts
+     adapterPrimitiveInvoked = false:
+       TARGET_STALE / TARGET_NOT_FOUND / PAGE_CHANGED / TAB_NOT_FOUND
+         or executor-detected registry mismatch → markStaleBeforeDispatch
+       other InteractionError (UNSUPPORTED_FRAME, session/debugger,
+         INTERACTION_IN_PROGRESS, INTERACTION_FAILED, …) → markFailedBeforeDispatch
+     adapterPrimitiveInvoked = true:
+       markExecutionStateUnknown
 ```
 
-Map execution-stage outcomes back to `ApprovalManager` (do not mutate store state from the adapter):
+No automatic retry. No second grant. No new CDP methods. No full PageObservation stored on PreparedAction. No re-observe-and-rebind. V3 click requests omit the hook.
 
-- identity/revision/target mismatch before dispatch → `executing → stale`, adapter 0, grant already consumed
-- non-stale mechanical/runtime block before dispatch → `executing → failed`, adapter 0, grant already consumed
-- click dispatched and fresh observation succeeds → `executed`, adapter 1
-- click/input may have occurred but final state cannot be safely confirmed → `execution-attempted-state-unknown`, adapter 1, no retry
+Required Phase 4 tests:
 
-Never map post-dispatch uncertainty to `failed` or `stale`. A second `claimExecuteGrant` after stale/failed/executed/unknown must fail.
+```text
+registry stale before adapter call
+→ stale / adapterPrimitiveInvoked false
 
-Reuse `ElectronBrowserAdapter.click`. No new CDP methods.
+document revision failure inside click preflight
+→ stale / adapterPrimitiveInvoked false
+
+target box unavailable inside click preflight
+→ stale / adapterPrimitiveInvoked false
+
+debugger/session preflight failure
+→ failed / adapterPrimitiveInvoked false
+
+hook fires then dispatch rejects
+→ execution-attempted-state-unknown / adapterPrimitiveInvoked true
+
+click resolves then observe fails
+→ execution-attempted-state-unknown / adapterPrimitiveInvoked true
+
+click resolves + observe succeeds
+→ executed / adapterPrimitiveInvoked true
+
+successful click → hook exactly once
+preflight error → hook zero times
+input failure after hook → hook exactly once
+```
+
+Grant remains consumed for every post-claim outcome.
+
+Reuse `ElectronBrowserAdapter.click`. Optional in-process `onBeforeInputDispatch` only. The hook must never appear in IPC, renderer DTOs, preload, UI, or model schema.
 
 ### Phase 5 — product wiring
 
@@ -409,6 +482,7 @@ V4 is complete when ADR-005 is implemented and all gates below are green.
 [ ] one BrowserAdapter primitive max
 [ ] no automatic EXECUTE retry
 [ ] claimed grant then stale/failed before dispatch is terminal; grant cannot be reclaimed
+[ ] BrowserAdapter.click entry is not treated as input dispatch
 [ ] post-dispatch observation failure represented as execution-attempted-state-unknown, never stale/failed
 [ ] approval UI contains no execution handles
 [ ] audit contains no sensitive values
