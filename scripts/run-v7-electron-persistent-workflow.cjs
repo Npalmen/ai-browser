@@ -6,6 +6,10 @@ const path = require('node:path');
 const esbuildBin = require.resolve('esbuild/bin/esbuild');
 const preloadOut = path.join(os.tmpdir(), `v7-electron-preload-${process.pid}.cjs`);
 
+function cleanup() {
+  fs.rmSync(preloadOut, { force: true });
+}
+
 const bundledPreload = spawnSync(
   process.execPath,
   [
@@ -21,9 +25,11 @@ const bundledPreload = spawnSync(
 );
 
 if (bundledPreload.error) {
+  cleanup();
   throw bundledPreload.error;
 }
 if ((bundledPreload.status ?? 1) !== 0) {
+  cleanup();
   process.exit(bundledPreload.status ?? 1);
 }
 
@@ -40,20 +46,11 @@ function runHarness() {
   );
 }
 
-let result = runHarness();
+const result = runHarness();
+cleanup();
+
 if (result.error) {
-  fs.rmSync(preloadOut, { force: true });
   throw result.error;
 }
 
-for (let attempt = 0; attempt < 3 && (result.status ?? 1) !== 0; attempt += 1) {
-  spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 2000)']);
-  result = runHarness();
-  if (result.error) {
-    fs.rmSync(preloadOut, { force: true });
-    throw result.error;
-  }
-}
-
-fs.rmSync(preloadOut, { force: true });
 process.exit(result.status ?? 1);

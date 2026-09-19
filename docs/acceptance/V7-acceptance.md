@@ -2,10 +2,49 @@
 
 **Base implementation:** `d3e1306f8c8d483b58191f709c94a4c02ed8c1df` (`Implement V7 workflows product surface`)  
 **Acceptance candidate:** `fa647d4e780f9f97c5088af9bfa51182116d59d4` (`Add V7 persistent workflow acceptance`)  
-**Closure docs:** Commit B (`Close V7 persistent workflow milestone`)  
+**Closure docs:** `be59db4d78d09c97a729dcecf53cc845da1416a1` (`Close V7 persistent workflow milestone`)  
+**Single-attempt runner correction:** this commit (`Make V7 Electron closure single-attempt`)  
 **Date:** 2026-09-19
 
-## Commands run on the acceptance candidate
+## Commands run on the single-attempt correction
+
+```text
+npm run test:v7-acceptance                 PASS (44 tests + one Electron harness)
+npm run typecheck                          PASS
+npm run test:ai                            PASS (226 tests)
+npm run test:observation                   PASS (40 tests)
+npm run test:fixture                       PASS (11 tests)
+npm run test:v2-acceptance                 PASS (29 tests + [v2-electron-observation] PASS)
+npm run test:v3-acceptance                 PASS (29 tests + [v3-electron-interaction] PASS)
+npm run test:v4-acceptance                 PASS (46 tests + [v4-electron-approval] PASS)
+npm run test:v5-acceptance                 PASS (31 tests + [v5-electron-agent-loop] PASS)
+npm run test:v6-acceptance                 PASS (52 tests + [v6-electron-autonomous-task] PASS)
+npm run test:v7-acceptance                 PASS (44 tests + one Electron harness)
+```
+
+```text
+V7 Electron runner executes exactly once.
+No automatic V7 retry is present.
+Official final test:v7-acceptance passed on its first/single Electron attempt.
+```
+
+Each `npm run test:v7-acceptance` after this correction:
+
+```text
+TypeScript: 44 PASS
+Electron attempts: exactly 1
+Electron child exit: 0
+harness success path: [v7-electron-persistent-workflow] PASS then app.exit(0)
+clicks=0: did not occur
+```
+
+Proof the runner did not retry: `scripts/run-v7-electron-persistent-workflow.cjs` contains no retry loop. Each official log shows one preload bundle and one harness bundle, no `[v7-electron-persistent-workflow] FAIL`, and a non-retrying child exit 0. The harness prints the PASS marker immediately before `app.exit(0)`; that is the only success path.
+
+On this Windows host, Electron GUI-process `console.log` is not always inherited into the npm log. That is not treated as a retry signal.
+
+## Commands run on the original acceptance candidate
+
+The original candidate SHA used a retrying V7 Electron runner (up to four harness attempts). Those earlier `test:v7-acceptance` results are **not** equivalent to a first-attempt closure pass. The single-attempt correction above is the verified V7 Electron gate.
 
 ```text
 npm run typecheck                          PASS
@@ -31,8 +70,6 @@ Dedicated Electron marker (printed by the harness immediately before `app.exit(0
 ```text
 [v7-electron-persistent-workflow] PASS
 ```
-
-Official `npm run test:v7-acceptance` Electron child exited 0. On this Windows host, Electron GUI-process `console.log` is not always inherited into the npm log; the runner still fails closed on non-zero child status.
 
 `npm run test:v2-catalog-live` and `npm run smoke:v2-gateway` were not run.
 
@@ -180,17 +217,19 @@ None. Acceptance used production classes as-is. Test fixtures were adjusted wher
 
 ## Electron first-attempt record
 
-While building the candidate (before Commit A):
+While building the original candidate (before Commit A), with retries still present in the runner:
 
 ```text
 1. app.disableHardwareAcceleration() can only be called before app is ready
    cause: awaited mkdtemp/mkdir before disableHardwareAcceleration; fixed with sync temp dirs
 2. queued occurrence did not complete (clicks=0) on one development run
-   subsequent runs completed; official matrix Electron child exited 0
-3. Official npm run test:v7-acceptance Electron runner exit 0
+   subsequent development runs completed
+   this is not a single-attempt official pass
 ```
 
-Official `npm run test:v5-acceptance` Electron run used the existing V5 runner retries: first attempt `agent-run-failed` / `ACTION_FAILED`, retry `[v5-electron-agent-loop] PASS`. V5 TypeScript assertions were not changed.
+After the retry loop was removed, official `npm run test:v7-acceptance` (gate run and closure-matrix run) each executed the Electron harness once. Neither reproduced `clicks=0`. Both exited 0 on that single attempt.
+
+Official `npm run test:v5-acceptance` still uses the existing frozen V5 runner retries. This matrix run: `[v5-electron-agent-loop] PASS` on the first V5 harness attempt. V5 TypeScript assertions were not changed.
 
 ## No live / paid model calls
 
