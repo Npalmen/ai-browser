@@ -14,6 +14,7 @@ import {
   parseCancelContextAskRequest,
   parseContextAskRequest,
   parseGenerateWorkflowDraftRequest,
+  parseGetActivitySummaryRequest,
   parseRouteIntentRequest,
 } from './ai-native-ipc-guards';
 import { buildTrustedSearchNavigationUrl } from './browser-search-provider';
@@ -22,6 +23,7 @@ import {
   beforeAutonomousTaskTrustedChromeNavigation,
   cancelAgentRunForTrustedChromeNavigation,
   getAiController,
+  getAiNativeActivityController,
   getAiNativeContextController,
   getAiNativeWorkflowDraftController,
   getApprovalWorkflowController,
@@ -179,6 +181,20 @@ export function registerBrowserShellIpc(): void {
       return { ok: false, error: aiNativeSafeError('AI_NATIVE_NOT_AVAILABLE') };
     }
     return draftController.generate(parsed.input);
+  });
+
+  ipcMain.handle(AI_NATIVE_IPC_CHANNELS.getActivitySummary, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    const parsed = parseGetActivitySummaryRequest(input);
+    if (!parsed.ok) {
+      return parsed;
+    }
+    await whenBrowserReady();
+    const activityController = getAiNativeActivityController();
+    if (!activityController) {
+      return { ok: false, error: aiNativeSafeError('AI_NATIVE_NOT_AVAILABLE') };
+    }
+    return activityController.getSummary();
   });
 
   ipcMain.handle(BROWSER_IPC_CHANNELS.back, async (event, tabId: unknown) => {

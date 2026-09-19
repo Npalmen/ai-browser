@@ -168,6 +168,7 @@ const aiNative: AiNativeApi = {
   },
   generateWorkflowDraft: (input: AiNativeWorkflowDraftInput) =>
     ipcRenderer.invoke(AI_NATIVE_IPC_CHANNELS.generateWorkflowDraft, input),
+  getActivitySummary: () => ipcRenderer.invoke(AI_NATIVE_IPC_CHANNELS.getActivitySummary),
 };
 
 contextBridge.exposeInMainWorld('browserShell', browserShell);

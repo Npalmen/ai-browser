@@ -160,6 +160,15 @@ function controllerOf(readAgent: FakeReadAgent, interactiveAgent: FakeInteractio
 }
 
 describe('AiRequestController', () => {
+  it('exposes a read-only Ask/Act activity snapshot without question text', () => {
+    const { controller } = controllerOf(new FakeReadAgent(), new FakeInteractionAgent());
+    controller.startAsk(TAB, 'Secret question that must not leak', 'read');
+    const snapshot = controller.getActivitySnapshot();
+    assert.deepEqual(snapshot, [{ tabId: TAB, mode: 'read' }]);
+    assert.equal(JSON.stringify(snapshot).includes('Secret question'), false);
+    assert.equal(JSON.stringify(snapshot).includes('askId'), false);
+  });
+
   it('routes read mode to ReadOnlyAgent only', async () => {
     const readAgent = new FakeReadAgent();
     const interactiveAgent = new FakeInteractionAgent();

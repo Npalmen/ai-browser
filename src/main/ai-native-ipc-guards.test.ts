@@ -5,6 +5,7 @@ import {
   parseCancelContextAskRequest,
   parseContextAskRequest,
   parseGenerateWorkflowDraftRequest,
+  parseGetActivitySummaryRequest,
   parseRouteIntentRequest,
 } from './ai-native-ipc-guards';
 
@@ -235,5 +236,17 @@ describe('parseGenerateWorkflowDraftRequest', () => {
       },
     });
     assert.equal(result.ok, false);
+  });
+});
+
+describe('parseGetActivitySummaryRequest', () => {
+  it('accepts no input and rejects renderer-supplied state', () => {
+    assert.equal(parseGetActivitySummaryRequest(undefined).ok, true);
+    assert.equal(parseGetActivitySummaryRequest({ tabId: 'tab-a' }).ok, false);
+    assert.equal(parseGetActivitySummaryRequest({ approvalId: 'a-1' }).ok, false);
+    assert.equal(parseGetActivitySummaryRequest({ taskId: 't-1' }).ok, false);
+    assert.equal(parseGetActivitySummaryRequest({ workflowId: 'wf-1' }).ok, false);
+    assert.equal(parseGetActivitySummaryRequest(null).ok, false);
+    assert.equal(parseGetActivitySummaryRequest([]).ok, false);
   });
 });

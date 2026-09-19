@@ -131,6 +131,8 @@ describe('V8 omnibox integration', () => {
     assert.match(app, /pendingOmniboxFocusRef/);
     assert.match(app, /omniboxInputRef\.current\?\.focus\(\)/);
     assert.match(app, /about:blank/);
+    const omnibox = readSrc('src/app-ui/Omnibox.tsx');
+    assert.match(omnibox, /placeholder="Search or enter address"/);
   });
 
   it('closes context picker when approval is required', () => {
@@ -139,6 +141,7 @@ describe('V8 omnibox integration', () => {
     assert.ok(approvalStart >= 0);
     const approvalBlock = app.slice(approvalStart, approvalStart + 500);
     assert.match(approvalBlock, /closeContextPicker/);
+    assert.match(approvalBlock, /setActivityOpen\(current, false\)/);
   });
 
   it('keeps omnibox in trusted app renderer only', () => {

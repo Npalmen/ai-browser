@@ -2,7 +2,19 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { AiPanelMode } from '../shared/autonomous-task-types';
 import type { BrowserState, BrowserTab } from '../shared/browser-types';
+import { ActivityPopover } from './ActivitySummary';
 import { AiSidePanel } from './AiSidePanel';
+import {
+  applyActivitySummary,
+  assistantNeedsAttention,
+  emptyActivityUiState,
+  hasAttentionBadge,
+  hasBackgroundActivity,
+  setActivityOpen,
+  workflowsNeedAttention,
+  type ActivityDeepLink,
+  type ActivityUiState,
+} from './activity-ui-state';
 import { Omnibox } from './Omnibox';
 import { WorkflowsPanel } from './WorkflowsPanel';
 import {
@@ -54,7 +66,6 @@ import {
   autonomousTaskUiFromViews,
   emptyAutonomousTaskUiState,
   findAwaitingUserInputTask,
-  hasAutonomousTaskAttention,
   ownedTaskTabIds,
   setAutonomousTaskReplyDraft,
   type AutonomousTaskUiState,
@@ -93,11 +104,30 @@ export function App() {
     emptyContextAnswerUiState(),
   );
   const [aiDraftForm, setAiDraftForm] = useState<WorkflowFormState | null>(null);
+  const [activityState, setActivityState] = useState<ActivityUiState>(emptyActivityUiState());
   const [panelMode, setPanelMode] = useState<AiPanelMode>('read');
   const lastSyncedUrlRef = useRef('');
   const activeTabIdRef = useRef<string | null>(null);
   const omniboxInputRef = useRef<HTMLInputElement | null>(null);
   const pendingOmniboxFocusRef = useRef(false);
+  const activityRefreshTimerRef = useRef<number | null>(null);
+
+  const queueActivityRefresh = useCallback(() => {
+    if (activityRefreshTimerRef.current !== null) {
+      return;
+    }
+    activityRefreshTimerRef.current = window.setTimeout(() => {
+      activityRefreshTimerRef.current = null;
+      void window.aiNative
+        .getActivitySummary()
+        .then((result) => {
+          setActivityState((current) => applyActivitySummary(current, result));
+        })
+        .catch((error: unknown) => {
+          console.error('[app-ui] failed to load activity summary:', error);
+        });
+    }, 0);
+  }, []);
 
   const activeTab =
     browserState?.tabs.find((tab) => tab.id === browserState.activeTabId) ?? null;
@@ -115,6 +145,7 @@ export function App() {
       .getBrowserState()
       .then((state) => {
         setBrowserState(state);
+        queueActivityRefresh();
       })
       .catch((error: unknown) => {
         console.error('[app-ui] failed to load initial browser state:', error);
@@ -122,12 +153,17 @@ export function App() {
 
     unsubscribe = window.browserShell.onStateChanged((state) => {
       setBrowserState(state);
+      queueActivityRefresh();
     });
 
     return () => {
       unsubscribe?.();
+      if (activityRefreshTimerRef.current !== null) {
+        window.clearTimeout(activityRefreshTimerRef.current);
+        activityRefreshTimerRef.current = null;
+      }
     };
-  }, []);
+  }, [queueActivityRefresh]);
 
   useEffect(() => {
     void window.aiAssistant.setPanelOpen(false).catch((error: unknown) => {
@@ -138,13 +174,15 @@ export function App() {
   useEffect(() => {
     const unsubscribe = window.aiAssistant.onAnswerEvent((event) => {
       setTabAiState((current) => applyAiAnswerEvent(current, event));
+      queueActivityRefresh();
     });
     return unsubscribe;
-  }, []);
+  }, [queueActivityRefresh]);
 
   useEffect(() => {
     const unsubscribe = window.aiAssistant.onAutonomousTaskEvent((event) => {
       setTaskUiState((current) => applyAutonomousTaskEvent(current, event));
+      queueActivityRefresh();
     });
     void window.aiAssistant
       .getAutonomousTaskState()
@@ -158,22 +196,25 @@ export function App() {
         console.error('[app-ui] failed to load autonomous task state:', error);
       });
     return unsubscribe;
-  }, []);
+  }, [queueActivityRefresh]);
 
   useEffect(() => {
     const unsubscribe = window.aiNative.onContextAnswerEvent((event) => {
       setContextAnswerState((current) => applyContextAnswerEvent(current, event));
+      queueActivityRefresh();
     });
     return unsubscribe;
-  }, []);
+  }, [queueActivityRefresh]);
 
   useEffect(() => {
     const unsubscribe = window.aiAssistant.onApprovalEvent((event) => {
       setTabApprovalState((current) => applyApprovalEvent(current, event));
+      queueActivityRefresh();
       if (
         event.type === 'approval-required' &&
         event.approval.tabId === activeTabIdRef.current
       ) {
+        setActivityState((current) => setActivityOpen(current, false));
         setOmniboxState((current) => closeContextPicker(current));
         setRightPanelSurface('assistant');
         void window.aiAssistant
@@ -191,7 +232,14 @@ export function App() {
       }
     });
     return unsubscribe;
-  }, []);
+  }, [queueActivityRefresh]);
+
+  useEffect(() => {
+    const unsubscribe = window.workflows.onStateChanged(() => {
+      queueActivityRefresh();
+    });
+    return unsubscribe;
+  }, [queueActivityRefresh]);
 
   useEffect(() => {
     if (!panelOpen) {
@@ -629,6 +677,20 @@ export function App() {
     openRightPanel('workflows');
   };
 
+  const handleActivitySelect = (target: ActivityDeepLink) => {
+    setActivityState((current) => setActivityOpen(current, false));
+    if (target.surface === 'workflows') {
+      openRightPanel('workflows');
+      return;
+    }
+    if (target.tabId && target.tabId !== activeTabIdRef.current) {
+      void window.browserShell.activateTab(target.tabId).catch((error: unknown) => {
+        console.error('[app-ui] failed to activate approval tab:', error);
+      });
+    }
+    openRightPanel('assistant');
+  };
+
   const updateActiveTabAi = (updater: (current: TabAiUiState) => TabAiUiState) => {
     if (!activeTab) {
       return;
@@ -834,7 +896,10 @@ export function App() {
   };
 
   const taskOwnedTabs = ownedTaskTabIds(taskUiState);
-  const taskAttention = hasAutonomousTaskAttention(taskUiState);
+  const taskAttention = assistantNeedsAttention(activityState.summary);
+  const activityAttention = hasAttentionBadge(activityState.summary);
+  const activityBusy = hasBackgroundActivity(activityState.summary);
+  const workflowAttention = workflowsNeedAttention(activityState.summary);
 
   const controlsDisabled = !activeTab;
 
@@ -926,6 +991,27 @@ export function App() {
 
           {activeTab?.loading ? <span className="loading-indicator">Loading…</span> : null}
 
+          <div className="activity-anchor">
+            <button
+              type="button"
+              className={`nav-button activity-toggle ${activityState.open ? 'activity-toggle-open' : ''} ${
+                activityAttention ? 'activity-toggle-attention' : ''
+              }`}
+              onClick={() => setActivityState((current) => setActivityOpen(current, !current.open))}
+              aria-pressed={activityState.open}
+              aria-label={activityAttention ? 'Activity, attention required' : 'Activity'}
+            >
+              Activity
+              {activityAttention ? (
+                <span className="ai-toggle-badge" aria-hidden="true" />
+              ) : activityBusy ? (
+                <span className="activity-toggle-busy" aria-hidden="true" />
+              ) : null}
+            </button>
+            {activityState.open ? (
+              <ActivityPopover state={activityState} onSelect={handleActivitySelect} />
+            ) : null}
+          </div>
           <button
             type="button"
             className={`nav-button ai-toggle ${panelOpen && rightPanelSurface === 'assistant' ? 'ai-toggle-open' : ''} ${
@@ -940,12 +1026,15 @@ export function App() {
           </button>
           <button
             type="button"
-            className={`nav-button workflow-toggle ${panelOpen && rightPanelSurface === 'workflows' ? 'workflow-toggle-open' : ''}`}
+            className={`nav-button workflow-toggle ${panelOpen && rightPanelSurface === 'workflows' ? 'workflow-toggle-open' : ''} ${
+              workflowAttention ? 'workflow-toggle-attention' : ''
+            }`}
             onClick={handleToggleWorkflows}
             aria-pressed={panelOpen && rightPanelSurface === 'workflows'}
-            aria-label="Workflows"
+            aria-label={workflowAttention ? 'Workflows, review required' : 'Workflows'}
           >
             Workflows
+            {workflowAttention ? <span className="workflow-toggle-badge" aria-hidden="true" /> : null}
           </button>
         </div>
       </div>

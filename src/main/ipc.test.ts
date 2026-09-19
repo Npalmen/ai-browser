@@ -273,4 +273,40 @@ describe('V8 AI-native IPC wiring', () => {
     assert.equal(preload.includes('invoke(channel'), false);
     assert.equal(preload.includes('workflows.create'), false);
   });
+
+  it('requires trusted sender before getActivitySummary and accepts no renderer input', () => {
+    const ipc = readSrc('src/main/ipc.ts');
+    const start = ipc.indexOf('AI_NATIVE_IPC_CHANNELS.getActivitySummary');
+    assert.ok(start >= 0);
+    const block = ipc.slice(start, start + 900);
+    const sender = block.indexOf('assertTrustedAppSender(event)');
+    const parse = block.indexOf('parseGetActivitySummaryRequest(input)');
+    const ready = block.indexOf('await whenBrowserReady()');
+    const controller = block.indexOf('getAiNativeActivityController()');
+    assert.ok(sender >= 0);
+    assert.ok(parse > sender);
+    assert.ok(ready > parse);
+    assert.ok(controller > ready);
+    assert.equal(block.includes('decideApproval'), false);
+    assert.equal(block.includes('runNow'), false);
+    assert.equal(block.includes('setEnabled'), false);
+    assert.equal(block.includes('acknowledgeReview'), false);
+    assert.equal(block.includes('pauseAutonomousTask'), false);
+    assert.equal(block.includes('.start('), false);
+    assert.match(block, /AI_NATIVE_NOT_AVAILABLE/);
+    assert.equal(block.includes('event.sender'), false);
+  });
+
+  it('exposes aiNative.getActivitySummary from preload only', () => {
+    const preload = readSrc('src/preload/app-preload.ts');
+    assert.match(preload, /getActivitySummary:/);
+    assert.match(preload, /AI_NATIVE_IPC_CHANNELS\.getActivitySummary/);
+    assert.equal(preload.includes('activity.approve'), false);
+    assert.equal(preload.includes('activity.execute'), false);
+    assert.equal(preload.includes('activity.run'), false);
+    assert.equal(preload.includes('activity.enable'), false);
+    assert.equal(preload.includes('activity.stop'), false);
+    assert.equal(preload.includes('activity.reply'), false);
+    assert.equal(preload.includes('invoke(channel'), false);
+  });
 });

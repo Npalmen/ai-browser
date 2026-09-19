@@ -131,7 +131,8 @@ body {
 
 .loading-indicator,
 .ai-toggle,
-.workflow-toggle {
+.workflow-toggle,
+.activity-anchor {
   align-self: center;
 }
 
@@ -207,9 +208,14 @@ body {
   font-size: 13px;
 }
 
+.omnibox-capability:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}
+
 .omnibox-input:focus {
-  outline: 2px solid #93c5fd;
-  border-color: #60a5fa;
+  outline: 2px solid #2563eb;
+  border-color: #2563eb;
 }
 
 .omnibox-input:disabled {
@@ -372,6 +378,95 @@ body {
   height: 8px;
   border-radius: 999px;
   background: #dc2626;
+}
+
+.workflow-toggle,
+.activity-toggle {
+  position: relative;
+  width: auto;
+  min-width: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.activity-anchor {
+  position: relative;
+}
+
+.activity-toggle-open,
+.workflow-toggle-open {
+  background: #e5e7eb;
+}
+
+.activity-toggle-attention,
+.workflow-toggle-attention,
+.ai-toggle-attention {
+  box-shadow: inset 0 0 0 1px #fca5a5;
+}
+
+.activity-toggle-busy,
+.workflow-toggle-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #2563eb;
+}
+
+.activity-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  width: 260px;
+  padding: 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+
+.activity-popover-empty,
+.activity-popover-status {
+  margin: 0;
+  padding: 8px;
+  font-size: 12px;
+  color: #4b5563;
+}
+
+.activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.activity-row {
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  padding: 8px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.activity-row:hover,
+.activity-row:focus-visible {
+  background: #f3f4f6;
+  outline: none;
+}
+
+.activity-row-attention {
+  font-weight: 600;
+  color: #b91c1c;
 }
 
 .tab-task-owned {

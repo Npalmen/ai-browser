@@ -13,6 +13,7 @@ const SAFE_MESSAGES: Record<AiNativeSafeErrorCode, string> = {
   AI_NATIVE_MODEL_FAILED: 'The browser context request failed.',
   AI_NATIVE_DRAFT_INVALID: 'The generated workflow draft was invalid.',
   AI_NATIVE_DRAFT_FAILED: 'Unable to generate workflow draft.',
+  AI_NATIVE_ACTIVITY_FAILED: 'Unable to load activity.',
 };
 
 export function aiNativeSafeError(code: AiNativeSafeErrorCode): AiNativeSafeError {

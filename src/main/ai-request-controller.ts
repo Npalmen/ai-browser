@@ -119,6 +119,16 @@ export class AiRequestController {
     return { ok: true, askId };
   }
 
+  getActivitySnapshot(): readonly { readonly tabId: TabId; readonly mode: AiRequestMode }[] {
+    if (this.disposed) {
+      return [];
+    }
+    return [...this.currentAsks.entries()].map(([tabId, state]) => ({
+      tabId,
+      mode: state.mode,
+    }));
+  }
+
   cancelAsk(tabId: TabId, askId: string): AiCancelAskResult {
     const current = this.currentAsks.get(tabId);
     if (this.disposed || !current || current.askId !== askId) {

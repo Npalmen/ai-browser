@@ -373,3 +373,12 @@ export function parseRouteIntentRequest(
       return invalidRequest();
   }
 }
+
+export function parseGetActivitySummaryRequest(
+  input: unknown,
+): { ok: true } | { ok: false; error: AiNativeSafeError } {
+  if (input === undefined) {
+    return { ok: true };
+  }
+  return invalidRequest();
+}

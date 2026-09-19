@@ -56,6 +56,10 @@ export class AiNativeContextController {
     return { ok: true, askId };
   }
 
+  hasActiveAsk(): boolean {
+    return !this.disposed && this.activeAsk !== null;
+  }
+
   cancelContextAsk(askId: string): AiNativeContextCancelAskResult {
     if (this.disposed || !this.activeAsk || this.activeAsk.askId !== askId) {
       return { cancelled: false };

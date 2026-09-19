@@ -188,9 +188,11 @@ describe('AiNativeContextController', () => {
     }
 
     await waitFor(events, 'context-answer-started', started.askId);
+    assert.equal(controller.hasActiveAsk(), true);
     await waitFor(events, 'context-answer-finished', started.askId);
     assert.equal(events.some((event) => event.type === 'context-answer-text'), true);
     assert.equal(events.at(-1)?.type, 'context-answer-finished');
+    assert.equal(controller.hasActiveAsk(), false);
   });
 
   it('supersedes the previous ask when a new one starts', async () => {
@@ -206,6 +208,7 @@ describe('AiNativeContextController', () => {
       question: 'First',
       context: { kind: 'selected-tabs', tabIds: ['tab-a'] },
     });
+    assert.equal(controller.hasActiveAsk(), true);
     const second = controller.startAsk({
       question: 'Second',
       context: { kind: 'selected-tabs', tabIds: ['tab-b'] },

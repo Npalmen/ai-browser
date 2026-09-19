@@ -92,7 +92,8 @@ export type AiNativeSafeErrorCode =
   | 'AI_NATIVE_REQUEST_CANCELLED'
   | 'AI_NATIVE_MODEL_FAILED'
   | 'AI_NATIVE_DRAFT_INVALID'
-  | 'AI_NATIVE_DRAFT_FAILED';
+  | 'AI_NATIVE_DRAFT_FAILED'
+  | 'AI_NATIVE_ACTIVITY_FAILED';
 
 export interface AiNativeSafeError {
   readonly code: AiNativeSafeErrorCode;
@@ -132,6 +133,7 @@ export const AI_NATIVE_IPC_CHANNELS = {
   cancelContextAsk: 'ai-native:cancel-context-ask',
   contextAnswerEvent: 'ai-native:context-answer-event',
   generateWorkflowDraft: 'ai-native:generate-workflow-draft',
+  getActivitySummary: 'ai-native:get-activity-summary',
 } as const;
 
 export interface WorkflowDraft {
@@ -213,12 +215,64 @@ export type AiNativeContextAnswerEvent =
       readonly error: AiNativeSafeError;
     };
 
+export interface AiNativeAskActivitySnapshot {
+  readonly tabId: TabId;
+  readonly mode: 'read' | 'interact';
+}
+
+export type AiNativeActivityAttention =
+  | {
+      readonly kind: 'approval';
+      readonly tabId: TabId;
+    }
+  | {
+      readonly kind: 'delegate-user-input';
+    }
+  | {
+      readonly kind: 'workflow-review';
+    }
+  | null;
+
+export interface AiNativeActivitySummary {
+  readonly ask: {
+    readonly activeCount: number;
+    readonly selectedContextActive: boolean;
+  };
+  readonly act: {
+    readonly activeCount: number;
+  };
+  readonly delegate: {
+    readonly active: boolean;
+    readonly awaitingUserInput: boolean;
+  };
+  readonly approval: {
+    readonly pendingCount: number;
+  };
+  readonly workflows: {
+    readonly runningCount: number;
+    readonly queuedCount: number;
+    readonly reviewRequiredCount: number;
+  };
+  readonly attention: AiNativeActivityAttention;
+}
+
+export type AiNativeActivityResult =
+  | {
+      readonly ok: true;
+      readonly summary: AiNativeActivitySummary;
+    }
+  | {
+      readonly ok: false;
+      readonly error: AiNativeSafeError;
+    };
+
 export interface AiNativeApi {
   routeIntent(input: BrowserIntentRouteInput): Promise<BrowserIntentRouteResult>;
   askContext(input: AiNativeContextAskInput): Promise<AiNativeContextAskStartResult>;
   cancelContextAsk(input: AiNativeContextCancelAskInput): Promise<AiNativeContextCancelAskResult>;
   onContextAnswerEvent(listener: (event: AiNativeContextAnswerEvent) => void): () => void;
   generateWorkflowDraft(input: AiNativeWorkflowDraftInput): Promise<AiNativeWorkflowDraftResult>;
+  getActivitySummary(): Promise<AiNativeActivityResult>;
 }
 
 export type BrowserIntentRouterState = {

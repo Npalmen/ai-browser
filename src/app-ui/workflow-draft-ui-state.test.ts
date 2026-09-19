@@ -109,6 +109,8 @@ describe('V8 workflow draft UI integration', () => {
     const start = app.indexOf("event.type === 'approval-required'");
     const approvalBlock = app.slice(start, app.indexOf('handleApprovalDecision', start));
     assert.match(approvalBlock, /setRightPanelSurface\('assistant'\)/);
+    assert.match(approvalBlock, /setActivityOpen\(current, false\)/);
+    assert.match(approvalBlock, /closeContextPicker/);
     assert.equal(approvalBlock.includes('setAiDraftForm(null)'), false);
     assert.equal(approvalBlock.includes('decideApproval'), false);
   });

@@ -58,6 +58,12 @@ describe('ai-runtime composition', () => {
     assert.match(source, /agentRuns: agentRunController/);
     assert.match(source, /agentRunExecutor\?\.dispose\(\)/);
     assert.match(source, /new ReadOnlyAgent\(/);
+    assert.match(source, /new AiNativeActivityController\(/);
+    assert.match(source, /getActivitySnapshot\(\)/);
+    assert.match(source, /hasActiveAsk\(\)/);
+    assert.match(source, /getSlotOwner\(\)/);
+    assert.match(source, /getPendingForTab\(tabId\)/);
+    assert.match(source, /activityController = null/);
   });
 
   it('does not call InteractiveAgent.interact on the production Act path', () => {

@@ -37,6 +37,7 @@ import { AgentRunApprovalBridge } from './agent-run-approval-bridge';
 import { AgentRunController } from './agent-run-controller';
 import { AgentRunExecutor } from './agent-run-executor';
 import { CompositeAgentRunApprovalOutcomePort } from './agent-run-approval-outcome-composite';
+import { AiNativeActivityController } from './ai-native-activity-controller';
 import { AiNativeContextController } from './ai-native-context-controller';
 import { AiNativeWorkflowDraftController } from './ai-native-workflow-draft-controller';
 import { WorkflowDraftAgent } from '../ai-native/workflow-draft-agent';
@@ -46,6 +47,8 @@ import { AutonomousTaskApprovalPortProxy } from './autonomous-task-approval-port
 import { AutonomousTaskController } from './autonomous-task-controller';
 import { AutonomousTaskLifecycleController } from './autonomous-task-lifecycle-controller';
 import { getMainBrowserWindow } from './browser-runtime';
+import { getPersistentWorkflowRuntime } from './persistent-workflow-runtime';
+import { WorkflowProductController } from './workflow-product-controller';
 
 interface ApprovalRuntime {
   manager: ApprovalManager;
@@ -59,6 +62,7 @@ interface ApprovalRuntime {
 let controller: AiRequestController | null = null;
 let contextController: AiNativeContextController | null = null;
 let workflowDraftController: AiNativeWorkflowDraftController | null = null;
+let activityController: AiNativeActivityController | null = null;
 let agentRunController: AgentRunController | null = null;
 let agentRunExecutor: AgentRunExecutor | null = null;
 let adapter: ElectronBrowserAdapter | null = null;
@@ -78,6 +82,10 @@ export function getAiNativeContextController(): AiNativeContextController | null
 
 export function getAiNativeWorkflowDraftController(): AiNativeWorkflowDraftController | null {
   return workflowDraftController;
+}
+
+export function getAiNativeActivityController(): AiNativeActivityController | null {
+  return activityController;
 }
 
 export function getAgentRunController(): AgentRunController | null {
@@ -299,6 +307,21 @@ export function initializeAiRuntime(browserAdapter: ElectronBrowserAdapter): voi
     controller: decisionController,
     workflow,
   };
+  activityController = new AiNativeActivityController({
+    getAskSnapshots: () => controller?.getActivitySnapshot() ?? [],
+    hasSelectedContextAsk: () => contextController?.hasActiveAsk() === true,
+    getTasks: () => autonomousTaskController?.getState() ?? [],
+    getSlotOwner: () => getPersistentWorkflowRuntime()?.getSlotOwner(),
+    getWorkflowState: async () => {
+      const runtime = getPersistentWorkflowRuntime();
+      if (!runtime) {
+        return { ok: true, status: 'not-initialized' as const, workflows: [] };
+      }
+      return new WorkflowProductController(runtime).getState();
+    },
+    getBrowserState: () => browserAdapter.getBrowserState(),
+    hasPendingApproval: (tabId) => manager.getPendingForTab(tabId) !== undefined,
+  });
 }
 
 export function setAiPanelOpen(open: boolean): void {
@@ -318,6 +341,7 @@ export function disposeAiRuntime(): void {
   agentRunExecutor?.dispose();
   contextController = null;
   workflowDraftController = null;
+  activityController = null;
   controller = null;
   agentRunController = null;
   agentRunExecutor = null;
