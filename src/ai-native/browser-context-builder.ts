@@ -17,17 +17,13 @@ import {
   MAX_CONTEXT_STRUCTURED_CHARS_TOTAL,
   type BrowserContextBundle,
   type BrowserContextPage,
+  type BrowserContextSourceSnapshot,
 } from './browser-context-types';
 
 const MAX_OBSERVATION_ATTEMPTS = 2;
 
 export interface MultiTabObservationSource {
   observePage(tabId: TabId, options?: ObservePageOptions): Promise<PageObservation>;
-}
-
-export interface SelectedTabSnapshot {
-  readonly tabId: TabId;
-  readonly url: string;
 }
 
 function isHttpDocumentUrl(url: string): boolean {
@@ -73,7 +69,7 @@ function throwIfCancelled(signal?: AbortSignal): void {
 function captureSelectedTabSnapshot(
   browserState: BrowserState,
   tabIds: readonly TabId[],
-): readonly SelectedTabSnapshot[] {
+): readonly BrowserContextSourceSnapshot[] {
   validateSelectedTabsAgainstBrowserState(browserState, tabIds);
   return tabIds.map((tabId) => {
     const tab = browserState.tabs.find((candidate) => candidate.id === tabId);
@@ -86,7 +82,7 @@ function captureSelectedTabSnapshot(
 
 function assertSelectedTabMatchesSnapshot(
   browserState: BrowserState,
-  snapshot: SelectedTabSnapshot,
+  snapshot: BrowserContextSourceSnapshot,
 ): void {
   const tab = browserState.tabs.find((candidate) => candidate.id === snapshot.tabId);
   if (!tab) {
@@ -100,18 +96,18 @@ function assertSelectedTabMatchesSnapshot(
   }
 }
 
-function assertSnapshotStillCurrent(
+export function assertBrowserContextSnapshotStillCurrent(
   browserState: BrowserState,
-  snapshots: readonly SelectedTabSnapshot[],
+  snapshot: readonly BrowserContextSourceSnapshot[],
 ): void {
-  for (const snapshot of snapshots) {
-    assertSelectedTabMatchesSnapshot(browserState, snapshot);
+  for (const selected of snapshot) {
+    assertSelectedTabMatchesSnapshot(browserState, selected);
   }
 }
 
 async function observeSelectedTab(
   observationSource: MultiTabObservationSource,
-  snapshot: SelectedTabSnapshot,
+  snapshot: BrowserContextSourceSnapshot,
   getBrowserState: () => BrowserState,
   signal?: AbortSignal,
 ): Promise<PageObservation> {
@@ -184,7 +180,7 @@ export async function buildBrowserContextBundle(input: {
   throwIfCancelled(input.signal);
   // Same-URL reloads are not visible on trusted BrowserState, which only exposes URL.
   // This final check therefore detects navigation/substitution, not in-place revision change.
-  assertSnapshotStillCurrent(input.getBrowserState(), snapshot);
+  assertBrowserContextSnapshotStillCurrent(input.getBrowserState(), snapshot);
 
   const totalChars = pages.reduce((sum, page) => sum + page.serializedContext.length, 0);
   if (totalChars > MAX_CONTEXT_STRUCTURED_CHARS_TOTAL) {
@@ -196,6 +192,7 @@ export async function buildBrowserContextBundle(input: {
 
   return {
     contextId: crypto.randomUUID(),
+    sourceSnapshot: snapshot,
     pages,
   };
 }

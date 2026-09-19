@@ -11,8 +11,14 @@ export interface BrowserContextPage {
   readonly truncated: boolean;
 }
 
+export interface BrowserContextSourceSnapshot {
+  readonly tabId: TabId;
+  readonly url: string;
+}
+
 export interface BrowserContextBundle {
   readonly contextId: string;
+  readonly sourceSnapshot: readonly BrowserContextSourceSnapshot[];
   readonly pages: readonly BrowserContextPage[];
 }
 

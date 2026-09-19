@@ -1,4 +1,8 @@
-import { buildBrowserContextBundle } from '../ai-native/browser-context-builder';
+import {
+  assertBrowserContextSnapshotStillCurrent,
+  buildBrowserContextBundle,
+} from '../ai-native/browser-context-builder';
+import type { BrowserContextBundle } from '../ai-native/browser-context-types';
 import { MultiTabReadOnlyAgent } from '../ai-native/multi-tab-read-only-agent';
 import type { MultiTabObservationSource } from '../ai-native/browser-context-builder';
 import { aiNativeSafeError } from '../shared/ai-native-safe-error';
@@ -90,6 +94,13 @@ export class AiNativeContextController {
     return this.activeAsk?.askId !== askId || controller.signal.aborted;
   }
 
+  private assertSelectedContextStillCurrent(bundle: BrowserContextBundle): void {
+    // Same-URL reloads remain undetectable: BrowserState exposes URL, not document revision.
+    // This synchronous check must run immediately before answer() so there is no await
+    // between live validation and the agent's synchronous path to ModelRuntime.generate.
+    assertBrowserContextSnapshotStillCurrent(this.getBrowserState(), bundle.sourceSnapshot);
+  }
+
   private async runAsk(
     askId: string,
     input: AiNativeContextAskInput,
@@ -111,6 +122,7 @@ export class AiNativeContextController {
         return;
       }
 
+      this.assertSelectedContextStillCurrent(bundle);
       const answer = await this.multiTabAgent.answer(
         {
           bundle,

@@ -9,6 +9,7 @@ import type { ObservationNode, PageObservation } from '../shared/observation-typ
 import { ObservationError } from '../shared/observation-types';
 import {
   aggregateTruncatedContext,
+  assertBrowserContextSnapshotStillCurrent,
   buildBrowserContextBundle,
   buildMultiTabModelMessages,
   validateSelectedTabsAgainstBrowserState,
@@ -193,6 +194,10 @@ describe('buildBrowserContextBundle', () => {
     assert.equal(bundle.pages.length, 2);
     assert.equal(bundle.pages[0]?.tabId, 'tab-b');
     assert.equal(bundle.pages[1]?.tabId, 'tab-a');
+    assert.deepEqual(bundle.sourceSnapshot, [
+      { tabId: 'tab-b', url: 'https://example.com/tab-b' },
+      { tabId: 'tab-a', url: 'https://example.com/tab-a' },
+    ]);
     assert.match(bundle.contextId, /^[0-9a-f-]{36}$/i);
   });
 
@@ -481,6 +486,51 @@ describe('buildBrowserContextBundle', () => {
   });
 });
 
+describe('assertBrowserContextSnapshotStillCurrent', () => {
+  const snapshot = [
+    { tabId: 'tab-a' as TabId, url: 'https://example.test/a' },
+    { tabId: 'tab-b' as TabId, url: 'https://example.test/b' },
+  ];
+
+  it('accepts an unchanged trusted snapshot', () => {
+    const live = mutableState([
+      { id: 'tab-a', url: 'https://example.test/a' },
+      { id: 'tab-b', url: 'https://example.test/b' },
+    ]);
+    assertBrowserContextSnapshotStillCurrent(live.getBrowserState(), snapshot);
+  });
+
+  it('fails when a selected tab URL changes', () => {
+    const live = mutableState([
+      { id: 'tab-a', url: 'https://example.test/a' },
+      { id: 'tab-b', url: 'https://example.test/replaced' },
+    ]);
+    assert.throws(
+      () => assertBrowserContextSnapshotStillCurrent(live.getBrowserState(), snapshot),
+      (error: unknown) => error instanceof ObservationError && error.code === 'OBSERVATION_FAILED',
+    );
+  });
+
+  it('fails when a selected tab is closed', () => {
+    const live = mutableState([{ id: 'tab-a', url: 'https://example.test/a' }]);
+    assert.throws(
+      () => assertBrowserContextSnapshotStillCurrent(live.getBrowserState(), snapshot),
+      (error: unknown) => error instanceof ObservationError && error.code === 'TAB_NOT_FOUND',
+    );
+  });
+
+  it('fails when a selected tab becomes about:blank', () => {
+    const live = mutableState([
+      { id: 'tab-a', url: 'https://example.test/a' },
+      { id: 'tab-b', url: 'about:blank' },
+    ]);
+    assert.throws(
+      () => assertBrowserContextSnapshotStillCurrent(live.getBrowserState(), snapshot),
+      (error: unknown) => error instanceof ObservationError && error.code === 'OBSERVATION_FAILED',
+    );
+  });
+});
+
 describe('buildMultiTabModelMessages provenance', () => {
   const exportDecision = decideModelExport({
     privacy: 'remoteAllowed',
@@ -539,6 +589,19 @@ describe('browser context bundle static constraints', () => {
       assert.equal(source.includes('ConversationStore'), false, file);
       assert.equal(source.includes("from 'fs'"), false, file);
       assert.equal(source.includes("from 'node:fs'"), false, file);
+    }
+  });
+
+  it('keeps sourceSnapshot out of renderer-visible contracts', () => {
+    for (const file of [
+      'src/shared/ai-native-types.ts',
+      'src/shared/ipc-contract.ts',
+      'src/preload/app-preload.ts',
+    ]) {
+      const source = readFileSync(path.join(ROOT, file), 'utf8');
+      assert.equal(source.includes('sourceSnapshot'), false, file);
+      assert.equal(source.includes('BrowserContextBundle'), false, file);
+      assert.equal(source.includes('PageObservation'), false, file);
     }
   });
 });

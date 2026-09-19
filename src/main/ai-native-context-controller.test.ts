@@ -114,6 +114,19 @@ function browserState(tabIds: readonly TabId[]): BrowserState {
   };
 }
 
+function mutateOnControllerModelBoundary(
+  state: BrowserState,
+  mutate: (state: BrowserState) => void,
+): () => BrowserState {
+  return () => {
+    const stack = new Error().stack ?? '';
+    if (stack.includes('assertSelectedContextStillCurrent')) {
+      mutate(state);
+    }
+    return state;
+  };
+}
+
 function controllerOf(input: {
   runtime?: FakeRuntime;
   observe?: (tabId: TabId) => Promise<PageObservation>;
@@ -407,6 +420,84 @@ describe('AiNativeContextController', () => {
       false,
     );
   });
+
+  it('fails without a model call when a selected tab navigates after bundle build', async () => {
+    const state = browserState(['tab-a']);
+    const { controller, events, runtime } = controllerOf({
+      getBrowserState: mutateOnControllerModelBoundary(state, (live) => {
+        const tab = live.tabs.find((candidate) => candidate.id === 'tab-a');
+        if (tab) {
+          tab.url = 'https://example.test/replaced';
+        }
+      }),
+    });
+
+    const started = controller.startAsk({
+      question: 'What is here?',
+      context: { kind: 'selected-tabs', tabIds: ['tab-a'] },
+    });
+    assert.equal(started.ok, true);
+    if (!started.ok) {
+      return;
+    }
+
+    await waitFor(events, 'context-answer-error', started.askId);
+    const errorEvent = events.find((event) => event.type === 'context-answer-error');
+    assert.equal(
+      (errorEvent as { error?: { code?: string } } | undefined)?.error?.code,
+      'AI_NATIVE_CONTEXT_UNAVAILABLE',
+    );
+    assert.equal(runtime.requests.length, 0);
+    assert.equal(
+      events.some((event) => event.type === 'context-answer-finished' && event.askId === started.askId),
+      false,
+    );
+  });
+
+  it('fails without a model call when a selected tab closes after bundle build', async () => {
+    const state = browserState(['tab-a']);
+    const { controller, events, runtime } = controllerOf({
+      getBrowserState: mutateOnControllerModelBoundary(state, (live) => {
+        live.tabs = live.tabs.filter((tab) => tab.id !== 'tab-a');
+      }),
+    });
+
+    const started = controller.startAsk({
+      question: 'What is here?',
+      context: { kind: 'selected-tabs', tabIds: ['tab-a'] },
+    });
+    assert.equal(started.ok, true);
+    if (!started.ok) {
+      return;
+    }
+
+    await waitFor(events, 'context-answer-error', started.askId);
+    assert.equal(runtime.requests.length, 0);
+  });
+
+  it('fails without a model call when a selected tab becomes about:blank after bundle build', async () => {
+    const state = browserState(['tab-a']);
+    const { controller, events, runtime } = controllerOf({
+      getBrowserState: mutateOnControllerModelBoundary(state, (live) => {
+        const tab = live.tabs.find((candidate) => candidate.id === 'tab-a');
+        if (tab) {
+          tab.url = 'about:blank';
+        }
+      }),
+    });
+
+    const started = controller.startAsk({
+      question: 'What is here?',
+      context: { kind: 'selected-tabs', tabIds: ['tab-a'] },
+    });
+    assert.equal(started.ok, true);
+    if (!started.ok) {
+      return;
+    }
+
+    await waitFor(events, 'context-answer-error', started.askId);
+    assert.equal(runtime.requests.length, 0);
+  });
 });
 
 describe('ai-runtime composition', () => {
@@ -417,5 +508,18 @@ describe('ai-runtime composition', () => {
     assert.match(source, /contextController\?\.dispose/);
     assert.match(source, /getAiNativeContextController/);
     assert.match(source, /modelRuntime: gatewayRuntime/);
+  });
+
+  it('revalidates the selected snapshot immediately before invoking the multi-tab agent', () => {
+    const source = readFileSync(path.join(ROOT, 'src/main/ai-native-context-controller.ts'), 'utf8');
+    const runAsk = source.slice(source.indexOf('private async runAsk'));
+    const cancelIndex = runAsk.indexOf('if (this.isStaleAsk(askId, controller))');
+    const validateIndex = runAsk.indexOf('this.assertSelectedContextStillCurrent(bundle)');
+    const answerIndex = runAsk.indexOf('const answer = await this.multiTabAgent.answer(');
+    assert.ok(cancelIndex >= 0);
+    assert.ok(validateIndex > cancelIndex);
+    assert.ok(answerIndex > validateIndex);
+    const between = runAsk.slice(validateIndex, answerIndex);
+    assert.equal(between.includes('await '), false);
   });
 });
