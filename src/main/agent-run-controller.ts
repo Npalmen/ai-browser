@@ -1,16 +1,9 @@
 import { ConversationStore } from '../ai/conversation-store';
-import type { AgentRunCoordinator } from '../agent-run/agent-run-coordinator';
-import type { SafeAgentLoop, SafeAgentLoopResult } from '../agent-run/safe-agent-loop';
-import {
-  toAgentRunRef,
-  type AgentRunCancelledReason,
-  type AgentRunRef,
-  type AgentRunSnapshot,
-} from '../agent-run/agent-run-types';
-import type { ApprovalManager } from '../approval/approval-manager';
+import type { SafeAgentLoopResult } from '../agent-run/safe-agent-loop';
+import type { AgentRunCancelledReason, AgentRunRef, AgentRunSnapshot } from '../agent-run/agent-run-types';
 import type { AiAnswerEvent } from '../shared/ai-types';
 import type { TabId } from '../shared/browser-types';
-import type { ApprovalLifecycle } from './approval-lifecycle';
+import type { AgentRunExecutorPort } from './agent-run-executor';
 
 export interface AgentRunStartOptions {
   readonly askId: string;
@@ -27,42 +20,30 @@ export type AgentRunStartResult =
       readonly status: 'ignored';
     };
 
-interface ActiveAgentRun {
+interface ProductAgentRun {
   readonly ref: AgentRunRef;
-  readonly controller: AbortController;
   readonly instruction: string;
   /** Product request correlation only. Not browser authority. */
   readonly askId: string;
 }
 
 export interface AgentRunControllerDependencies {
-  coordinator: AgentRunCoordinator;
-  loop: Pick<SafeAgentLoop, 'run'>;
+  executor: AgentRunExecutorPort;
   conversationStore: ConversationStore;
-  manager: Pick<ApprovalManager, 'getSnapshot'>;
-  lifecycle: Pick<ApprovalLifecycle, 'invalidateTab'>;
   emit: (event: AiAnswerEvent) => void;
 }
 
 export class AgentRunController {
-  private readonly coordinator: AgentRunCoordinator;
-  private readonly loop: Pick<SafeAgentLoop, 'run'>;
+  private readonly executor: AgentRunExecutorPort;
   private readonly conversationStore: ConversationStore;
-  private readonly manager: Pick<ApprovalManager, 'getSnapshot'>;
-  private readonly lifecycle: Pick<ApprovalLifecycle, 'invalidateTab'>;
   private readonly emit: (event: AiAnswerEvent) => void;
 
-  private readonly activeByTab = new Map<TabId, ActiveAgentRun>();
-  private readonly completionByTab = new Map<TabId, Promise<SafeAgentLoopResult>>();
-  private readonly startTicketByTab = new Map<TabId, number>();
+  private readonly productByTab = new Map<TabId, ProductAgentRun>();
   private disposed = false;
 
   constructor(deps: AgentRunControllerDependencies) {
-    this.coordinator = deps.coordinator;
-    this.loop = deps.loop;
+    this.executor = deps.executor;
     this.conversationStore = deps.conversationStore;
-    this.manager = deps.manager;
-    this.lifecycle = deps.lifecycle;
     this.emit = deps.emit;
   }
 
@@ -70,30 +51,93 @@ export class AgentRunController {
     if (this.disposed) {
       return { status: 'ignored' };
     }
-    const ticket = this.nextStartTicket(tabId);
-    await this.terminateActive(tabId, 'SUPERSEDED');
-    if (this.disposed || this.startTicketByTab.get(tabId) !== ticket) {
+    let product: ProductAgentRun | undefined;
+    const started = await this.executor.start(tabId, instruction, {
+      shouldStart: () => !this.disposed,
+      onStarted: (run, ref) => {
+        product = {
+          ref,
+          instruction,
+          askId: options.askId,
+        };
+        this.productByTab.set(tabId, product);
+        this.emitIfCurrentRun(tabId, options.askId, run.runId, {
+          type: 'agent-run-started',
+          askId: options.askId,
+          runId: run.runId,
+          tabId,
+          modelStepCount: run.modelStepCount,
+          actionAttemptCount: run.actionAttemptCount,
+          approvalCount: run.approvalCount,
+        });
+      },
+      onAnswerTextDelta: (text) => {
+        if (!text) {
+          return;
+        }
+        this.emitIfCurrentAsk(tabId, options.askId, {
+          type: 'answer-text',
+          askId: options.askId,
+          tabId,
+          delta: text,
+        });
+      },
+      priorConversationForRevision: (historyTabId, revision) =>
+        this.conversationStore.serializeForRevision(historyTabId, revision),
+      onContinuing: (current) => {
+        this.emitIfCurrentRun(tabId, options.askId, current.runId, {
+          type: 'agent-run-progress',
+          askId: options.askId,
+          runId: current.runId,
+          tabId: current.tabId,
+          modelStepCount: current.modelStepCount,
+          actionAttemptCount: current.actionAttemptCount,
+          approvalCount: current.approvalCount,
+        });
+      },
+      onAwaitingApproval: (current) => {
+        this.emitIfCurrentRun(tabId, options.askId, current.runId, {
+          type: 'agent-run-awaiting-approval',
+          askId: options.askId,
+          runId: current.runId,
+          tabId: current.tabId,
+          modelStepCount: current.modelStepCount,
+          actionAttemptCount: current.actionAttemptCount,
+          approvalCount: current.approvalCount,
+        });
+      },
+    });
+    if (started.status !== 'started' || product === undefined) {
       return { status: 'ignored' };
     }
-    return this.startFresh(tabId, instruction, options);
+
+    const tracked = product;
+    const completion = started.completion.then((result) => {
+      this.finishRun(tracked, result);
+      return result;
+    });
+    return { status: 'started', run: started.run, completion };
   }
 
   cancel(tabId: TabId, reason: AgentRunCancelledReason = 'USER_CANCELLED'): boolean {
-    this.nextStartTicket(tabId);
-    const active = this.activeByTab.get(tabId);
-    if (active === undefined) {
+    this.executor.invalidatePendingStarts(tabId);
+    const ref = this.exactRefForTab(tabId);
+    if (ref === undefined) {
       return false;
     }
-    this.stopActive(active, reason);
-    return true;
+    return this.executor.cancel(ref, reason);
   }
 
   async cancelActive(
     tabId: TabId,
     reason: AgentRunCancelledReason = 'SUPERSEDED',
   ): Promise<void> {
-    this.nextStartTicket(tabId);
-    await this.terminateActive(tabId, reason);
+    this.executor.invalidatePendingStarts(tabId);
+    const ref = this.exactRefForTab(tabId);
+    if (ref === undefined) {
+      return;
+    }
+    await this.executor.cancelAndWait(ref, reason);
   }
 
   clearConversation(tabId: TabId): void {
@@ -116,7 +160,7 @@ export class AgentRunController {
   }
 
   isActive(tabId: TabId): boolean {
-    return this.activeByTab.has(tabId);
+    return this.productByTab.has(tabId);
   }
 
   dispose(): void {
@@ -124,96 +168,23 @@ export class AgentRunController {
       return;
     }
     this.disposed = true;
-    const tabIds = [...this.activeByTab.keys()];
-    for (const tabId of tabIds) {
-      this.cancel(tabId, 'USER_CANCELLED');
+    const tracked = [...this.productByTab.values()];
+    for (const product of tracked) {
+      this.executor.invalidatePendingStarts(product.ref.tabId);
+      this.executor.cancel(product.ref, 'USER_CANCELLED');
     }
-    this.activeByTab.clear();
-    this.completionByTab.clear();
-    this.startTicketByTab.clear();
-    this.coordinator.clearAll();
+    this.productByTab.clear();
     this.conversationStore.clearAll();
   }
 
-  private startFresh(
-    tabId: TabId,
-    instruction: string,
-    options: AgentRunStartOptions,
-  ): AgentRunStartResult {
-    const snapshot = this.coordinator.startRun(tabId, instruction);
-    const ref = toAgentRunRef(snapshot);
-    const abort = new AbortController();
-    const active: ActiveAgentRun = {
-      ref,
-      controller: abort,
-      instruction,
-      askId: options.askId,
-    };
-    this.activeByTab.set(tabId, active);
-    this.emitIfCurrent(active, {
-      type: 'agent-run-started',
-      askId: options.askId,
-      runId: snapshot.runId,
-      tabId,
-      modelStepCount: snapshot.modelStepCount,
-      actionAttemptCount: snapshot.actionAttemptCount,
-      approvalCount: snapshot.approvalCount,
-    });
-
-    const completion = this.loop
-      .run(ref, {
-        signal: abort.signal,
-        onAnswerTextDelta: (text) => {
-          if (!text) {
-            return;
-          }
-          this.emitIfCurrent(active, {
-            type: 'answer-text',
-            askId: options.askId,
-            tabId,
-            delta: text,
-          });
-        },
-        priorConversationForRevision: (historyTabId, revision) =>
-          this.conversationStore.serializeForRevision(historyTabId, revision),
-        onContinuing: (current) => {
-          this.emitIfCurrent(active, {
-            type: 'agent-run-progress',
-            askId: options.askId,
-            runId: current.runId,
-            tabId: current.tabId,
-            modelStepCount: current.modelStepCount,
-            actionAttemptCount: current.actionAttemptCount,
-            approvalCount: current.approvalCount,
-          });
-        },
-        onAwaitingApproval: (current) => {
-          this.emitIfCurrent(active, {
-            type: 'agent-run-awaiting-approval',
-            askId: options.askId,
-            runId: current.runId,
-            tabId: current.tabId,
-            modelStepCount: current.modelStepCount,
-            actionAttemptCount: current.actionAttemptCount,
-            approvalCount: current.approvalCount,
-          });
-        },
-      })
-      .then((result) => {
-        this.finishRun(active, result);
-        if (this.completionByTab.get(tabId) === completion) {
-          this.completionByTab.delete(tabId);
-        }
-        return result;
-      });
-
-    this.completionByTab.set(tabId, completion);
-    return { status: 'started', run: snapshot, completion };
+  private exactRefForTab(tabId: TabId): AgentRunRef | undefined {
+    return this.productByTab.get(tabId)?.ref ?? this.executor.getActiveRef(tabId);
   }
 
-  private finishRun(active: ActiveAgentRun, result: SafeAgentLoopResult): void {
-    if (this.activeByTab.get(active.ref.tabId)?.ref.runId === active.ref.runId) {
-      this.activeByTab.delete(active.ref.tabId);
+  private finishRun(product: ProductAgentRun, result: SafeAgentLoopResult): void {
+    const current = this.productByTab.get(product.ref.tabId);
+    if (current !== undefined && current.ref.runId === product.ref.runId && current.askId === product.askId) {
+      this.productByTab.delete(product.ref.tabId);
     }
 
     if (result.status === 'ignored') {
@@ -222,13 +193,13 @@ export class AgentRunController {
 
     const snapshot = result.run;
     if (result.status === 'completed' && snapshot.state === 'completed') {
-      this.conversationStore.commitTurn(active.ref.tabId, result.answer.documentRevision, {
-        question: active.instruction,
+      this.conversationStore.commitTurn(product.ref.tabId, result.answer.documentRevision, {
+        question: product.instruction,
         answer: result.answer.text,
       });
-      this.emitIfSameAsk(active, {
+      this.emitIfSameAsk(product, {
         type: 'agent-run-completed',
-        askId: active.askId,
+        askId: product.askId,
         runId: snapshot.runId,
         tabId: snapshot.tabId,
         answer: {
@@ -239,14 +210,14 @@ export class AgentRunController {
       return;
     }
 
-    this.emitTerminal(active, snapshot);
+    this.emitTerminal(product, snapshot);
   }
 
-  private emitTerminal(active: ActiveAgentRun, snapshot: AgentRunSnapshot): void {
+  private emitTerminal(product: ProductAgentRun, snapshot: AgentRunSnapshot): void {
     if (snapshot.state === 'cancelled') {
-      this.emitIfSameAsk(active, {
+      this.emitIfSameAsk(product, {
         type: 'agent-run-cancelled',
-        askId: active.askId,
+        askId: product.askId,
         runId: snapshot.runId,
         tabId: snapshot.tabId,
         reason: snapshot.terminalReason === 'SUPERSEDED' ||
@@ -259,9 +230,9 @@ export class AgentRunController {
       return;
     }
     if (snapshot.state === 'blocked') {
-      this.emitIfSameAsk(active, {
+      this.emitIfSameAsk(product, {
         type: 'agent-run-blocked',
-        askId: active.askId,
+        askId: product.askId,
         runId: snapshot.runId,
         tabId: snapshot.tabId,
         reason: isBlockedReason(snapshot.terminalReason)
@@ -271,9 +242,9 @@ export class AgentRunController {
       return;
     }
     if (snapshot.state === 'failed') {
-      this.emitIfSameAsk(active, {
+      this.emitIfSameAsk(product, {
         type: 'agent-run-failed',
-        askId: active.askId,
+        askId: product.askId,
         runId: snapshot.runId,
         tabId: snapshot.tabId,
         reason: snapshot.terminalReason === 'ACTION_FAILED' ? 'ACTION_FAILED' : 'MODEL_FAILED',
@@ -281,68 +252,43 @@ export class AgentRunController {
       return;
     }
     if (snapshot.state === 'execution-state-unknown') {
-      this.emitIfSameAsk(active, {
+      this.emitIfSameAsk(product, {
         type: 'agent-run-execution-state-unknown',
-        askId: active.askId,
+        askId: product.askId,
         runId: snapshot.runId,
         tabId: snapshot.tabId,
       });
     }
   }
 
-  private async terminateActive(tabId: TabId, reason: AgentRunCancelledReason): Promise<void> {
-    const active = this.activeByTab.get(tabId);
-    if (active === undefined) {
-      return;
-    }
-    this.stopActive(active, reason);
-    await this.completionByTab.get(tabId);
-  }
-
-  private stopActive(active: ActiveAgentRun, reason: AgentRunCancelledReason): void {
-    if (this.isPostDispatch(active)) {
-      this.coordinator.requestCancellationAfterDispatch(active.ref, reason);
-      return;
-    }
-    this.coordinator.cancelRun(active.ref, reason);
-    active.controller.abort();
-    this.lifecycle.invalidateTab(active.ref.tabId);
-  }
-
-  private isPostDispatch(active: ActiveAgentRun): boolean {
-    const approvalId = this.coordinator.getPendingApprovalId(active.ref);
-    if (approvalId === undefined) {
-      return false;
-    }
-    const snapshot = this.manager.getSnapshot(approvalId);
-    return (
-      snapshot?.action.state === 'executing' && snapshot.facts.adapterPrimitiveInvoked === true
-    );
-  }
-
-  private nextStartTicket(tabId: TabId): number {
-    const next = (this.startTicketByTab.get(tabId) ?? 0) + 1;
-    this.startTicketByTab.set(tabId, next);
-    return next;
-  }
-
-  private emitIfCurrent(active: ActiveAgentRun, event: AiAnswerEvent): void {
+  private emitIfCurrentAsk(tabId: TabId, askId: string, event: AiAnswerEvent): void {
     if (this.disposed) {
       return;
     }
-    const current = this.activeByTab.get(active.ref.tabId);
-    if (current === undefined || current.ref.runId !== active.ref.runId || current.askId !== active.askId) {
+    const current = this.productByTab.get(tabId);
+    if (current === undefined || current.askId !== askId) {
       return;
     }
     this.emitSafely(event);
   }
 
-  private emitIfSameAsk(active: ActiveAgentRun, event: AiAnswerEvent): void {
+  private emitIfCurrentRun(tabId: TabId, askId: string, runId: string, event: AiAnswerEvent): void {
     if (this.disposed) {
       return;
     }
-    const current = this.activeByTab.get(active.ref.tabId);
-    if (current !== undefined && current.askId !== active.askId) {
+    const current = this.productByTab.get(tabId);
+    if (current === undefined || current.askId !== askId || current.ref.runId !== runId) {
+      return;
+    }
+    this.emitSafely(event);
+  }
+
+  private emitIfSameAsk(product: ProductAgentRun, event: AiAnswerEvent): void {
+    if (this.disposed) {
+      return;
+    }
+    const current = this.productByTab.get(product.ref.tabId);
+    if (current !== undefined && current.askId !== product.askId) {
       return;
     }
     this.emitSafely(event);

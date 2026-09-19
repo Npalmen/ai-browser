@@ -16,6 +16,7 @@ import { InMemoryInteractionAuditSink } from '../interaction/interaction-audit';
 import { InteractionExecutor } from '../interaction/interaction-executor';
 import { AgentRunApprovalBridge } from '../main/agent-run-approval-bridge';
 import { AgentRunController } from '../main/agent-run-controller';
+import { AgentRunExecutor } from '../main/agent-run-executor';
 import { ApprovalController } from '../main/approval-controller';
 import { ApprovalLifecycle } from '../main/approval-lifecycle';
 import { ApprovalWorkflowController } from '../main/approval-workflow-controller';
@@ -236,12 +237,15 @@ export function createV5ProductChain(input: {
     ((event: AiAnswerEvent) => {
       aiEvents.push(event);
     });
-  const agentRunController = new AgentRunController({
+  const agentRunExecutor = new AgentRunExecutor({
     coordinator: agentRunCoordinator,
     loop,
-    conversationStore,
     manager,
     lifecycle,
+  });
+  const agentRunController = new AgentRunController({
+    executor: agentRunExecutor,
+    conversationStore,
     emit: emitAi,
   });
   const aiController = new AiRequestController({

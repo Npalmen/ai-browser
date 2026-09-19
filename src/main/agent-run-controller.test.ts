@@ -11,6 +11,7 @@ import type { AiAnswerEvent } from '../shared/ai-types';
 import type { PreparedActionRecordSnapshot } from '../shared/approval-types';
 import type { TabId } from '../shared/browser-types';
 import { AgentRunController } from './agent-run-controller';
+import { AgentRunExecutor } from './agent-run-executor';
 
 const TAB: TabId = 'tab-1';
 const TAB_B: TabId = 'tab-2';
@@ -124,17 +125,20 @@ function controllerOf(loop: FakeLoop, extras: { manager?: FakeManager; lifecycle
   const conversationStore = new ConversationStore();
   const manager = extras.manager ?? new FakeManager();
   const lifecycle = extras.lifecycle ?? new FakeLifecycle();
-  const controller = new AgentRunController({
+  const executor = new AgentRunExecutor({
     coordinator,
     loop,
-    conversationStore,
     manager,
     lifecycle,
+  });
+  const controller = new AgentRunController({
+    executor,
+    conversationStore,
     emit: (event) => {
       events.push(event);
     },
   });
-  return { controller, events, coordinator, conversationStore, manager, lifecycle, loop };
+  return { controller, events, coordinator, conversationStore, manager, lifecycle, loop, executor };
 }
 
 describe('AgentRunController', () => {
@@ -529,6 +533,38 @@ describe('AgentRunController', () => {
     hold.resolve({ status: 'ignored' });
   });
 
+  it('passes prior conversation history into the executor for manual Act', async () => {
+    const hold = new Deferred<SafeAgentLoopResult>();
+    const loop = new FakeLoop(async () => hold.promise);
+    const harness = controllerOf(loop);
+    harness.conversationStore.commitTurn(TAB, 'rev-old', { question: 'old q', answer: 'old a' });
+    const started = await harness.controller.start(TAB, 'Do the task', { askId: 'ask-1' });
+    assert.equal(typeof harness.loop.lastOptions?.priorConversationForRevision, 'function');
+    assert.match(
+      harness.loop.lastOptions?.priorConversationForRevision?.(TAB, 'rev-old') ?? '',
+      /old q/,
+    );
+    hold.resolve({ status: 'ignored' });
+    if (started.status === 'started') {
+      await started.completion;
+    }
+  });
+
+  it('does not commit a child executor run into ConversationStore', async () => {
+    const harness = controllerOf(new FakeLoop());
+    const child = await harness.executor.start(TAB, 'Child subgoal');
+    if (child.status === 'started') {
+      await child.completion;
+    }
+    assert.equal(harness.conversationStore.get(TAB), undefined);
+    const manual = await harness.controller.start(TAB, 'Do the task', { askId: 'ask-1' });
+    if (manual.status === 'started') {
+      await manual.completion;
+    }
+    assert.equal(harness.conversationStore.get(TAB)?.turns.length, 1);
+    assert.equal(harness.conversationStore.get(TAB)?.turns[0]?.question, 'Do the task');
+  });
+
   it('emits renderer-safe events without authority fields', async () => {
     const harness = controllerOf(new FakeLoop());
     const started = await harness.controller.start(TAB, 'Do the task', { askId: 'ask-1' });
@@ -566,6 +602,9 @@ describe('AgentRunController source isolation', () => {
       'ipcMain',
       'AiUiState',
       'executeJavaScript',
+      'AgentRunCoordinator',
+      'ApprovalManager',
+      'ApprovalLifecycle',
     ]) {
       assert.equal(source.includes(token), false, token);
     }

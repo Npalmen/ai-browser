@@ -21,6 +21,7 @@ import { ApprovalLifecycle } from './approval-lifecycle';
 import { ApprovalWorkflowController } from './approval-workflow-controller';
 import { AgentRunApprovalBridge } from './agent-run-approval-bridge';
 import { AgentRunController } from './agent-run-controller';
+import { AgentRunExecutor } from './agent-run-executor';
 import { AiRequestController } from './ai-request-controller';
 import { getMainBrowserWindow } from './browser-runtime';
 
@@ -35,6 +36,7 @@ interface ApprovalRuntime {
 
 let controller: AiRequestController | null = null;
 let agentRunController: AgentRunController | null = null;
+let agentRunExecutor: AgentRunExecutor | null = null;
 let adapter: ElectronBrowserAdapter | null = null;
 let approvalRuntime: ApprovalRuntime | null = null;
 
@@ -132,12 +134,15 @@ export function initializeAiRuntime(browserAdapter: ElectronBrowserAdapter): voi
     interactionExecutor,
     approvalPort: approvalBridge,
   });
-  agentRunController = new AgentRunController({
+  agentRunExecutor = new AgentRunExecutor({
     coordinator: agentRunCoordinator,
     loop,
-    conversationStore: new ConversationStore(),
     manager,
     lifecycle,
+  });
+  agentRunController = new AgentRunController({
+    executor: agentRunExecutor,
+    conversationStore: new ConversationStore(),
     emit: emitAiAnswerEvent,
   });
   controller = new AiRequestController({
@@ -165,8 +170,10 @@ export function setAiPanelOpen(open: boolean): void {
 
 export function disposeAiRuntime(): void {
   controller?.dispose();
+  agentRunExecutor?.dispose();
   controller = null;
   agentRunController = null;
+  agentRunExecutor = null;
   adapter = null;
   approvalRuntime = null;
 }

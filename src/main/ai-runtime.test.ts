@@ -20,7 +20,11 @@ describe('ai-runtime composition', () => {
     assert.match(source, /new AgentRunCoordinator\(/);
     assert.match(source, /new AgentRunApprovalBridge\(/);
     assert.match(source, /new SafeAgentLoop\(/);
+    assert.match(source, /new AgentRunExecutor\(/);
     assert.match(source, /new AgentRunController\(/);
+    assert.match(source, /executor: agentRunExecutor/);
+    assert.equal(source.includes('new AutonomousTaskChildRunExecutor'), false);
+    assert.equal(source.split('new AgentRunExecutor(').length - 1, 1);
     assert.match(source, /new ApprovalManager\(/);
     assert.match(source, /new ApprovalLifecycle\(/);
     assert.match(source, /new ApprovalWorkflowController\(/);
@@ -35,6 +39,7 @@ describe('ai-runtime composition', () => {
     assert.match(source, /interactionExecutor,/);
     assert.match(source, /approvalPort: approvalBridge/);
     assert.match(source, /agentRuns: agentRunController/);
+    assert.match(source, /agentRunExecutor\?\.dispose\(\)/);
   });
 
   it('does not call InteractiveAgent.interact on the production Act path', () => {
