@@ -10,13 +10,14 @@ import {
   type DurableWorkflowCoordinatorOptions,
   type DurableWorkflowId,
   type EditDurableWorkflowInput,
-  type EnqueueWorkflowOccurrenceInput,
+  type EnqueueScheduledOccurrenceInput,
   type RunningOccurrenceTerminalState,
   type TerminalizeRunningOccurrenceInput,
   type WorkflowEnqueueSource,
   type WorkflowOccurrenceId,
   type WorkflowStorePort,
 } from '../workflows/durable-workflow-types';
+import { scheduledTriggerKey } from '../workflows/workflow-schedule';
 import { isWorkflowStoreError } from '../workflows/workflow-store-errors';
 import {
   MAX_OCCURRENCE_ID_CHARS,
@@ -224,26 +225,73 @@ export class DurableWorkflowCoordinator {
     });
   }
 
-  async enqueueOccurrence(input: EnqueueWorkflowOccurrenceInput): Promise<WorkflowOccurrenceRecord> {
-    const triggerKey = requireBoundedToken(input.triggerKey, MAX_TRIGGER_KEY_CHARS, 'triggerKey');
-    const scheduledFor = requireNullableUtcInstant(input.scheduledFor);
-    const source = requireEnqueueSource(input.source);
+  async enqueueManualOccurrence(workflowId: DurableWorkflowId): Promise<WorkflowOccurrenceRecord> {
     const occurrenceId = requireGeneratedId(this.newOccurrenceId(), MAX_OCCURRENCE_ID_CHARS, 'occurrenceId');
+    return this.insertQueuedOccurrence({
+      workflowId,
+      occurrenceId,
+      triggerKey: `manual:${occurrenceId}`,
+      scheduledFor: null,
+      source: 'manual',
+    });
+  }
 
+  async enqueueScheduledOccurrence(input: EnqueueScheduledOccurrenceInput): Promise<WorkflowOccurrenceRecord> {
+    const scheduledFor = requireCanonicalUtcInstant(input.scheduledFor);
+    const occurrenceId = requireGeneratedId(this.newOccurrenceId(), MAX_OCCURRENCE_ID_CHARS, 'occurrenceId');
+    return this.insertQueuedOccurrence({
+      workflowId: input.workflowId,
+      occurrenceId,
+      triggerKey: scheduledTriggerKey(input.workflowId, scheduledFor),
+      scheduledFor,
+      source: 'scheduled',
+    });
+  }
+
+  async markScheduleReviewRequired(workflowId: DurableWorkflowId): Promise<DurableWorkflowDefinitionRecord> {
+    return this.transact((snapshot) => {
+      const workflow = requireWorkflow(snapshot, workflowId);
+      if (workflow.reviewRequired) {
+        return { kind: 'return', value: workflow };
+      }
+      const updated: DurableWorkflowDefinitionRecord = {
+        ...workflow,
+        reviewRequired: true,
+        updatedAt: this.nowIso(),
+      };
+      return {
+        kind: 'write',
+        payload: {
+          workflows: replaceWorkflow(snapshot.workflows, updated),
+          occurrences: [...snapshot.occurrences],
+        },
+        pick: (next) => requireWorkflow(next, workflowId),
+      };
+    });
+  }
+
+  private async insertQueuedOccurrence(input: {
+    readonly workflowId: DurableWorkflowId;
+    readonly occurrenceId: WorkflowOccurrenceId;
+    readonly triggerKey: string;
+    readonly scheduledFor: string | null;
+    readonly source: WorkflowEnqueueSource;
+  }): Promise<WorkflowOccurrenceRecord> {
+    const triggerKey = requireBoundedToken(input.triggerKey, MAX_TRIGGER_KEY_CHARS, 'triggerKey');
     return this.transact((snapshot) => {
       const existing = snapshot.occurrences.find((occurrence) => occurrence.triggerKey === triggerKey);
       if (existing) {
         return { kind: 'return', value: existing };
       }
       const workflow = requireWorkflow(snapshot, input.workflowId);
-      assertEnqueueEligible(workflow, source);
+      assertEnqueueEligible(workflow, input.source);
       const createdAt = this.nowIso();
       const record: WorkflowOccurrenceRecord = {
-        occurrenceId,
+        occurrenceId: input.occurrenceId,
         workflowId: workflow.workflowId,
         definitionRevision: workflow.definitionRevision,
         triggerKey,
-        scheduledFor,
+        scheduledFor: input.scheduledFor,
         frozenDefinition: {
           objective: workflow.objective,
           entryPoint: cloneEntryPoint(workflow.entryPoint),
@@ -264,7 +312,7 @@ export class DurableWorkflowCoordinator {
           workflows: [...snapshot.workflows],
           occurrences,
         },
-        pick: (next) => requireOccurrence(next, occurrenceId),
+        pick: (next) => requireOccurrence(next, input.occurrenceId),
       };
     });
   }
@@ -768,12 +816,9 @@ function requireBoundedToken(value: string, maxChars: number, _label: string): s
   return value;
 }
 
-function requireNullableUtcInstant(value: string | null): string | null {
-  if (value === null) {
-    return null;
-  }
+function requireCanonicalUtcInstant(value: string): string {
   if (typeof value !== 'string' || !UTC_INSTANT_PATTERN.test(value) || !Number.isFinite(Date.parse(value))) {
     throw new DurableWorkflowError('WORKFLOW_INVALID_REQUEST', 'scheduledFor is invalid.');
   }
-  return value;
+  return new Date(value).toISOString();
 }

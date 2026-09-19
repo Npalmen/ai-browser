@@ -54,11 +54,9 @@ export interface EditDurableWorkflowInput {
   readonly trigger: WorkflowTriggerRecord;
 }
 
-export interface EnqueueWorkflowOccurrenceInput {
+export interface EnqueueScheduledOccurrenceInput {
   readonly workflowId: DurableWorkflowId;
-  readonly triggerKey: string;
-  readonly scheduledFor: string | null;
-  readonly source: WorkflowEnqueueSource;
+  readonly scheduledFor: string;
 }
 
 export interface TerminalizeRunningOccurrenceInput {

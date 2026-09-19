@@ -52,12 +52,7 @@ describe('DurableWorkflowCoordinator', () => {
   it('freezes occurrence snapshots across definition edits', async () => {
     const { coordinator } = await createHarness();
     const workflow = await coordinator.createWorkflow(sampleInput({ objective: 'first', url: 'https://example.com/a' }));
-    const first = await coordinator.enqueueOccurrence({
-      workflowId: workflow.workflowId,
-      triggerKey: 'manual:one',
-      scheduledFor: null,
-      source: 'manual',
-    });
+    const first = await coordinator.enqueueManualOccurrence(workflow.workflowId);
     assert.equal(first.definitionRevision, 1);
     await coordinator.editWorkflow(workflow.workflowId, {
       name: 'Invoice check',
@@ -65,12 +60,7 @@ describe('DurableWorkflowCoordinator', () => {
       entryPoint: { kind: 'url', url: 'https://example.com/b' },
       trigger: { kind: 'manual' },
     });
-    const second = await coordinator.enqueueOccurrence({
-      workflowId: workflow.workflowId,
-      triggerKey: 'manual:two',
-      scheduledFor: null,
-      source: 'manual',
-    });
+    const second = await coordinator.enqueueManualOccurrence(workflow.workflowId);
     const frozenFirst = await coordinator.getOccurrence(first.occurrenceId);
     assert.equal(frozenFirst?.definitionRevision, 1);
     assert.equal(frozenFirst?.frozenDefinition.objective, 'first');
@@ -94,25 +84,43 @@ describe('DurableWorkflowCoordinator', () => {
     assert.equal((await store.load()).storeRevision, before);
   });
 
-  it('returns the existing occurrence for a duplicate triggerKey without writing', async () => {
+  it('returns the existing occurrence for a duplicate scheduled slot without writing', async () => {
     const { coordinator, store } = await createHarness();
     const workflow = await coordinator.createWorkflow(sampleInput());
-    const first = await coordinator.enqueueOccurrence({
+    const first = await coordinator.enqueueScheduledOccurrence({
       workflowId: workflow.workflowId,
-      triggerKey: 'sched:1',
       scheduledFor: '2026-09-19T12:00:00.000Z',
-      source: 'scheduled',
     });
     const revision = (await store.load()).storeRevision;
-    const second = await coordinator.enqueueOccurrence({
+    const second = await coordinator.enqueueScheduledOccurrence({
       workflowId: workflow.workflowId,
-      triggerKey: 'sched:1',
-      scheduledFor: '2026-09-19T12:00:00.000Z',
-      source: 'scheduled',
+      scheduledFor: '2026-09-19T12:00:00Z',
     });
+    assert.equal(first.triggerKey, `${workflow.workflowId}:2026-09-19T12:00:00.000Z`);
+    assert.equal(first.scheduledFor, '2026-09-19T12:00:00.000Z');
     assert.equal(second.occurrenceId, first.occurrenceId);
     assert.equal((await store.load()).storeRevision, revision);
     assert.equal((await coordinator.listOccurrences(workflow.workflowId)).length, 1);
+  });
+
+  it('derives distinct manual trigger keys and never coalesces run-now occurrences', async () => {
+    const { coordinator } = await createHarness();
+    const workflow = await coordinator.createWorkflow(
+      sampleInput({
+        trigger: {
+          kind: 'schedule',
+          schedule: { kind: 'one-time', runAtUtc: '2026-09-20T10:00:00.000Z' },
+        },
+      }),
+    );
+    const first = await coordinator.enqueueManualOccurrence(workflow.workflowId);
+    const second = await coordinator.enqueueManualOccurrence(workflow.workflowId);
+    assert.equal(first.scheduledFor, null);
+    assert.equal(first.triggerKey, `manual:${first.occurrenceId}`);
+    assert.equal(second.triggerKey, `manual:${second.occurrenceId}`);
+    assert.notEqual(first.occurrenceId, second.occurrenceId);
+    assert.equal(first.frozenDefinition.trigger.kind, 'schedule');
+    assert.equal((await coordinator.listOccurrences(workflow.workflowId)).length, 2);
   });
 
   it('keeps a compacted scheduled triggerKey idempotent after 51 newer manual terminals', async () => {
@@ -121,11 +129,9 @@ describe('DurableWorkflowCoordinator', () => {
     const workflow = await coordinator.createWorkflow(sampleInput());
     const scheduledFor = '2026-09-19T08:00:00.000Z';
     const triggerKey = `${workflow.workflowId}:${scheduledFor}`;
-    const scheduled = await coordinator.enqueueOccurrence({
+    const scheduled = await coordinator.enqueueScheduledOccurrence({
       workflowId: workflow.workflowId,
-      triggerKey,
       scheduledFor,
-      source: 'scheduled',
     });
     await completeRunning(coordinator, scheduled.occurrenceId);
     clock.tick();
@@ -140,11 +146,9 @@ describe('DurableWorkflowCoordinator', () => {
     assert.equal(compacted.filter((item) => item.scheduledFor === null).length, 50);
     assert.equal(compacted.length, 51);
     const revision = (await store.load()).storeRevision;
-    const duplicate = await coordinator.enqueueOccurrence({
+    const duplicate = await coordinator.enqueueScheduledOccurrence({
       workflowId: workflow.workflowId,
-      triggerKey,
       scheduledFor,
-      source: 'scheduled',
     });
     assert.equal(duplicate.occurrenceId, scheduled.occurrenceId);
     assert.equal((await store.load()).storeRevision, revision);
@@ -156,29 +160,14 @@ describe('DurableWorkflowCoordinator', () => {
     const ids = new IdFactory();
     const { coordinator } = await createHarness({ clock, ids });
     const workflow = await coordinator.createWorkflow(sampleInput());
-    await coordinator.enqueueOccurrence({
-      workflowId: workflow.workflowId,
-      triggerKey: 'k-a',
-      scheduledFor: null,
-      source: 'manual',
-    });
-    await coordinator.enqueueOccurrence({
-      workflowId: workflow.workflowId,
-      triggerKey: 'k-b',
-      scheduledFor: null,
-      source: 'manual',
-    });
+    await coordinator.enqueueManualOccurrence(workflow.workflowId);
+    await coordinator.enqueueManualOccurrence(workflow.workflowId);
     clock.tick();
-    await coordinator.enqueueOccurrence({
-      workflowId: workflow.workflowId,
-      triggerKey: 'k-c',
-      scheduledFor: null,
-      source: 'manual',
-    });
+    await coordinator.enqueueManualOccurrence(workflow.workflowId);
     const queued = await coordinator.listQueuedOccurrences();
     assert.deepEqual(
       queued.map((item) => item.triggerKey),
-      ['k-a', 'k-b', 'k-c'],
+      ['manual:occ-1', 'manual:occ-2', 'manual:occ-3'],
     );
   });
 
@@ -292,6 +281,19 @@ describe('DurableWorkflowCoordinator', () => {
     assert.equal((await store.load()).storeRevision, revision);
   });
 
+  it('markScheduleReviewRequired sets the flag without creating an occurrence', async () => {
+    const { coordinator, store } = await createHarness();
+    const workflow = await coordinator.createWorkflow(sampleInput());
+    const before = (await store.load()).storeRevision;
+    const marked = await coordinator.markScheduleReviewRequired(workflow.workflowId);
+    assert.equal(marked.reviewRequired, true);
+    assert.equal((await store.load()).storeRevision, before + 1);
+    assert.equal((await coordinator.listOccurrences(workflow.workflowId)).length, 0);
+    const again = await coordinator.markScheduleReviewRequired(workflow.workflowId);
+    assert.equal(again.reviewRequired, true);
+    assert.equal((await store.load()).storeRevision, before + 1);
+  });
+
   it('acknowledgeReview does not enable a disabled workflow', async () => {
     const { coordinator } = await createHarness();
     const workflow = await coordinator.createWorkflow(sampleInput({ enabled: false }));
@@ -389,11 +391,9 @@ describe('DurableWorkflowCoordinator', () => {
     );
     await assert.rejects(
       () =>
-        coordinator.enqueueOccurrence({
+        coordinator.enqueueScheduledOccurrence({
           workflowId: workflow.workflowId,
-          triggerKey: 'sched:disabled',
           scheduledFor: '2026-09-20T10:00:00.000Z',
-          source: 'scheduled',
         }),
       (error: unknown) => error instanceof DurableWorkflowError && error.code === 'WORKFLOW_DISABLED',
     );
@@ -439,12 +439,7 @@ describe('DurableWorkflowCoordinator', () => {
         trigger: { kind: 'manual' },
       });
     };
-    const occurrence = await enqueuer.coordinator.enqueueOccurrence({
-      workflowId: workflow.workflowId,
-      triggerKey: 'race-key',
-      scheduledFor: null,
-      source: 'manual',
-    });
+    const occurrence = await enqueuer.coordinator.enqueueManualOccurrence(workflow.workflowId);
     assert.equal(occurrence.definitionRevision, 2);
     assert.equal(occurrence.frozenDefinition.objective, 'rev-2');
   });
@@ -538,6 +533,9 @@ describe('DurableWorkflowCoordinator', () => {
 
   it('does not import browser, approval, model, or Electron modules', () => {
     const source = readFileSync(path.join(__dirname, 'durable-workflow-coordinator.ts'), 'utf8');
+    assert.equal(source.includes('async enqueueManualOccurrence'), true);
+    assert.equal(source.includes('async enqueueScheduledOccurrence'), true);
+    assert.equal(source.includes('async enqueueOccurrence('), false);
     for (const banned of [
       'electron',
       'BrowserAdapter',
@@ -564,7 +562,7 @@ describe('DurableWorkflowCoordinator', () => {
       types.indexOf('export interface EditDurableWorkflowInput'),
     );
     const enqueueBlock = types.slice(
-      types.indexOf('export interface EnqueueWorkflowOccurrenceInput'),
+      types.indexOf('export interface EnqueueScheduledOccurrenceInput'),
       types.indexOf('export interface TerminalizeRunningOccurrenceInput'),
     );
     for (const field of ['workflowId', 'definitionRevision', 'reviewRequired', 'createdAt', 'storeRevision']) {
@@ -577,6 +575,8 @@ describe('DurableWorkflowCoordinator', () => {
       'state',
       'ownerRuntimeSessionId',
       'reviewRequired',
+      'triggerKey',
+      'source',
     ]) {
       assert.equal(enqueueBlock.includes(field), false, field);
     }
@@ -702,12 +702,7 @@ async function assertUninitialized(coordinator: DurableWorkflowCoordinator): Pro
   );
   await assert.rejects(
     () =>
-      coordinator.enqueueOccurrence({
-        workflowId: 'wf-1',
-        triggerKey: 'manual:one',
-        scheduledFor: null,
-        source: 'manual',
-      }),
+      coordinator.enqueueManualOccurrence('wf-1'),
     (error: unknown) =>
       error instanceof DurableWorkflowError && error.code === 'WORKFLOW_NOT_INITIALIZED',
   );
@@ -782,14 +777,9 @@ async function assertInvalidState(run: () => Promise<unknown>): Promise<void> {
 async function enqueueQueued(
   coordinator: DurableWorkflowCoordinator,
   workflowId: string,
-  key: string,
+  _key?: string,
 ): Promise<WorkflowOccurrenceRecord> {
-  return coordinator.enqueueOccurrence({
-    workflowId,
-    triggerKey: `manual:${key}`,
-    scheduledFor: null,
-    source: 'manual',
-  });
+  return coordinator.enqueueManualOccurrence(workflowId);
 }
 
 async function completeRunning(
@@ -819,13 +809,19 @@ async function forceReviewRequired(
 }
 
 function sampleInput(
-  overrides: { name?: string; objective?: string; url?: string; enabled?: boolean } = {},
+  overrides: {
+    name?: string;
+    objective?: string;
+    url?: string;
+    enabled?: boolean;
+    trigger?: CreateDurableWorkflowInput['trigger'];
+  } = {},
 ): CreateDurableWorkflowInput {
   return {
     name: overrides.name ?? 'Invoice check',
     objective: overrides.objective ?? 'Open the invoice page and summarize totals.',
     entryPoint: { kind: 'url', url: overrides.url ?? 'https://example.com/path?resource=123' },
-    trigger: { kind: 'manual' },
+    trigger: overrides.trigger ?? { kind: 'manual' },
     enabled: overrides.enabled,
   };
 }
