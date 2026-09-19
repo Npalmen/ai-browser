@@ -2,10 +2,17 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 import type { AiAnswerEvent, AiAskCurrentPageInput, AiCancelAskInput } from '../shared/ai-types';
 import type { ApprovalDecideInput, ApprovalEvent } from '../shared/approval-types';
+import type {
+  AutonomousTaskEvent,
+  AutonomousTaskIdInput,
+  AutonomousTaskReplyInput,
+  AutonomousTaskStartInput,
+} from '../shared/autonomous-task-types';
 import type { BrowserState, TabId } from '../shared/browser-types';
 import {
   AI_IPC_CHANNELS,
   APPROVAL_IPC_CHANNELS,
+  AUTONOMOUS_TASK_IPC_CHANNELS,
   BROWSER_IPC_CHANNELS,
   type AiAssistantApi,
   type BrowserShellApi,
@@ -75,6 +82,35 @@ const aiAssistant: AiAssistantApi = {
 
     return () => {
       ipcRenderer.removeListener(APPROVAL_IPC_CHANNELS.event, wrapped);
+    };
+  },
+
+  startAutonomousTask: (input: AutonomousTaskStartInput) =>
+    ipcRenderer.invoke(AUTONOMOUS_TASK_IPC_CHANNELS.start, input),
+
+  pauseAutonomousTask: (input: AutonomousTaskIdInput) =>
+    ipcRenderer.invoke(AUTONOMOUS_TASK_IPC_CHANNELS.pause, input),
+
+  resumeAutonomousTask: (input: AutonomousTaskIdInput) =>
+    ipcRenderer.invoke(AUTONOMOUS_TASK_IPC_CHANNELS.resume, input),
+
+  stopAutonomousTask: (input: AutonomousTaskIdInput) =>
+    ipcRenderer.invoke(AUTONOMOUS_TASK_IPC_CHANNELS.stop, input),
+
+  replyToAutonomousTask: (input: AutonomousTaskReplyInput) =>
+    ipcRenderer.invoke(AUTONOMOUS_TASK_IPC_CHANNELS.reply, input),
+
+  getAutonomousTaskState: () => ipcRenderer.invoke(AUTONOMOUS_TASK_IPC_CHANNELS.getState),
+
+  onAutonomousTaskEvent: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: AutonomousTaskEvent) => {
+      listener(payload);
+    };
+
+    ipcRenderer.on(AUTONOMOUS_TASK_IPC_CHANNELS.event, wrapped);
+
+    return () => {
+      ipcRenderer.removeListener(AUTONOMOUS_TASK_IPC_CHANNELS.event, wrapped);
     };
   },
 };

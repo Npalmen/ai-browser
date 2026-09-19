@@ -1,9 +1,28 @@
 import { ipcMain } from 'electron';
 
-import { APPROVAL_IPC_CHANNELS, AI_IPC_CHANNELS, BROWSER_IPC_CHANNELS } from '../shared/ipc-contract';
+import {
+  APPROVAL_IPC_CHANNELS,
+  AI_IPC_CHANNELS,
+  AUTONOMOUS_TASK_IPC_CHANNELS,
+  BROWSER_IPC_CHANNELS,
+} from '../shared/ipc-contract';
 import { isAiSafeError, parseAskCurrentPageRequest, parseAskId, parsePanelOpen, parseTabId } from './ai-ipc-guards';
-import { getAiController, getApprovalWorkflowController, invalidateApprovalTab, cancelAgentRunForTrustedChromeNavigation, setAiPanelOpen } from './ai-runtime';
+import {
+  beforeAutonomousTaskTrustedChromeNavigation,
+  cancelAgentRunForTrustedChromeNavigation,
+  getAiController,
+  getApprovalWorkflowController,
+  getAutonomousTaskController,
+  handleAutonomousTaskTabClosed,
+  invalidateApprovalTab,
+  setAiPanelOpen,
+} from './ai-runtime';
 import { parseApprovalDecideRequest } from './approval-ipc-guards';
+import {
+  parseAutonomousTaskIdRequest,
+  parseAutonomousTaskReplyRequest,
+  parseAutonomousTaskStartRequest,
+} from './autonomous-task-ipc-guards';
 import { approvalSafeError } from './approval-safe-error';
 import { aiSafeError, toAiSafeError } from './ai-safe-error';
 import { getBrowserAdapter, whenBrowserReady } from './browser-runtime';
@@ -48,6 +67,7 @@ export function registerBrowserShellIpc(): void {
     assertTrustedAppSender(event);
     await whenBrowserReady();
     const trustedTabId = assertTabId(tabId);
+    await handleAutonomousTaskTabClosed(trustedTabId);
     getAiController()?.handleTabClosed(trustedTabId);
     invalidateApprovalTab(trustedTabId);
     await getBrowserAdapter().closeTab(trustedTabId);
@@ -63,6 +83,7 @@ export function registerBrowserShellIpc(): void {
     assertTrustedAppSender(event);
     await whenBrowserReady();
     const trustedTabId = assertTabId(tabId);
+    await beforeAutonomousTaskTrustedChromeNavigation(trustedTabId);
     cancelAgentRunForTrustedChromeNavigation(trustedTabId);
     invalidateApprovalTab(trustedTabId);
     await getBrowserAdapter().navigate(trustedTabId, assertUrl(url));
@@ -72,6 +93,7 @@ export function registerBrowserShellIpc(): void {
     assertTrustedAppSender(event);
     await whenBrowserReady();
     const trustedTabId = assertTabId(tabId);
+    await beforeAutonomousTaskTrustedChromeNavigation(trustedTabId);
     cancelAgentRunForTrustedChromeNavigation(trustedTabId);
     invalidateApprovalTab(trustedTabId);
     await getBrowserAdapter().back(trustedTabId);
@@ -81,6 +103,7 @@ export function registerBrowserShellIpc(): void {
     assertTrustedAppSender(event);
     await whenBrowserReady();
     const trustedTabId = assertTabId(tabId);
+    await beforeAutonomousTaskTrustedChromeNavigation(trustedTabId);
     cancelAgentRunForTrustedChromeNavigation(trustedTabId);
     invalidateApprovalTab(trustedTabId);
     await getBrowserAdapter().forward(trustedTabId);
@@ -90,6 +113,7 @@ export function registerBrowserShellIpc(): void {
     assertTrustedAppSender(event);
     await whenBrowserReady();
     const trustedTabId = assertTabId(tabId);
+    await beforeAutonomousTaskTrustedChromeNavigation(trustedTabId);
     cancelAgentRunForTrustedChromeNavigation(trustedTabId);
     invalidateApprovalTab(trustedTabId);
     await getBrowserAdapter().reload(trustedTabId);
@@ -175,6 +199,110 @@ export function registerBrowserShellIpc(): void {
       return workflow.decide(parsed.input);
     } catch {
       return { ok: false, error: approvalSafeError('APPROVAL_FAILED') };
+    }
+  });
+
+  ipcMain.handle(AUTONOMOUS_TASK_IPC_CHANNELS.start, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    try {
+      await whenBrowserReady();
+      const parsed = parseAutonomousTaskStartRequest(input);
+      if (!parsed.ok) {
+        return parsed;
+      }
+      const taskController = getAutonomousTaskController();
+      if (!taskController) {
+        return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };
+      }
+      return taskController.start(parsed.input.objective);
+    } catch (error) {
+      return { ok: false, error: toAiSafeError(error) };
+    }
+  });
+
+  ipcMain.handle(AUTONOMOUS_TASK_IPC_CHANNELS.pause, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    try {
+      await whenBrowserReady();
+      const parsed = parseAutonomousTaskIdRequest(input);
+      if (!parsed.ok) {
+        return parsed;
+      }
+      const taskController = getAutonomousTaskController();
+      if (!taskController) {
+        return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };
+      }
+      return await taskController.pause(parsed.input.taskId);
+    } catch (error) {
+      return { ok: false, error: toAiSafeError(error) };
+    }
+  });
+
+  ipcMain.handle(AUTONOMOUS_TASK_IPC_CHANNELS.resume, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    try {
+      await whenBrowserReady();
+      const parsed = parseAutonomousTaskIdRequest(input);
+      if (!parsed.ok) {
+        return parsed;
+      }
+      const taskController = getAutonomousTaskController();
+      if (!taskController) {
+        return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };
+      }
+      return taskController.resume(parsed.input.taskId);
+    } catch (error) {
+      return { ok: false, error: toAiSafeError(error) };
+    }
+  });
+
+  ipcMain.handle(AUTONOMOUS_TASK_IPC_CHANNELS.stop, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    try {
+      await whenBrowserReady();
+      const parsed = parseAutonomousTaskIdRequest(input);
+      if (!parsed.ok) {
+        return parsed;
+      }
+      const taskController = getAutonomousTaskController();
+      if (!taskController) {
+        return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };
+      }
+      return await taskController.stop(parsed.input.taskId);
+    } catch (error) {
+      return { ok: false, error: toAiSafeError(error) };
+    }
+  });
+
+  ipcMain.handle(AUTONOMOUS_TASK_IPC_CHANNELS.reply, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    try {
+      await whenBrowserReady();
+      const parsed = parseAutonomousTaskReplyRequest(input);
+      if (!parsed.ok) {
+        return parsed;
+      }
+      const taskController = getAutonomousTaskController();
+      if (!taskController) {
+        return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };
+      }
+      return taskController.reply(parsed.input.taskId, parsed.input.reply);
+    } catch (error) {
+      return { ok: false, error: toAiSafeError(error) };
+    }
+  });
+
+  ipcMain.handle(AUTONOMOUS_TASK_IPC_CHANNELS.getState, async (event) => {
+    assertTrustedAppSender(event);
+    try {
+      await whenBrowserReady();
+      const taskController = getAutonomousTaskController();
+      if (!taskController) {
+        return { ok: true, tasks: [] };
+      }
+      return { ok: true, tasks: taskController.getState() };
+    } catch (error) {
+      return { ok: false, error: toAiSafeError(error) };
     }
   });
 }

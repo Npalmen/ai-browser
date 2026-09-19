@@ -23,7 +23,16 @@ describe('ai-runtime composition', () => {
     assert.match(source, /new AgentRunExecutor\(/);
     assert.match(source, /new AgentRunController\(/);
     assert.match(source, /executor: agentRunExecutor/);
-    assert.equal(source.includes('new AutonomousTaskChildRunExecutor'), false);
+    assert.equal(source.split('new AutonomousTaskChildRunExecutor(').length - 1, 1);
+    assert.equal(source.split('new AutonomousTaskCoordinator(').length - 1, 1);
+    assert.equal(source.split('new AutonomousTaskPlanner(').length - 1, 1);
+    assert.equal(source.split('new AutonomousTaskPlannerExecutor(').length - 1, 1);
+    assert.equal(source.split('new AutonomousTaskApprovalIntegration(').length - 1, 1);
+    assert.equal(source.split('new AutonomousTaskLifecycleController(').length - 1, 1);
+    assert.equal(source.split('new AutonomousTaskController(').length - 1, 1);
+    assert.equal(source.split('new AutonomousTaskApprovalPortProxy(').length - 1, 1);
+    assert.equal(source.split('new CompositeAgentRunApprovalOutcomePort(').length - 1, 1);
+    assert.equal(source.split('new AiSdkGatewayRuntime(').length - 1, 1);
     assert.equal(source.split('new AgentRunExecutor(').length - 1, 1);
     assert.match(source, /new ApprovalManager\(/);
     assert.match(source, /new ApprovalLifecycle\(/);
@@ -33,13 +42,22 @@ describe('ai-runtime composition', () => {
     assert.equal(source.includes('interactiveAgent'), false);
     assert.equal(source.split('new ApprovalManager(').length - 1, 1);
     assert.equal(source.split('new AgentRunCoordinator(').length - 1, 1);
+    assert.match(source, /task: taskApprovalProxy/);
     assert.match(source, /agentRun: agentRunCoordinator/);
-    assert.match(source, /notifyAgentRunOutcome:/);
-    assert.match(source, /agentRunCoordinator\.notifyApprovalOutcome/);
+    assert.match(source, /agentRun: approvalOutcome/);
+    assert.match(source, /approvalOutcome\.notifyApprovalOutcome/);
+    assert.match(source, /taskApproval: taskApprovalProxy/);
+    assert.match(source, /canStartManualAct:/);
+    assert.match(source, /taskApprovalProxy\.bind\(taskApprovalIntegration\)/);
+    assert.match(source, /runtime: gatewayRuntime/);
+    assert.match(source, /autonomousTaskController\?\.dispose\(\)/);
+    assert.match(source, /autonomousTaskApprovalIntegration\?\.dispose\(\)/);
+    assert.match(source, /autonomousTaskCoordinator\?\.dispose\(\)/);
     assert.match(source, /interactionExecutor,/);
     assert.match(source, /approvalPort: approvalBridge/);
     assert.match(source, /agentRuns: agentRunController/);
     assert.match(source, /agentRunExecutor\?\.dispose\(\)/);
+    assert.match(source, /new ReadOnlyAgent\(/);
   });
 
   it('does not call InteractiveAgent.interact on the production Act path', () => {
@@ -74,28 +92,33 @@ describe('trusted chrome vs generic navigation', () => {
     ]) {
       const start = ipc.indexOf(channel);
       assert.ok(start >= 0, channel);
-      const block = ipc.slice(start, start + 550);
+      const block = ipc.slice(start, start + 750);
+      const taskIndex = block.indexOf('await beforeAutonomousTaskTrustedChromeNavigation(trustedTabId)');
       const cancelIndex = block.indexOf('cancelAgentRunForTrustedChromeNavigation(trustedTabId)');
       const invalidateIndex = block.indexOf('invalidateApprovalTab(trustedTabId)');
-      assert.ok(cancelIndex >= 0, `${channel} cancel`);
+      assert.ok(taskIndex >= 0, `${channel} V6`);
+      assert.ok(cancelIndex > taskIndex, `${channel} cancel`);
       assert.ok(invalidateIndex > cancelIndex, `${channel} invalidate after cancel`);
     }
 
     const closeStart = ipc.indexOf('BROWSER_IPC_CHANNELS.closeTab');
-    const closeBlock = ipc.slice(closeStart, closeStart + 450);
+    const closeBlock = ipc.slice(closeStart, closeStart + 700);
     assert.equal(closeBlock.includes('cancelAgentRunForTrustedChromeNavigation'), false);
+    assert.match(closeBlock, /handleAutonomousTaskTabClosed/);
     assert.match(closeBlock, /handleTabClosed/);
 
     const main = readSrc('src/main/main.ts');
     assert.match(main, /reason === 'renderer-crash'/);
     assert.match(main, /reason === 'tab-close'/);
-    assert.equal(main.includes("reason === 'navigation'"), false);
+    assert.match(main, /reason === 'navigation'/);
     const callback = main.slice(
       main.indexOf('onTabInvalidated:'),
       main.indexOf('initializeAiRuntime(adapter)'),
     );
     assert.equal(callback.includes('cancelForTrustedChromeNavigation'), false);
     assert.match(callback, /handleRendererCrash/);
+    assert.match(callback, /handleAutonomousTaskGenericNavigation/);
     assert.match(callback, /invalidateApprovalTab\(tabId\)/);
+    assert.match(main, /onTabCreated:/);
   });
 });

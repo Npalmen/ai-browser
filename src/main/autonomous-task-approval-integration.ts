@@ -29,6 +29,7 @@ export interface AutonomousTaskApprovalIntegrationDependencies {
   coordinator: AutonomousTaskCoordinator;
   childRuns: AutonomousTaskChildRunExecutor;
   tabState: TaskTabStateRegistry;
+  onTaskChanged?: (taskId: string) => void;
 }
 
 /**
@@ -39,12 +40,14 @@ export class AutonomousTaskApprovalIntegration implements AgentRunTaskApprovalPo
   private readonly coordinator: AutonomousTaskCoordinator;
   private readonly childRuns: AutonomousTaskChildRunExecutor;
   private readonly tabState: TaskTabStateRegistry;
+  private readonly onTaskChanged: ((taskId: string) => void) | undefined;
   private readonly byApprovalId = new Map<string, TaskApprovalCorrelation>();
 
   constructor(deps: AutonomousTaskApprovalIntegrationDependencies) {
     this.coordinator = deps.coordinator;
     this.childRuns = deps.childRuns;
     this.tabState = deps.tabState;
+    this.onTaskChanged = deps.onTaskChanged;
   }
 
   beforePrepare(ref: AgentRunRef): AgentRunTaskApprovalPrecheckResult {
@@ -67,6 +70,7 @@ export class AutonomousTaskApprovalIntegration implements AgentRunTaskApprovalPo
     }
     if (isTerminalAutonomousTaskState(budget.snapshot.state)) {
       this.releaseTaskLocalState(child.taskRef.taskId);
+      this.notifyTaskChanged(child.taskRef.taskId);
       return 'blocked';
     }
     return 'allow';
@@ -91,6 +95,7 @@ export class AutonomousTaskApprovalIntegration implements AgentRunTaskApprovalPo
     }
     if (isTerminalAutonomousTaskState(presented.snapshot.state)) {
       this.releaseTaskLocalState(child.taskRef.taskId);
+      this.notifyTaskChanged(child.taskRef.taskId);
       return 'blocked';
     }
     this.byApprovalId.set(approvalId, {
@@ -99,6 +104,7 @@ export class AutonomousTaskApprovalIntegration implements AgentRunTaskApprovalPo
       agentRunRef: child.agentRunRef,
       taskTabAlias: child.taskTabAlias,
     });
+    this.notifyTaskChanged(child.taskRef.taskId);
     return 'applied';
   }
 
@@ -110,6 +116,7 @@ export class AutonomousTaskApprovalIntegration implements AgentRunTaskApprovalPo
     this.byApprovalId.delete(approvalId);
     const intent = this.lookupIntent(correlation.agentRunRef);
     this.applyTrustedOutcome(correlation.taskRef, outcome, intent);
+    this.notifyTaskChanged(correlation.taskRef.taskId);
   }
 
   considerUserReply(_ref: AutonomousTaskRef, _text: string): 'ignored' {
@@ -194,6 +201,14 @@ export class AutonomousTaskApprovalIntegration implements AgentRunTaskApprovalPo
       if (correlation.taskRef.taskId === taskId) {
         this.byApprovalId.delete(approvalId);
       }
+    }
+  }
+
+  private notifyTaskChanged(taskId: string): void {
+    try {
+      this.onTaskChanged?.(taskId);
+    } catch {
+      // Observational callback must not affect approval correlation.
     }
   }
 }

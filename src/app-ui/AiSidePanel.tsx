@@ -1,48 +1,119 @@
 import type { FormEvent, KeyboardEvent } from 'react';
 
-import { AI_SIDE_PANEL_WIDTH_PX, type AiRequestMode } from '../shared/ai-types';
+import { AI_SIDE_PANEL_WIDTH_PX } from '../shared/ai-types';
+import type { AiPanelMode, AutonomousTaskView } from '../shared/autonomous-task-types';
 
 import type { AiTranscriptEntry } from './ai-ui-state';
 import { ApprovalCard } from './ApprovalCard';
 import type { TabApprovalUiState } from './approval-ui-state';
+import { AutonomousTaskCard } from './AutonomousTaskCard';
 
 export function AiSidePanel(props: {
   hasActiveTab: boolean;
   entries: AiTranscriptEntry[];
   isAsking: boolean;
   approvalBusy: boolean;
-  mode: AiRequestMode;
+  mode: AiPanelMode;
   draft: string;
   onDraftChange: (value: string) => void;
-  onModeChange: (mode: AiRequestMode) => void;
+  onModeChange: (mode: AiPanelMode) => void;
   onAsk: () => void;
+  onDelegate: () => void;
+  onTaskReply: () => void;
   onStop: () => void;
   onClear: () => void;
   onClose: () => void;
   approval?: TabApprovalUiState;
   onApprove?: () => void;
   onReject?: () => void;
+  tasks: readonly AutonomousTaskView[];
+  startError?: string;
+  replyDraftByTaskId: Record<string, string>;
+  onReplyDraftChange: (taskId: string, value: string) => void;
+  onPauseTask: (taskId: string) => void;
+  onResumeTask: (taskId: string) => void;
+  onStopTask: (taskId: string) => void;
+  onReplyTask: (taskId: string) => void;
 }) {
-  const inputLocked = props.isAsking || props.approvalBusy;
+  const awaitingUserInput = props.tasks.find((task) => task.state === 'awaiting-user-input');
+  const awaitingTaskApproval = props.tasks.some((task) => task.state === 'awaiting-approval');
+  const hasActiveTask = props.tasks.some(
+    (task) =>
+      task.state === 'planning' ||
+      task.state === 'running-subgoal' ||
+      task.state === 'awaiting-approval' ||
+      task.state === 'awaiting-user-input',
+  );
+  const askInputLocked = props.isAsking || props.approvalBusy;
+  const delegateInputLocked = awaitingTaskApproval;
+  const inputLocked = props.mode === 'delegate' ? delegateInputLocked : askInputLocked;
   const canAsk =
-    props.hasActiveTab && props.draft.trim().length > 0 && !inputLocked;
+    props.mode !== 'delegate' &&
+    props.hasActiveTab &&
+    props.draft.trim().length > 0 &&
+    !askInputLocked;
+  const canDelegate =
+    props.mode === 'delegate' &&
+    !awaitingUserInput &&
+    props.hasActiveTab &&
+    props.draft.trim().length > 0 &&
+    !delegateInputLocked &&
+    !hasActiveTask;
+  const canReply =
+    props.mode === 'delegate' &&
+    awaitingUserInput !== undefined &&
+    props.draft.trim().length > 0 &&
+    !awaitingTaskApproval;
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
-    if (!canAsk) {
+    if (awaitingTaskApproval) {
       return;
     }
-    props.onAsk();
+    if (canReply) {
+      props.onTaskReply();
+      return;
+    }
+    if (canDelegate) {
+      props.onDelegate();
+      return;
+    }
+    if (canAsk) {
+      props.onAsk();
+    }
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
+      if (awaitingTaskApproval) {
+        return;
+      }
+      if (canReply) {
+        props.onTaskReply();
+        return;
+      }
+      if (canDelegate) {
+        props.onDelegate();
+        return;
+      }
       if (canAsk) {
         props.onAsk();
       }
     }
   };
+
+  const placeholder =
+    props.mode === 'delegate'
+      ? awaitingUserInput
+        ? 'Reply to the task'
+        : 'Describe a delegated task'
+      : props.mode === 'interact'
+        ? 'Describe one action'
+        : 'Ask about this page';
+
+  const submitLabel =
+    props.mode === 'delegate' ? (awaitingUserInput ? 'Reply' : 'Delegate') : props.mode === 'interact' ? 'Act' : 'Ask';
 
   return (
     <aside
@@ -71,7 +142,7 @@ export function AiSidePanel(props: {
         <button
           type="button"
           className={`ai-mode-button ${props.mode === 'read' ? 'ai-mode-button-active' : ''}`}
-          disabled={inputLocked}
+          disabled={askInputLocked}
           aria-pressed={props.mode === 'read'}
           onClick={() => props.onModeChange('read')}
         >
@@ -80,11 +151,20 @@ export function AiSidePanel(props: {
         <button
           type="button"
           className={`ai-mode-button ${props.mode === 'interact' ? 'ai-mode-button-active' : ''}`}
-          disabled={inputLocked}
+          disabled={askInputLocked}
           aria-pressed={props.mode === 'interact'}
           onClick={() => props.onModeChange('interact')}
         >
           Act
+        </button>
+        <button
+          type="button"
+          className={`ai-mode-button ${props.mode === 'delegate' ? 'ai-mode-button-active' : ''}`}
+          disabled={askInputLocked}
+          aria-pressed={props.mode === 'delegate'}
+          onClick={() => props.onModeChange('delegate')}
+        >
+          Delegate
         </button>
       </div>
 
@@ -99,12 +179,40 @@ export function AiSidePanel(props: {
             onReject={() => props.onReject?.()}
           />
         ) : null}
+        {props.tasks.map((task) => (
+          <AutonomousTaskCard
+            key={task.taskId}
+            task={task}
+            replyDraft={
+              task.state === 'awaiting-user-input' && props.mode === 'delegate'
+                ? props.draft
+                : props.replyDraftByTaskId[task.taskId] ?? ''
+            }
+            onReplyDraftChange={(value) => {
+              if (task.state === 'awaiting-user-input' && props.mode === 'delegate') {
+                props.onDraftChange(value);
+                return;
+              }
+              props.onReplyDraftChange(task.taskId, value);
+            }}
+            onPause={() => props.onPauseTask(task.taskId)}
+            onResume={() => props.onResumeTask(task.taskId)}
+            onStop={() => props.onStopTask(task.taskId)}
+            onReply={() => props.onReplyTask(task.taskId)}
+            resumeDisabled={hasActiveTask}
+          />
+        ))}
+        {props.startError ? <p className="autonomous-task-start-error">{props.startError}</p> : null}
         {props.entries.length === 0 &&
+        props.tasks.length === 0 &&
+        !props.startError &&
         !(props.approval && props.approval.status !== 'idle' && props.approval.approval) ? (
           <p className="ai-empty-state">
-            {props.mode === 'interact'
-              ? 'Describe one action for the current page.'
-              : 'Ask a question about the current page.'}
+            {props.mode === 'delegate'
+              ? 'Delegate a task. The assistant plans and works in the background.'
+              : props.mode === 'interact'
+                ? 'Describe one action for the current page.'
+                : 'Ask a question about the current page.'}
           </p>
         ) : (
           props.entries.map((entry) => (
@@ -149,22 +257,24 @@ export function AiSidePanel(props: {
         <textarea
           className="ai-question-input"
           value={props.draft}
-          placeholder={
-            props.mode === 'interact' ? 'Describe one action' : 'Ask about this page'
-          }
+          placeholder={placeholder}
           disabled={!props.hasActiveTab || inputLocked}
           rows={3}
           onChange={(event) => props.onDraftChange(event.target.value)}
           onKeyDown={handleKeyDown}
         />
         <div className="ai-panel-footer-actions">
-          {props.isAsking ? (
+          {props.isAsking && props.mode !== 'delegate' ? (
             <button type="button" className="ai-panel-button ai-panel-button-primary" onClick={props.onStop}>
               Stop
             </button>
           ) : (
-            <button type="submit" className="ai-panel-button ai-panel-button-primary" disabled={!canAsk}>
-              {props.mode === 'interact' ? 'Act' : 'Ask'}
+            <button
+              type="submit"
+              className="ai-panel-button ai-panel-button-primary"
+              disabled={!(canAsk || canDelegate || canReply)}
+            >
+              {submitLabel}
             </button>
           )}
         </div>

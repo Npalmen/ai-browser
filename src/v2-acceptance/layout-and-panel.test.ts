@@ -60,9 +60,18 @@ describe('V2 side panel treats model output as text', () => {
         onDraftChange: () => {},
         onModeChange: () => {},
         onAsk: () => {},
+        onDelegate: () => {},
+        onTaskReply: () => {},
         onStop: () => {},
         onClear: () => {},
         onClose: () => {},
+        tasks: [],
+        replyDraftByTaskId: {},
+        onReplyDraftChange: () => {},
+        onPauseTask: () => {},
+        onResumeTask: () => {},
+        onStopTask: () => {},
+        onReplyTask: () => {},
       }),
     );
     assert.equal(/<img\b/.test(markup), false);

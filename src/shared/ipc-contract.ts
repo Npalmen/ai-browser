@@ -8,6 +8,15 @@ import type {
   AiSetPanelOpenResult,
 } from './ai-types';
 import type {
+  AutonomousTaskControlResult,
+  AutonomousTaskEvent,
+  AutonomousTaskGetStateResult,
+  AutonomousTaskIdInput,
+  AutonomousTaskReplyInput,
+  AutonomousTaskStartInput,
+  AutonomousTaskStartResult,
+} from './autonomous-task-types';
+import type {
   ApprovalDecideInput,
   ApprovalDecideResult,
   ApprovalEvent,
@@ -39,6 +48,16 @@ export const APPROVAL_IPC_CHANNELS = {
   event: 'approval:event',
 } as const;
 
+export const AUTONOMOUS_TASK_IPC_CHANNELS = {
+  start: 'autonomous-task:start',
+  pause: 'autonomous-task:pause',
+  resume: 'autonomous-task:resume',
+  stop: 'autonomous-task:stop',
+  reply: 'autonomous-task:reply',
+  getState: 'autonomous-task:get-state',
+  event: 'autonomous-task:event',
+} as const;
+
 export interface BrowserShellApi {
   getBrowserState(): Promise<BrowserState>;
 
@@ -62,4 +81,11 @@ export interface AiAssistantApi {
   onAnswerEvent(listener: (event: AiAnswerEvent) => void): () => void;
   decideApproval(input: ApprovalDecideInput): Promise<ApprovalDecideResult>;
   onApprovalEvent(listener: (event: ApprovalEvent) => void): () => void;
+  startAutonomousTask(input: AutonomousTaskStartInput): Promise<AutonomousTaskStartResult>;
+  pauseAutonomousTask(input: AutonomousTaskIdInput): Promise<AutonomousTaskControlResult>;
+  resumeAutonomousTask(input: AutonomousTaskIdInput): Promise<AutonomousTaskControlResult>;
+  stopAutonomousTask(input: AutonomousTaskIdInput): Promise<AutonomousTaskControlResult>;
+  replyToAutonomousTask(input: AutonomousTaskReplyInput): Promise<AutonomousTaskControlResult>;
+  getAutonomousTaskState(): Promise<AutonomousTaskGetStateResult>;
+  onAutonomousTaskEvent(listener: (event: AutonomousTaskEvent) => void): () => void;
 }

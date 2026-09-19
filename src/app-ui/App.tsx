@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 
+import type { AiPanelMode } from '../shared/autonomous-task-types';
 import type { BrowserState, BrowserTab } from '../shared/browser-types';
 import { AiSidePanel } from './AiSidePanel';
 import {
@@ -21,6 +22,17 @@ import {
   purgeClosedApprovalTabs,
   type ApprovalUiState,
 } from './approval-ui-state';
+import {
+  applyAutonomousTaskEvent,
+  applyAutonomousTaskStartFailure,
+  autonomousTaskUiFromViews,
+  emptyAutonomousTaskUiState,
+  findAwaitingUserInputTask,
+  hasAutonomousTaskAttention,
+  ownedTaskTabIds,
+  setAutonomousTaskReplyDraft,
+  type AutonomousTaskUiState,
+} from './autonomous-task-ui-state';
 
 const NAV_ERROR = 'Invalid or unsupported address';
 
@@ -53,6 +65,8 @@ export function App() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [tabAiState, setTabAiState] = useState<AiUiState>({});
   const [tabApprovalState, setTabApprovalState] = useState<ApprovalUiState>({});
+  const [taskUiState, setTaskUiState] = useState<AutonomousTaskUiState>(emptyAutonomousTaskUiState());
+  const [panelMode, setPanelMode] = useState<AiPanelMode>('read');
   const lastSyncedUrlRef = useRef('');
   const activeTabIdRef = useRef<string | null>(null);
 
@@ -100,6 +114,24 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const unsubscribe = window.aiAssistant.onAutonomousTaskEvent((event) => {
+      setTaskUiState((current) => applyAutonomousTaskEvent(current, event));
+    });
+    void window.aiAssistant
+      .getAutonomousTaskState()
+      .then((result) => {
+        if (!result.ok) {
+          return;
+        }
+        setTaskUiState(autonomousTaskUiFromViews(result.tasks));
+      })
+      .catch((error: unknown) => {
+        console.error('[app-ui] failed to load autonomous task state:', error);
+      });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
     const unsubscribe = window.aiAssistant.onApprovalEvent((event) => {
       setTabApprovalState((current) => applyApprovalEvent(current, event));
       if (
@@ -121,6 +153,27 @@ export function App() {
     });
     return unsubscribe;
   }, []);
+
+  useEffect(() => {
+    if (!panelOpen) {
+      return;
+    }
+    void window.aiAssistant
+      .getAutonomousTaskState()
+      .then((result) => {
+        if (!result.ok) {
+          return;
+        }
+        setTaskUiState((current) => ({
+          ...autonomousTaskUiFromViews(result.tasks),
+          replyDraftByTaskId: current.replyDraftByTaskId,
+          startError: current.startError,
+        }));
+      })
+      .catch((error: unknown) => {
+        console.error('[app-ui] failed to refresh autonomous task state:', error);
+      });
+  }, [panelOpen]);
 
   useEffect(() => {
     if (!browserState) {
@@ -247,7 +300,7 @@ export function App() {
   };
 
   const handleAsk = () => {
-    if (!activeTab) {
+    if (!activeTab || panelMode === 'delegate') {
       return;
     }
     const tabId = activeTab.id;
@@ -336,6 +389,135 @@ export function App() {
       });
   };
 
+  const handleDelegate = () => {
+    if (panelMode !== 'delegate') {
+      return;
+    }
+    const objective = activeAi.draft.trim();
+    if (!objective) {
+      return;
+    }
+    updateActiveTabAi((current) => ({ ...current, draft: '' }));
+    void window.aiAssistant
+      .startAutonomousTask({ objective })
+      .then((result) => {
+        if (!result.ok) {
+          setTaskUiState((current) =>
+            applyAutonomousTaskStartFailure(current, result.error.message),
+          );
+          return;
+        }
+        setTaskUiState((current) =>
+          applyAutonomousTaskEvent(current, {
+            type: 'autonomous-task-started',
+            task: result.task,
+          }),
+        );
+      })
+      .catch((error: unknown) => {
+        console.error('[app-ui] failed to start autonomous task:', error);
+      });
+  };
+
+  const handleTaskReply = (taskId?: string) => {
+    const awaiting = findAwaitingUserInputTask(taskUiState);
+    const replyTaskId = taskId ?? awaiting?.taskId;
+    if (!replyTaskId) {
+      return;
+    }
+    const reply =
+      (taskId ? taskUiState.replyDraftByTaskId[replyTaskId] : undefined)?.trim() ||
+      activeAi.draft.trim();
+    if (!reply) {
+      return;
+    }
+    updateActiveTabAi((current) => ({ ...current, draft: '' }));
+    setTaskUiState((current) => setAutonomousTaskReplyDraft(current, replyTaskId, ''));
+    void window.aiAssistant
+      .replyToAutonomousTask({ taskId: replyTaskId, reply })
+      .then((result) => {
+        if (!result.ok) {
+          return;
+        }
+        setTaskUiState((current) =>
+          applyAutonomousTaskEvent(current, {
+            type: 'autonomous-task-progress',
+            task: result.task,
+          }),
+        );
+      })
+      .catch((error: unknown) => {
+        console.error('[app-ui] failed to reply to autonomous task:', error);
+      });
+  };
+
+  const handlePauseTask = (taskId: string) => {
+    void window.aiAssistant
+      .pauseAutonomousTask({ taskId })
+      .then((result) => {
+        if (!result.ok) {
+          return;
+        }
+        setTaskUiState((current) =>
+          applyAutonomousTaskEvent(current, {
+            type: result.task.state === 'paused' ? 'autonomous-task-paused' : 'autonomous-task-progress',
+            task: result.task,
+          }),
+        );
+      })
+      .catch((error: unknown) => {
+        console.error('[app-ui] failed to pause autonomous task:', error);
+      });
+  };
+
+  const handleResumeTask = (taskId: string) => {
+    void window.aiAssistant
+      .resumeAutonomousTask({ taskId })
+      .then((result) => {
+        if (!result.ok) {
+          return;
+        }
+        setTaskUiState((current) =>
+          applyAutonomousTaskEvent(current, {
+            type: 'autonomous-task-resumed',
+            task: result.task,
+          }),
+        );
+      })
+      .catch((error: unknown) => {
+        console.error('[app-ui] failed to resume autonomous task:', error);
+      });
+  };
+
+  const handleStopTask = (taskId: string) => {
+    void window.aiAssistant
+      .stopAutonomousTask({ taskId })
+      .then((result) => {
+        if (!result.ok) {
+          return;
+        }
+        setTaskUiState((current) =>
+          applyAutonomousTaskEvent(current, {
+            type: 'autonomous-task-cancelled',
+            task: result.task,
+          }),
+        );
+      })
+      .catch((error: unknown) => {
+        console.error('[app-ui] failed to stop autonomous task:', error);
+      });
+  };
+
+  const handlePanelModeChange = (mode: AiPanelMode) => {
+    setPanelMode(mode);
+    if (mode === 'read' || mode === 'interact') {
+      updateActiveTabAi((current) => ({ ...current, mode }));
+    }
+  };
+
+  const taskOwnedTabs = ownedTaskTabIds(taskUiState);
+  const taskAttention = hasAutonomousTaskAttention(taskUiState);
+
   const controlsDisabled = !activeTab;
 
   return (
@@ -344,18 +526,20 @@ export function App() {
         <div className="tab-strip" role="tablist" aria-label="Tabs">
           {browserState?.tabs.map((tab) => {
             const isActive = tab.id === browserState.activeTabId;
+            const taskOwned = taskOwnedTabs.has(tab.id);
             return (
               <div
                 key={tab.id}
                 role="tab"
                 aria-selected={isActive}
-                className={`tab ${isActive ? 'tab-active' : ''}`}
+                className={`tab ${isActive ? 'tab-active' : ''} ${taskOwned ? 'tab-task-owned' : ''}`}
               >
                 <button
                   type="button"
                   className="tab-select"
                   onClick={() => handleActivateTab(tab.id)}
                 >
+                  {taskOwned ? <span className="tab-task-dot" aria-label="Task tab" /> : null}
                   <span className="tab-label">{tabLabel(tab)}</span>
                 </button>
                 <button
@@ -433,12 +617,15 @@ export function App() {
 
           <button
             type="button"
-            className={`nav-button ai-toggle ${panelOpen ? 'ai-toggle-open' : ''}`}
+            className={`nav-button ai-toggle ${panelOpen ? 'ai-toggle-open' : ''} ${
+              taskAttention ? 'ai-toggle-attention' : ''
+            }`}
             onClick={handleTogglePanel}
             aria-pressed={panelOpen}
-            aria-label="AI assistant"
+            aria-label={taskAttention ? 'AI assistant, attention required' : 'AI assistant'}
           >
             AI
+            {taskAttention ? <span className="ai-toggle-badge" aria-hidden="true" /> : null}
           </button>
         </div>
       </div>
@@ -449,17 +636,29 @@ export function App() {
           entries={activeAi.entries}
           isAsking={activeAi.activeAskId !== null}
           approvalBusy={approvalBusy}
-          mode={activeAi.mode}
+          mode={panelMode}
           draft={activeAi.draft}
           onDraftChange={(value) => updateActiveTabAi((current) => ({ ...current, draft: value }))}
-          onModeChange={(mode) => updateActiveTabAi((current) => ({ ...current, mode }))}
+          onModeChange={handlePanelModeChange}
           onAsk={handleAsk}
+          onDelegate={handleDelegate}
+          onTaskReply={() => handleTaskReply()}
           onStop={handleStop}
           onClear={handleClear}
           onClose={handleClosePanel}
           approval={activeApproval}
           onApprove={() => handleApprovalDecision('approve')}
           onReject={() => handleApprovalDecision('reject')}
+          tasks={taskUiState.tasks}
+          startError={taskUiState.startError}
+          replyDraftByTaskId={taskUiState.replyDraftByTaskId}
+          onReplyDraftChange={(taskId, value) =>
+            setTaskUiState((current) => setAutonomousTaskReplyDraft(current, taskId, value))
+          }
+          onPauseTask={handlePauseTask}
+          onResumeTask={handleResumeTask}
+          onStopTask={handleStopTask}
+          onReplyTask={(taskId) => handleTaskReply(taskId)}
         />
       ) : null}
     </div>
