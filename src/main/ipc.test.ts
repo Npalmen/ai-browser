@@ -214,6 +214,32 @@ describe('V8 AI-native IPC wiring', () => {
     assert.equal(preload.includes('ipcRenderer.send'), false);
   });
 
+  it('requires trusted sender before askContext and revalidates in controller path', () => {
+    const ipc = readSrc('src/main/ipc.ts');
+    const start = ipc.indexOf('AI_NATIVE_IPC_CHANNELS.askContext');
+    assert.ok(start >= 0);
+    const block = ipc.slice(start, start + 900);
+    const sender = block.indexOf('assertTrustedAppSender(event)');
+    const parse = block.indexOf('parseContextAskRequest(input)');
+    const ready = block.indexOf('await whenBrowserReady()');
+    const controller = block.indexOf('getAiNativeContextController()');
+    assert.ok(sender >= 0);
+    assert.ok(ready > sender);
+    assert.ok(parse > ready);
+    assert.ok(controller > parse);
+    assert.equal(block.includes('routeBrowserIntent'), false);
+  });
+
+  it('exposes fixed aiNative context ask methods from preload only', () => {
+    const preload = readSrc('src/preload/app-preload.ts');
+    assert.match(preload, /askContext:/);
+    assert.match(preload, /cancelContextAsk:/);
+    assert.match(preload, /onContextAnswerEvent:/);
+    assert.match(preload, /AI_NATIVE_IPC_CHANNELS\.askContext/);
+    assert.match(preload, /AI_NATIVE_IPC_CHANNELS\.contextAnswerEvent/);
+    assert.equal(preload.includes('invoke(channel'), false);
+  });
+
   it('keeps remote pages isolated from aiNative preload', () => {
     const adapter = readSrc('src/browser/electron-adapter.ts');
     const blockStart = adapter.indexOf('private createWebsiteView()');

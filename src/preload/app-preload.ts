@@ -8,7 +8,12 @@ import type {
   AutonomousTaskReplyInput,
   AutonomousTaskStartInput,
 } from '../shared/autonomous-task-types';
-import type { BrowserIntentRouteInput } from '../shared/ai-native-types';
+import type {
+  AiNativeContextAnswerEvent,
+  AiNativeContextAskInput,
+  AiNativeContextCancelAskInput,
+  BrowserIntentRouteInput,
+} from '../shared/ai-native-types';
 import type { BrowserState, TabId } from '../shared/browser-types';
 import {
   AI_NATIVE_IPC_CHANNELS,
@@ -147,6 +152,19 @@ const workflows: WorkflowsApi = {
 const aiNative: AiNativeApi = {
   routeIntent: (input: BrowserIntentRouteInput) =>
     ipcRenderer.invoke(AI_NATIVE_IPC_CHANNELS.routeIntent, input),
+  askContext: (input: AiNativeContextAskInput) =>
+    ipcRenderer.invoke(AI_NATIVE_IPC_CHANNELS.askContext, input),
+  cancelContextAsk: (input: AiNativeContextCancelAskInput) =>
+    ipcRenderer.invoke(AI_NATIVE_IPC_CHANNELS.cancelContextAsk, input),
+  onContextAnswerEvent: (listener: (event: AiNativeContextAnswerEvent) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: AiNativeContextAnswerEvent) => {
+      listener(payload);
+    };
+    ipcRenderer.on(AI_NATIVE_IPC_CHANNELS.contextAnswerEvent, wrapped);
+    return () => {
+      ipcRenderer.removeListener(AI_NATIVE_IPC_CHANNELS.contextAnswerEvent, wrapped);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld('browserShell', browserShell);

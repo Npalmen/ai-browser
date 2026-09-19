@@ -1,14 +1,38 @@
+import { MODEL_CONTEXT_BUDGETS } from '../ai/context-builder';
 import type {
+  AiNativeContextAskInput,
   BrowserContextScope,
   BrowserIntentCapability,
   BrowserIntentRouteInput,
 } from '../shared/ai-native-types';
+import { MAX_CONTEXT_TABS } from '../shared/ai-native-types';
 import { aiNativeSafeError } from '../shared/ai-native-safe-error';
 import type { AiNativeSafeError } from '../shared/ai-native-types';
 
 const ROUTE_INTENT_KEYS = new Set(['text', 'capability', 'context']);
 const CURRENT_TAB_KEYS = new Set(['kind', 'tabId']);
 const SELECTED_TABS_KEYS = new Set(['kind', 'tabIds']);
+const ASK_CONTEXT_KEYS = new Set(['question', 'context']);
+const CANCEL_CONTEXT_ASK_KEYS = new Set(['askId']);
+
+const FORBIDDEN_CONTEXT_ASK_FIELDS = new Set([
+  'targetId',
+  'observationId',
+  'documentRevision',
+  'approvalId',
+  'taskId',
+  'workflowId',
+  'triggerKey',
+  'model',
+  'needsVision',
+  'contextId',
+  'capability',
+  'route',
+  'grant',
+  'runId',
+  'preparedActionId',
+  'executionId',
+]);
 
 const FORBIDDEN_ROUTE_INTENT_FIELDS = new Set([
   'targetId',
@@ -120,6 +144,105 @@ function parseContext(value: unknown): BrowserContextScope | AiNativeSafeError {
   }
 
   return aiNativeSafeError('AI_NATIVE_CONTEXT_INVALID');
+}
+
+function parseSelectedTabsContext(
+  value: unknown,
+): { kind: 'selected-tabs'; tabIds: string[] } | AiNativeSafeError {
+  if (typeof value !== 'object' || value === null) {
+    return aiNativeSafeError('AI_NATIVE_CONTEXT_INVALID');
+  }
+  const record = value as Record<string, unknown>;
+  if (!hasOnlyKeys(record, SELECTED_TABS_KEYS) || record.kind !== 'selected-tabs') {
+    return aiNativeSafeError('AI_NATIVE_CONTEXT_INVALID');
+  }
+  if (!Array.isArray(record.tabIds)) {
+    return aiNativeSafeError('AI_NATIVE_CONTEXT_INVALID');
+  }
+  if (record.tabIds.length === 0 || record.tabIds.length > MAX_CONTEXT_TABS) {
+    return aiNativeSafeError('AI_NATIVE_CONTEXT_INVALID');
+  }
+  const tabIds: string[] = [];
+  const seen = new Set<string>();
+  for (const tabId of record.tabIds) {
+    const parsed = parseTabId(tabId);
+    if (isAiNativeSafeError(parsed)) {
+      return parsed;
+    }
+    if (seen.has(parsed)) {
+      return aiNativeSafeError('AI_NATIVE_CONTEXT_INVALID');
+    }
+    seen.add(parsed);
+    tabIds.push(parsed);
+  }
+  return { kind: 'selected-tabs', tabIds };
+}
+
+function rejectForbiddenContextAskKeys(record: Record<string, unknown>): boolean {
+  for (const key of Object.keys(record)) {
+    if (FORBIDDEN_CONTEXT_ASK_FIELDS.has(key)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function parseContextAskRequest(
+  input: unknown,
+): { ok: true; input: AiNativeContextAskInput } | { ok: false; error: AiNativeSafeError } {
+  if (typeof input !== 'object' || input === null) {
+    return invalidRequest();
+  }
+
+  const record = input as Record<string, unknown>;
+  if (rejectForbiddenContextAskKeys(record)) {
+    return invalidRequest();
+  }
+
+  const keys = Object.keys(record);
+  if (!keys.every((key) => ASK_CONTEXT_KEYS.has(key)) || !hasOnlyKeys(record, ASK_CONTEXT_KEYS)) {
+    return invalidRequest();
+  }
+
+  if (typeof record.question !== 'string') {
+    return invalidRequest();
+  }
+  const question = record.question.trim();
+  if (question.length === 0) {
+    return { ok: false, error: aiNativeSafeError('AI_NATIVE_EMPTY_INPUT') };
+  }
+  if (question.length > MODEL_CONTEXT_BUDGETS.maxUserQuestionChars) {
+    return invalidRequest();
+  }
+
+  const parsedContext = parseSelectedTabsContext(record.context);
+  if (isAiNativeSafeError(parsedContext)) {
+    return { ok: false, error: parsedContext };
+  }
+
+  return {
+    ok: true,
+    input: {
+      question: record.question,
+      context: parsedContext,
+    },
+  };
+}
+
+export function parseCancelContextAskRequest(
+  input: unknown,
+): { ok: true; askId: string } | { ok: false; error: AiNativeSafeError } {
+  if (typeof input !== 'object' || input === null) {
+    return invalidRequest();
+  }
+  const record = input as Record<string, unknown>;
+  if (!hasOnlyKeys(record, CANCEL_CONTEXT_ASK_KEYS)) {
+    return invalidRequest();
+  }
+  if (typeof record.askId !== 'string' || record.askId.length === 0) {
+    return invalidRequest();
+  }
+  return { ok: true, askId: record.askId };
 }
 
 export function parseRouteIntentRequest(

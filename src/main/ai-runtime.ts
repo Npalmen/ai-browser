@@ -22,6 +22,9 @@ import { ElectronBrowserAdapter } from '../browser/electron-adapter';
 import type { BrowserTabCreatedEvent } from '../browser/tab-creation';
 import { InMemoryInteractionAuditSink } from '../interaction/interaction-audit';
 import { InteractionExecutor } from '../interaction/interaction-executor';
+import { MultiTabReadOnlyAgent } from '../ai-native/multi-tab-read-only-agent';
+import { AI_NATIVE_IPC_CHANNELS } from '../shared/ai-native-types';
+import type { AiNativeContextAnswerEvent } from '../shared/ai-native-types';
 import { AI_SIDE_PANEL_WIDTH_PX, type AiAnswerEvent } from '../shared/ai-types';
 import type { AutonomousTaskEvent } from '../shared/autonomous-task-types';
 import type { ApprovalEvent } from '../shared/approval-types';
@@ -34,6 +37,7 @@ import { AgentRunApprovalBridge } from './agent-run-approval-bridge';
 import { AgentRunController } from './agent-run-controller';
 import { AgentRunExecutor } from './agent-run-executor';
 import { CompositeAgentRunApprovalOutcomePort } from './agent-run-approval-outcome-composite';
+import { AiNativeContextController } from './ai-native-context-controller';
 import { AiRequestController } from './ai-request-controller';
 import { AutonomousTaskApprovalIntegration } from './autonomous-task-approval-integration';
 import { AutonomousTaskApprovalPortProxy } from './autonomous-task-approval-port-proxy';
@@ -51,6 +55,7 @@ interface ApprovalRuntime {
 }
 
 let controller: AiRequestController | null = null;
+let contextController: AiNativeContextController | null = null;
 let agentRunController: AgentRunController | null = null;
 let agentRunExecutor: AgentRunExecutor | null = null;
 let adapter: ElectronBrowserAdapter | null = null;
@@ -62,6 +67,10 @@ let autonomousTaskEventListeners = new Set<(event: AutonomousTaskEvent) => void>
 
 export function getAiController(): AiRequestController | null {
   return controller;
+}
+
+export function getAiNativeContextController(): AiNativeContextController | null {
+  return contextController;
 }
 
 export function getAgentRunController(): AgentRunController | null {
@@ -216,6 +225,16 @@ export function initializeAiRuntime(browserAdapter: ElectronBrowserAdapter): voi
     agentRuns: agentRunController,
     emit: emitAiAnswerEvent,
   });
+  const multiTabAgent = new MultiTabReadOnlyAgent({
+    observationSource,
+    modelRuntime: gatewayRuntime,
+  });
+  contextController = new AiNativeContextController({
+    observationSource,
+    multiTabAgent,
+    getBrowserState: () => browserAdapter.getBrowserState(),
+    emit: emitAiNativeContextAnswerEvent,
+  });
 
   const taskCoordinator = new AutonomousTaskCoordinator();
   const tabState = new TaskTabStateRegistry();
@@ -279,8 +298,10 @@ export function disposeAiRuntime(): void {
   autonomousTaskController?.dispose();
   autonomousTaskApprovalIntegration?.dispose();
   autonomousTaskCoordinator?.dispose();
+  contextController?.dispose();
   controller?.dispose();
   agentRunExecutor?.dispose();
+  contextController = null;
   controller = null;
   agentRunController = null;
   agentRunExecutor = null;
@@ -305,6 +326,10 @@ function asChildAgentRunPort(executor: AgentRunExecutor): AutonomousTaskAgentRun
 
 function emitAiAnswerEvent(event: AiAnswerEvent): void {
   sendToTrustedAppRenderer(AI_IPC_CHANNELS.answerEvent, event);
+}
+
+function emitAiNativeContextAnswerEvent(event: AiNativeContextAnswerEvent): void {
+  sendToTrustedAppRenderer(AI_NATIVE_IPC_CHANNELS.contextAnswerEvent, event);
 }
 
 function emitApprovalEvent(event: ApprovalEvent): void {

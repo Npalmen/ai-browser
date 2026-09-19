@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { parseRouteIntentRequest } from './ai-native-ipc-guards';
+import {
+  parseCancelContextAskRequest,
+  parseContextAskRequest,
+  parseRouteIntentRequest,
+} from './ai-native-ipc-guards';
 
 describe('parseRouteIntentRequest', () => {
   it('accepts minimal default route input', () => {
@@ -98,6 +102,55 @@ describe('parseRouteIntentRequest', () => {
       if (!result.ok) {
         assert.equal(result.error.code, 'AI_NATIVE_INVALID_REQUEST');
       }
+    }
+  });
+
+  it('parses selected-tabs context ask requests', () => {
+    const result = parseContextAskRequest({
+      question: 'Compare tabs',
+      context: { kind: 'selected-tabs', tabIds: ['tab-a', 'tab-b'] },
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.input.context.kind, 'selected-tabs');
+      assert.deepEqual(result.input.context.tabIds, ['tab-a', 'tab-b']);
+    }
+  });
+
+  it('rejects empty context ask questions', () => {
+    const result = parseContextAskRequest({
+      question: '   ',
+      context: { kind: 'selected-tabs', tabIds: ['tab-a'] },
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, 'AI_NATIVE_EMPTY_INPUT');
+    }
+  });
+
+  it('rejects authority-shaped extras on context ask', () => {
+    for (const extra of [
+      { targetId: 'target-1' },
+      { observationId: 'obs-1' },
+      { documentRevision: 'rev-1' },
+      { model: 'page-fast' },
+      { needsVision: true },
+      { contextId: 'ctx-1' },
+    ]) {
+      const result = parseContextAskRequest({
+        question: 'What?',
+        context: { kind: 'selected-tabs', tabIds: ['tab-a'] },
+        ...extra,
+      });
+      assert.equal(result.ok, false, JSON.stringify(extra));
+    }
+  });
+
+  it('parses cancel context ask requests', () => {
+    const result = parseCancelContextAskRequest({ askId: 'ask-1' });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.askId, 'ask-1');
     }
   });
 

@@ -1,6 +1,7 @@
 import { ipcMain } from 'electron';
 
 import { routeBrowserIntent } from '../ai-native/browser-intent-router';
+import { aiNativeSafeError } from '../shared/ai-native-safe-error';
 import {
   AI_NATIVE_IPC_CHANNELS,
   APPROVAL_IPC_CHANNELS,
@@ -9,13 +10,18 @@ import {
   BROWSER_IPC_CHANNELS,
   WORKFLOW_IPC_CHANNELS,
 } from '../shared/ipc-contract';
-import { parseRouteIntentRequest } from './ai-native-ipc-guards';
+import {
+  parseCancelContextAskRequest,
+  parseContextAskRequest,
+  parseRouteIntentRequest,
+} from './ai-native-ipc-guards';
 import { buildTrustedSearchNavigationUrl } from './browser-search-provider';
 import { isAiSafeError, parseAskCurrentPageRequest, parseAskId, parsePanelOpen, parseTabId } from './ai-ipc-guards';
 import {
   beforeAutonomousTaskTrustedChromeNavigation,
   cancelAgentRunForTrustedChromeNavigation,
   getAiController,
+  getAiNativeContextController,
   getApprovalWorkflowController,
   getAutonomousTaskController,
   handleAutonomousTaskTabClosed,
@@ -130,6 +136,33 @@ export function registerBrowserShellIpc(): void {
       return parsed;
     }
     return routeBrowserIntent(parsed.input, getBrowserAdapter().getBrowserState());
+  });
+
+  ipcMain.handle(AI_NATIVE_IPC_CHANNELS.askContext, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    await whenBrowserReady();
+    const parsed = parseContextAskRequest(input);
+    if (!parsed.ok) {
+      return parsed;
+    }
+    const contextController = getAiNativeContextController();
+    if (!contextController) {
+      return { ok: false, error: aiNativeSafeError('AI_NATIVE_NOT_AVAILABLE') };
+    }
+    return contextController.startAsk(parsed.input);
+  });
+
+  ipcMain.handle(AI_NATIVE_IPC_CHANNELS.cancelContextAsk, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    const parsed = parseCancelContextAskRequest(input);
+    if (!parsed.ok) {
+      return parsed;
+    }
+    const contextController = getAiNativeContextController();
+    if (!contextController) {
+      return { cancelled: false };
+    }
+    return contextController.cancelContextAsk(parsed.askId);
   });
 
   ipcMain.handle(BROWSER_IPC_CHANNELS.back, async (event, tabId: unknown) => {

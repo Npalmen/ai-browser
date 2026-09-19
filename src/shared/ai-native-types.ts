@@ -85,7 +85,11 @@ export type AiNativeSafeErrorCode =
   | 'AI_NATIVE_TAB_UNAVAILABLE'
   | 'AI_NATIVE_CONTEXT_INVALID'
   | 'AI_NATIVE_SEARCH_INVALID'
-  | 'AI_NATIVE_NOT_AVAILABLE';
+  | 'AI_NATIVE_NOT_AVAILABLE'
+  | 'AI_NATIVE_CONTEXT_TOO_LARGE'
+  | 'AI_NATIVE_CONTEXT_UNAVAILABLE'
+  | 'AI_NATIVE_REQUEST_CANCELLED'
+  | 'AI_NATIVE_MODEL_FAILED';
 
 export interface AiNativeSafeError {
   readonly code: AiNativeSafeErrorCode;
@@ -121,10 +125,70 @@ export type BrowserIntentRouteRequest = {
 
 export const AI_NATIVE_IPC_CHANNELS = {
   routeIntent: 'ai-native:route-intent',
+  askContext: 'ai-native:ask-context',
+  cancelContextAsk: 'ai-native:cancel-context-ask',
+  contextAnswerEvent: 'ai-native:context-answer-event',
 } as const;
+
+export interface AiNativeContextAskInput {
+  readonly question: string;
+  readonly context: {
+    readonly kind: 'selected-tabs';
+    readonly tabIds: readonly TabId[];
+  };
+}
+
+export interface AiNativeContextCancelAskInput {
+  readonly askId: string;
+}
+
+export type AiNativeContextAskStartResult =
+  | {
+      readonly ok: true;
+      readonly askId: string;
+    }
+  | {
+      readonly ok: false;
+      readonly error: AiNativeSafeError;
+    };
+
+export type AiNativeContextCancelAskResult = {
+  readonly cancelled: boolean;
+};
+
+export type AiNativeContextAnswerEvent =
+  | {
+      readonly type: 'context-answer-started';
+      readonly askId: string;
+    }
+  | {
+      readonly type: 'context-answer-text';
+      readonly askId: string;
+      readonly delta: string;
+    }
+  | {
+      readonly type: 'context-answer-finished';
+      readonly askId: string;
+      readonly answer: {
+        readonly text: string;
+        readonly truncatedContext: boolean;
+      };
+    }
+  | {
+      readonly type: 'context-answer-cancelled';
+      readonly askId: string;
+    }
+  | {
+      readonly type: 'context-answer-error';
+      readonly askId: string;
+      readonly error: AiNativeSafeError;
+    };
 
 export interface AiNativeApi {
   routeIntent(input: BrowserIntentRouteInput): Promise<BrowserIntentRouteResult>;
+  askContext(input: AiNativeContextAskInput): Promise<AiNativeContextAskStartResult>;
+  cancelContextAsk(input: AiNativeContextCancelAskInput): Promise<AiNativeContextCancelAskResult>;
+  onContextAnswerEvent(listener: (event: AiNativeContextAnswerEvent) => void): () => void;
 }
 
 export type BrowserIntentRouterState = {
