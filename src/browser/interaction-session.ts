@@ -47,8 +47,8 @@ export class InteractionSessionManager {
     try {
       session = await this.beginSession(webContents);
       if (!webContents.isDestroyed()) {
-        BrowserWindow.fromWebContents(webContents)?.focus();
-        webContents.focus();
+        BrowserWindow?.fromWebContents?.(webContents)?.focus();
+        webContents.focus?.();
       }
       return await action(session.cdp);
     } finally {

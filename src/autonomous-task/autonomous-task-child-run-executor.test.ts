@@ -17,6 +17,7 @@ import type {
 import { InMemoryAutonomousTaskAuditSink } from './autonomous-task-audit';
 import { AutonomousTaskCoordinator } from './autonomous-task-coordinator';
 import { AutonomousTaskError } from './autonomous-task-errors';
+import { TaskTabStateRegistry } from './task-tab-state-registry';
 import {
   MAX_AUTONOMOUS_TASK_CHILD_RUNS,
   toAutonomousTaskRef,
@@ -79,7 +80,7 @@ class FakeAgentRunPort implements AutonomousTaskAgentRunExecutionPort {
     return false;
   }
 
-  async cancelAndWait(): Promise<void> {}
+  async cancelAndWait(_ref?: AgentRunRef, _reason?: string): Promise<void> {}
 }
 
 function completedSnapshot(ref: AgentRunRef, instruction: string): AgentRunSnapshot {
@@ -133,6 +134,7 @@ function terminalResult(
 
 interface Harness {
   coordinator: AutonomousTaskCoordinator;
+  tabState: TaskTabStateRegistry;
   sink: InMemoryAutonomousTaskAuditSink;
 }
 
@@ -140,6 +142,7 @@ function createHarness(): Harness {
   const sink = new InMemoryAutonomousTaskAuditSink();
   return {
     sink,
+    tabState: new TaskTabStateRegistry(),
     coordinator: new AutonomousTaskCoordinator({
       generateTaskId: () => 'task-1',
       auditSink: sink,
@@ -152,7 +155,12 @@ function startTask(
   tabId = 'tab-1',
   objective = 'compare these three plans',
 ): AutonomousTaskSnapshot {
-  return harness.coordinator.startTask(tabId, objective);
+  const snapshot = harness.coordinator.startTask(tabId, objective);
+  const owned = harness.coordinator.getOwnedTabs(snapshot.taskId)[0];
+  if (owned !== undefined) {
+    harness.tabState.initializeOwnedTab(snapshot.taskId, owned.alias, owned.tabId);
+  }
+  return snapshot;
 }
 
 function refOf(snapshot: AutonomousTaskSnapshot): AutonomousTaskRef {
@@ -175,7 +183,6 @@ function childRequest(
     ref: refOf(snapshot),
     taskTabAlias: 'task-tab-1',
     instruction: 'Compare refundable prices',
-    trustedTabStateToken: 'tab-state-a',
     ...overrides,
   };
 }
@@ -188,6 +195,7 @@ describe('AutonomousTaskChildRunExecutor', () => {
     const executor = new AutonomousTaskChildRunExecutor({
       coordinator: harness.coordinator,
       agentRuns: port,
+      tabState: harness.tabState,
     });
 
     const result = await executor.execute(childRequest(task));
@@ -210,6 +218,7 @@ describe('AutonomousTaskChildRunExecutor', () => {
     const executor = new AutonomousTaskChildRunExecutor({
       coordinator: harness.coordinator,
       agentRuns: port,
+      tabState: harness.tabState,
     });
 
     const result = await executor.execute(childRequest(task, { taskTabAlias: 'task-tab-99' }));
@@ -229,6 +238,7 @@ describe('AutonomousTaskChildRunExecutor', () => {
     const executor = new AutonomousTaskChildRunExecutor({
       coordinator: harness.coordinator,
       agentRuns: port,
+      tabState: harness.tabState,
     });
     const request = childRequest(task);
     const first = await executor.execute(request);
@@ -250,10 +260,12 @@ describe('AutonomousTaskChildRunExecutor', () => {
     const executor = new AutonomousTaskChildRunExecutor({
       coordinator: harness.coordinator,
       agentRuns: port,
+      tabState: harness.tabState,
     });
-    await executor.execute(childRequest(task, { trustedTabStateToken: 'state-1' }));
+    await executor.execute(childRequest(task));
+    harness.tabState.incrementForAlias(task.taskId, 'task-tab-1');
     const second = await executor.execute(
-      childRequest(harness.coordinator.getTask(task.taskId)!, { trustedTabStateToken: 'state-2' }),
+      childRequest(harness.coordinator.getTask(task.taskId)!),
     );
     assert.equal(second.status, 'completed');
     assert.equal(port.starts.length, 2);
@@ -267,18 +279,16 @@ describe('AutonomousTaskChildRunExecutor', () => {
     const executor = new AutonomousTaskChildRunExecutor({
       coordinator: harness.coordinator,
       agentRuns: port,
+      tabState: harness.tabState,
     });
     let current = task;
     for (let index = 0; index < MAX_AUTONOMOUS_TASK_CHILD_RUNS; index += 1) {
-      const result = await executor.execute(
-        childRequest(current, { trustedTabStateToken: `state-${index}` }),
-      );
+      const result = await executor.execute(childRequest(current));
       assert.equal(result.status, 'completed');
       current = harness.coordinator.getTask(task.taskId)!;
+      harness.tabState.incrementForAlias(task.taskId, 'task-tab-1');
     }
-    const fifth = await executor.execute(
-      childRequest(current, { trustedTabStateToken: 'state-5' }),
-    );
+    const fifth = await executor.execute(childRequest(current));
     assert.equal(fifth.status, 'terminal');
     if (fifth.status === 'terminal') {
       assert.equal(fifth.snapshot.terminalReason, 'TASK_LIMIT_REACHED');
@@ -305,16 +315,13 @@ describe('AutonomousTaskChildRunExecutor', () => {
     const executor = new AutonomousTaskChildRunExecutor({
       coordinator: harness.coordinator,
       agentRuns: port,
+      tabState: harness.tabState,
     });
     const pending = executor.execute(childRequest(task));
     await startedGate.promise;
     await assert.rejects(
       () =>
-        executor.execute(
-          childRequest(harness.coordinator.getTask(task.taskId)!, {
-            trustedTabStateToken: 'other',
-          }),
-        ),
+        executor.execute(childRequest(harness.coordinator.getTask(task.taskId)!)),
       (error: unknown) =>
         error instanceof AutonomousTaskError && error.code === 'AUTONOMOUS_TASK_INVALID_TRANSITION',
     );
@@ -330,11 +337,11 @@ describe('AutonomousTaskChildRunExecutor', () => {
     const executor = new AutonomousTaskChildRunExecutor({
       coordinator: harness.coordinator,
       agentRuns: port,
+      tabState: harness.tabState,
     });
-    await executor.execute(childRequest(task, { trustedTabStateToken: 'a' }));
-    await executor.execute(
-      childRequest(harness.coordinator.getTask(task.taskId)!, { trustedTabStateToken: 'b' }),
-    );
+    await executor.execute(childRequest(task));
+    harness.tabState.incrementForAlias(task.taskId, 'task-tab-1');
+    await executor.execute(childRequest(harness.coordinator.getTask(task.taskId)!));
     assert.equal(port.createdRefs.length, 2);
     assert.notEqual(port.createdRefs[0]?.runId, port.createdRefs[1]?.runId);
     assert.notEqual(port.createdRefs[0]?.generation, port.createdRefs[1]?.generation);
@@ -358,6 +365,7 @@ describe('AutonomousTaskChildRunExecutor', () => {
     const executor = new AutonomousTaskChildRunExecutor({
       coordinator: harness.coordinator,
       agentRuns: port,
+      tabState: harness.tabState,
     });
     const gen1 = refOf(task);
     const pending = executor.execute(childRequest(task));
@@ -497,6 +505,7 @@ describe('AutonomousTaskChildRunExecutor', () => {
       const executor = new AutonomousTaskChildRunExecutor({
         coordinator: harness.coordinator,
         agentRuns: port,
+        tabState: harness.tabState,
       });
       const result = await executor.execute(childRequest(task));
       assert.equal(result.status, 'terminal', testCase.reason);
@@ -514,6 +523,7 @@ describe('AutonomousTaskChildRunExecutor', () => {
     const executor = new AutonomousTaskChildRunExecutor({
       coordinator: harness.coordinator,
       agentRuns: port,
+      tabState: harness.tabState,
     });
     const result = await executor.execute(childRequest(task));
     assert.equal(result.status, 'terminal');
@@ -530,10 +540,116 @@ describe('AutonomousTaskChildRunExecutor', () => {
     const executor = new AutonomousTaskChildRunExecutor({
       coordinator: harness.coordinator,
       agentRuns: port,
+      tabState: harness.tabState,
     });
     await executor.execute(childRequest(task));
     const options = port.starts[0]?.options ?? {};
     assert.deepEqual(Object.keys(options), ['shouldStart']);
+  });
+
+  it('derives the tab state token locally and ignores a forged caller token', async () => {
+    const harness = createHarness();
+    const task = startTask(harness);
+    const port = new FakeAgentRunPort();
+    const executor = new AutonomousTaskChildRunExecutor({
+      coordinator: harness.coordinator,
+      agentRuns: port,
+      tabState: harness.tabState,
+    });
+    await executor.execute(childRequest(task));
+    const forged = {
+      ...childRequest(harness.coordinator.getTask(task.taskId)!),
+      trustedTabStateToken: 'forged-token',
+    };
+    const second = await executor.execute(forged);
+    assert.equal(second.status, 'terminal');
+    if (second.status === 'terminal') {
+      assert.equal(second.snapshot.terminalReason, 'TASK_NO_PROGRESS');
+    }
+    assert.equal(port.starts.length, 1);
+  });
+
+  it('increments tab state after a successful child with action attempts', async () => {
+    const harness = createHarness();
+    const task = startTask(harness);
+    const port = new FakeAgentRunPort(async (tabId, instruction) => {
+      const ref: AgentRunRef = { runId: `run-${port.starts.length}`, tabId, generation: port.starts.length };
+      return {
+        status: 'started',
+        run: { ...completedSnapshot(ref, instruction), actionAttemptCount: 2 },
+        ref,
+        completion: Promise.resolve({
+          ...completedResult(ref, instruction, 'done'),
+          run: { ...completedSnapshot(ref, instruction), actionAttemptCount: 2 },
+        }),
+      };
+    });
+    const executor = new AutonomousTaskChildRunExecutor({
+      coordinator: harness.coordinator,
+      agentRuns: port,
+      tabState: harness.tabState,
+    });
+    const before = harness.tabState.getToken(task.taskId, 'task-tab-1');
+    await executor.execute(childRequest(task));
+    const after = harness.tabState.getToken(task.taskId, 'task-tab-1');
+    assert.notEqual(after, before);
+    const second = await executor.execute(childRequest(harness.coordinator.getTask(task.taskId)!));
+    assert.equal(second.status, 'completed');
+  });
+
+  it('does not increment tab state after a completed child with zero actions', async () => {
+    const harness = createHarness();
+    const task = startTask(harness);
+    const port = new FakeAgentRunPort();
+    const executor = new AutonomousTaskChildRunExecutor({
+      coordinator: harness.coordinator,
+      agentRuns: port,
+      tabState: harness.tabState,
+    });
+    const before = harness.tabState.getToken(task.taskId, 'task-tab-1');
+    await executor.execute(childRequest(task));
+    assert.equal(harness.tabState.getToken(task.taskId, 'task-tab-1'), before);
+  });
+
+  it('maps requested lifecycle cancellation to lifecycle-cancelled without CHILD_RUN_FAILED', async () => {
+    const harness = createHarness();
+    const task = startTask(harness);
+    const hold = new Deferred<AutonomousTaskAgentRunCompletion>();
+    const startedGate = new Deferred<void>();
+    const port = new FakeAgentRunPort(async (tabId, instruction) => {
+      const ref: AgentRunRef = { runId: 'run-life', tabId, generation: 1 };
+      startedGate.resolve();
+      return {
+        status: 'started',
+        run: completedSnapshot(ref, instruction),
+        ref,
+        completion: hold.promise,
+      };
+    });
+    port.cancelAndWait = async (ref) => {
+      const cancelledRef = ref ?? { runId: 'run-life', tabId: 'tab-1', generation: 1 };
+      hold.resolve(
+        terminalResult(cancelledRef, 'Compare refundable prices', 'cancelled', 'USER_CANCELLED'),
+      );
+    };
+    const executor = new AutonomousTaskChildRunExecutor({
+      coordinator: harness.coordinator,
+      agentRuns: port,
+      tabState: harness.tabState,
+    });
+    const pending = executor.execute(childRequest(task));
+    await startedGate.promise;
+    for (let attempt = 0; attempt < 20 && executor.getActiveChild(task.taskId) === undefined; attempt += 1) {
+      await Promise.resolve();
+    }
+    const cancelled = await executor.cancelActiveChildForLifecycle(refOf(task), 'USER_CANCELLED');
+    const executed = await pending;
+    assert.equal(cancelled.status, 'lifecycle-cancelled');
+    assert.equal(executed.status, 'lifecycle-cancelled');
+    if (cancelled.status === 'lifecycle-cancelled') {
+      assert.equal(cancelled.snapshot.state, 'running-subgoal');
+      assert.notEqual(cancelled.snapshot.terminalReason, 'CHILD_RUN_FAILED');
+    }
   });
 });
 

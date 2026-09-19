@@ -11,6 +11,7 @@ function createWebContentsStub(options: { attached?: boolean; destroyed?: boolea
   return {
     isDestroyed: () => destroyed,
     isDevToolsOpened: () => false,
+    focus: () => undefined,
     debugger: {
       isAttached: () => attached && !destroyed,
       attach: () => {

@@ -31,12 +31,18 @@ export interface AgentRunControllerDependencies {
   executor: AgentRunExecutorPort;
   conversationStore: ConversationStore;
   emit: (event: AiAnswerEvent) => void;
+  /**
+   * Trusted-main ownership gate. When false, this product wrapper must not
+   * start a manual Act on the tab. Re-checked inside executor shouldStart.
+   */
+  canStartManualAct?: (tabId: TabId) => boolean;
 }
 
 export class AgentRunController {
   private readonly executor: AgentRunExecutorPort;
   private readonly conversationStore: ConversationStore;
   private readonly emit: (event: AiAnswerEvent) => void;
+  private readonly canStartManualAct: ((tabId: TabId) => boolean) | undefined;
 
   private readonly productByTab = new Map<TabId, ProductAgentRun>();
   private disposed = false;
@@ -45,15 +51,19 @@ export class AgentRunController {
     this.executor = deps.executor;
     this.conversationStore = deps.conversationStore;
     this.emit = deps.emit;
+    this.canStartManualAct = deps.canStartManualAct;
   }
 
   async start(tabId: TabId, instruction: string, options: AgentRunStartOptions): Promise<AgentRunStartResult> {
     if (this.disposed) {
       return { status: 'ignored' };
     }
+    if (!this.mayStartManualAct(tabId)) {
+      return { status: 'ignored' };
+    }
     let product: ProductAgentRun | undefined;
     const started = await this.executor.start(tabId, instruction, {
-      shouldStart: () => !this.disposed,
+      shouldStart: () => !this.disposed && this.mayStartManualAct(tabId),
       onStarted: (run, ref) => {
         product = {
           ref,
@@ -179,6 +189,10 @@ export class AgentRunController {
 
   private exactRefForTab(tabId: TabId): AgentRunRef | undefined {
     return this.productByTab.get(tabId)?.ref;
+  }
+
+  private mayStartManualAct(tabId: TabId): boolean {
+    return this.canStartManualAct?.(tabId) !== false;
   }
 
   private finishRun(product: ProductAgentRun, result: SafeAgentLoopResult): void {

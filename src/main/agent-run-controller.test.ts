@@ -117,7 +117,14 @@ function executingSnapshot(invoked: boolean): PreparedActionRecordSnapshot {
   };
 }
 
-function controllerOf(loop: FakeLoop, extras: { manager?: FakeManager; lifecycle?: FakeLifecycle } = {}) {
+function controllerOf(
+  loop: FakeLoop,
+  extras: {
+    manager?: FakeManager;
+    lifecycle?: FakeLifecycle;
+    canStartManualAct?: (tabId: TabId) => boolean;
+  } = {},
+) {
   const events: AiAnswerEvent[] = [];
   const coordinator = new AgentRunCoordinator({
     generateRunId: () => `run-${loop.runCalls.length + 1}`,
@@ -137,6 +144,7 @@ function controllerOf(loop: FakeLoop, extras: { manager?: FakeManager; lifecycle
     emit: (event) => {
       events.push(event);
     },
+    canStartManualAct: extras.canStartManualAct,
   });
   return { controller, events, coordinator, conversationStore, manager, lifecycle, loop, executor };
 }
@@ -790,6 +798,47 @@ describe('AgentRunController', () => {
     }
     assert.equal(serialized.includes('ask-1'), true);
     assert.equal(serialized.includes(TAB), true);
+  });
+
+  it('blocks manual Act before AgentRun start when the ownership gate is closed', async () => {
+    const loop = new FakeLoop();
+    const harness = controllerOf(loop, { canStartManualAct: () => false });
+    const started = await harness.controller.start(TAB, 'Do the task', { askId: 'ask-1' });
+    assert.equal(started.status, 'ignored');
+    assert.equal(loop.runCalls.length, 0);
+    assert.equal(harness.conversationStore.get(TAB), undefined);
+  });
+
+  it('allows manual Act on an unowned tab when the ownership gate is open', async () => {
+    const owned = new Set<TabId>([TAB]);
+    const loop = new FakeLoop();
+    const harness = controllerOf(loop, {
+      canStartManualAct: (tabId) => !owned.has(tabId),
+    });
+    const blocked = await harness.controller.start(TAB, 'Do the task', { askId: 'ask-1' });
+    assert.equal(blocked.status, 'ignored');
+    const allowed = await harness.controller.start(TAB_B, 'Do the task', { askId: 'ask-2' });
+    assert.equal(allowed.status, 'started');
+    if (allowed.status === 'started') {
+      await allowed.completion;
+    }
+  });
+
+  it('rechecks the ownership gate inside shouldStart after same-tab drain', async () => {
+    const firstHold = new Deferred<SafeAgentLoopResult>();
+    const loop = new FakeLoop(async () => firstHold.promise);
+    const owned = new Set<TabId>();
+    const harness = controllerOf(loop, {
+      canStartManualAct: (tabId) => !owned.has(tabId),
+    });
+    const first = await harness.controller.start(TAB, 'First', { askId: 'ask-a' });
+    assert.equal(first.status, 'started');
+    const secondPromise = harness.controller.start(TAB, 'Second', { askId: 'ask-b' });
+    owned.add(TAB);
+    firstHold.resolve({ status: 'ignored' });
+    const second = await secondPromise;
+    assert.equal(second.status, 'ignored');
+    assert.equal(loop.runCalls.length, 1);
   });
 });
 

@@ -4,6 +4,7 @@ import type { TabId } from '../shared/browser-types';
 import { ElectronBrowserAdapter } from '../browser/electron-adapter';
 import { BROWSER_IPC_CHANNELS } from '../shared/ipc-contract';
 import type { TabInvalidationReason } from '../browser/tab-invalidation';
+import type { BrowserTabCreatedEvent } from '../browser/tab-creation';
 
 let adapter: ElectronBrowserAdapter | null = null;
 let mainWindow: BrowserWindow | null = null;
@@ -51,6 +52,7 @@ export async function initializeBrowserRuntime(
   options?: {
     onBeforeDispose?: () => void;
     onTabInvalidated?: (tabId: TabId, reason: TabInvalidationReason) => void;
+    onTabCreated?: (event: BrowserTabCreatedEvent) => void;
   },
 ): Promise<ElectronBrowserAdapter> {
   mainWindow = window;
@@ -59,6 +61,7 @@ export async function initializeBrowserRuntime(
       publishBrowserState();
     },
     onTabInvalidated: options?.onTabInvalidated,
+    onTabCreated: options?.onTabCreated,
   });
 
   window.on('resize', () => {

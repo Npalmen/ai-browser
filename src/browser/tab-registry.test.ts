@@ -74,4 +74,18 @@ describe('TabRegistry', () => {
     assert.equal(state.activeTabId, 'a');
     assert.notEqual(state.tabs[0], registry.getTab('a'));
   });
+
+  it('background add preserves an existing active tab', () => {
+    const registry = new TabRegistry();
+    registry.addTab(makeTab('a'));
+    registry.addTab(makeTab('b'), { activate: false });
+    assert.equal(registry.getActiveTabId(), 'a');
+    assert.deepEqual(registry.serialize().tabs.map((tab) => tab.id), ['a', 'b']);
+  });
+
+  it('first background-requested tab still becomes active', () => {
+    const registry = new TabRegistry();
+    registry.addTab(makeTab('only'), { activate: false });
+    assert.equal(registry.getActiveTabId(), 'only');
+  });
 });

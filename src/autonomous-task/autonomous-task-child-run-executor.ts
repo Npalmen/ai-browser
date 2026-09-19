@@ -1,4 +1,4 @@
-import type { AgentRunRef, AgentRunSnapshot } from '../agent-run/agent-run-types';
+import type { AgentRunCancelledReason, AgentRunRef, AgentRunSnapshot } from '../agent-run/agent-run-types';
 import type {
   AutonomousTaskAgentRunCompletion,
   AutonomousTaskAgentRunExecutionPort,
@@ -13,16 +13,12 @@ import {
   type AutonomousTaskSnapshot,
 } from './autonomous-task-types';
 import { fingerprintSubgoal } from './task-no-progress';
+import { TaskTabStateRegistry } from './task-tab-state-registry';
 
 export interface AutonomousTaskChildRunRequest {
   readonly ref: AutonomousTaskRef;
   readonly taskTabAlias: string;
   readonly instruction: string;
-  /**
-   * Trusted-main opaque token describing the task tab state at subgoal
-   * delegation time. Not renderer/model input. Not sent to the child run.
-   */
-  readonly trustedTabStateToken: string;
 }
 
 export type AutonomousTaskChildRunResult =
@@ -36,8 +32,19 @@ export type AutonomousTaskChildRunResult =
       readonly snapshot: AutonomousTaskSnapshot;
     }
   | {
+      readonly status: 'lifecycle-cancelled';
+      readonly snapshot: AutonomousTaskSnapshot;
+    }
+  | {
       readonly status: 'ignored';
     };
+
+export interface AutonomousTaskActiveChild {
+  readonly taskRef: AutonomousTaskRef;
+  readonly agentRunRef: AgentRunRef;
+  readonly taskTabAlias: string;
+  readonly tabId: string;
+}
 
 interface ActiveChildCorrelation {
   readonly taskRef: AutonomousTaskRef;
@@ -45,21 +52,27 @@ interface ActiveChildCorrelation {
   readonly taskTabAlias: string;
   readonly fingerprint: string;
   readonly tabId: string;
+  lifecycleCancellationRequested: boolean;
+  readonly settled: Promise<AutonomousTaskChildRunResult>;
+  resolveSettled: (result: AutonomousTaskChildRunResult) => void;
 }
 
 export interface AutonomousTaskChildRunExecutorDependencies {
   coordinator: AutonomousTaskCoordinator;
   agentRuns: AutonomousTaskAgentRunExecutionPort;
+  tabState: TaskTabStateRegistry;
 }
 
 export class AutonomousTaskChildRunExecutor {
   private readonly coordinator: AutonomousTaskCoordinator;
   private readonly agentRuns: AutonomousTaskAgentRunExecutionPort;
+  private readonly tabState: TaskTabStateRegistry;
   private readonly activeByTask = new Map<string, ActiveChildCorrelation>();
 
   constructor(deps: AutonomousTaskChildRunExecutorDependencies) {
     this.coordinator = deps.coordinator;
     this.agentRuns = deps.agentRuns;
+    this.tabState = deps.tabState;
   }
 
   async execute(request: AutonomousTaskChildRunRequest): Promise<AutonomousTaskChildRunResult> {
@@ -77,20 +90,19 @@ export class AutonomousTaskChildRunExecutor {
     const owned = this.coordinator.resolveTaskTabAlias(request.ref.taskId, request.taskTabAlias);
     if (owned === undefined) {
       const blocked = this.coordinator.markBlocked(request.ref, 'TAB_OWNERSHIP_VIOLATION');
-      return appliedOrIgnored(blocked);
+      return this.appliedOrIgnored(blocked);
     }
 
-    if (typeof request.trustedTabStateToken !== 'string' || request.trustedTabStateToken.trim().length === 0) {
-      throw new AutonomousTaskError(
-        'INVALID_TRUSTED_TAB_STATE_TOKEN',
-        'trustedTabStateToken must be a non-empty string.',
-      );
+    const trustedTabStateToken = this.tabState.getToken(request.ref.taskId, request.taskTabAlias);
+    if (trustedTabStateToken === undefined) {
+      const blocked = this.coordinator.markBlocked(request.ref, 'TAB_OWNERSHIP_VIOLATION');
+      return this.appliedOrIgnored(blocked);
     }
 
     const fingerprint = fingerprintSubgoal({
       taskTabAlias: request.taskTabAlias,
       delegatedInstruction: request.instruction,
-      trustedTabStateToken: request.trustedTabStateToken,
+      trustedTabStateToken,
     });
 
     const noProgress = this.coordinator.assertNoImmediateRepeatedSubgoal(request.ref, fingerprint);
@@ -98,6 +110,7 @@ export class AutonomousTaskChildRunExecutor {
       return { status: 'ignored' };
     }
     if (isAutonomousTaskApplied(noProgress) && noProgress.snapshot.state === 'blocked') {
+      this.tabState.releaseTask(request.ref.taskId);
       return { status: 'terminal', snapshot: noProgress.snapshot };
     }
 
@@ -113,6 +126,7 @@ export class AutonomousTaskChildRunExecutor {
       return { status: 'ignored' };
     }
     if (isAutonomousTaskApplied(begun) && begun.snapshot.state === 'blocked') {
+      this.tabState.releaseTask(request.ref.taskId);
       return { status: 'terminal', snapshot: begun.snapshot };
     }
 
@@ -124,16 +138,55 @@ export class AutonomousTaskChildRunExecutor {
       return this.missingExpectedChild(request.ref);
     }
 
+    let resolveSettled!: (result: AutonomousTaskChildRunResult) => void;
+    const settled = new Promise<AutonomousTaskChildRunResult>((resolve) => {
+      resolveSettled = resolve;
+    });
     this.activeByTask.set(request.ref.taskId, {
       taskRef: request.ref,
       agentRunRef: started.ref,
       taskTabAlias: request.taskTabAlias,
       fingerprint,
       tabId,
+      lifecycleCancellationRequested: false,
+      settled,
+      resolveSettled,
     });
 
     const completion = await started.completion;
-    return this.finishChild(request, fingerprint, started.ref, completion);
+    const result = this.finishChild(request, fingerprint, started.ref, completion);
+    resolveSettled(result);
+    return result;
+  }
+
+  getActiveChild(taskId: string): AutonomousTaskActiveChild | undefined {
+    const active = this.activeByTask.get(taskId);
+    if (active === undefined) {
+      return undefined;
+    }
+    return {
+      taskRef: active.taskRef,
+      agentRunRef: active.agentRunRef,
+      taskTabAlias: active.taskTabAlias,
+      tabId: active.tabId,
+    };
+  }
+
+  async cancelActiveChildForLifecycle(
+    ref: AutonomousTaskRef,
+    reason: AgentRunCancelledReason,
+  ): Promise<AutonomousTaskChildRunResult> {
+    const active = this.activeByTask.get(ref.taskId);
+    if (
+      active === undefined ||
+      active.taskRef.generation !== ref.generation ||
+      active.agentRunRef.runId === undefined
+    ) {
+      return { status: 'ignored' };
+    }
+    active.lifecycleCancellationRequested = true;
+    await this.agentRuns.cancelAndWait(active.agentRunRef, reason);
+    return active.settled;
   }
 
   private canStartChild(request: AutonomousTaskChildRunRequest, expectedTabId: string): boolean {
@@ -172,6 +225,9 @@ export class AutonomousTaskChildRunExecutor {
       if (completed.status === 'ignored') {
         return { status: 'ignored' };
       }
+      if (snapshot.actionAttemptCount > 0) {
+        this.tabState.incrementForAlias(request.ref.taskId, request.taskTabAlias);
+      }
       return {
         status: 'completed',
         snapshot: completed.snapshot,
@@ -199,14 +255,26 @@ export class AutonomousTaskChildRunExecutor {
     if (snapshot.state === 'blocked') {
       const blocked = this.coordinator.markBlocked(ref, mapBlockedReason(snapshot.terminalReason));
       this.clearIfMatch(ref.taskId, agentRunRef);
-      return appliedOrIgnored(blocked);
+      return this.releaseOnTerminal(ref, this.appliedOrIgnored(blocked));
     }
     if (snapshot.state === 'execution-state-unknown') {
       const unknown = this.coordinator.markExecutionStateUnknown(ref);
       this.clearIfMatch(ref.taskId, agentRunRef);
-      return appliedOrIgnored(unknown);
+      return this.releaseOnTerminal(ref, this.appliedOrIgnored(unknown));
     }
-    if (snapshot.state === 'failed' || snapshot.state === 'cancelled') {
+    if (snapshot.state === 'cancelled') {
+      const active = this.activeByTask.get(ref.taskId);
+      if (active?.lifecycleCancellationRequested === true) {
+        this.clearIfMatch(ref.taskId, agentRunRef);
+        const current = this.coordinator.inspectTask(ref);
+        if (current.status === 'current' && current.snapshot.state === 'running-subgoal') {
+          return { status: 'lifecycle-cancelled', snapshot: current.snapshot };
+        }
+        return { status: 'ignored' };
+      }
+      return this.failCurrentChild(ref, agentRunRef);
+    }
+    if (snapshot.state === 'failed') {
       return this.failCurrentChild(ref, agentRunRef);
     }
     return this.failCurrentChild(ref, agentRunRef);
@@ -218,7 +286,7 @@ export class AutonomousTaskChildRunExecutor {
       return { status: 'ignored' };
     }
     const failed = this.coordinator.markFailed(ref, 'CHILD_RUN_FAILED');
-    return appliedOrIgnored(failed);
+    return this.releaseOnTerminal(ref, this.appliedOrIgnored(failed));
   }
 
   private failCurrentChild(
@@ -231,7 +299,7 @@ export class AutonomousTaskChildRunExecutor {
     }
     const failed = this.coordinator.markFailed(ref, 'CHILD_RUN_FAILED');
     this.clearIfMatch(ref.taskId, agentRunRef);
-    return appliedOrIgnored(failed);
+    return this.releaseOnTerminal(ref, this.appliedOrIgnored(failed));
   }
 
   private isExactCurrentChild(
@@ -260,15 +328,25 @@ export class AutonomousTaskChildRunExecutor {
       this.activeByTask.delete(taskId);
     }
   }
-}
 
-function appliedOrIgnored(
-  result: { status: 'applied'; snapshot: AutonomousTaskSnapshot } | { status: 'ignored' },
-): AutonomousTaskChildRunResult {
-  if (result.status === 'ignored') {
-    return { status: 'ignored' };
+  private appliedOrIgnored(
+    result: { status: 'applied'; snapshot: AutonomousTaskSnapshot } | { status: 'ignored' },
+  ): AutonomousTaskChildRunResult {
+    if (result.status === 'ignored') {
+      return { status: 'ignored' };
+    }
+    return { status: 'terminal', snapshot: result.snapshot };
   }
-  return { status: 'terminal', snapshot: result.snapshot };
+
+  private releaseOnTerminal(
+    ref: AutonomousTaskRef,
+    result: AutonomousTaskChildRunResult,
+  ): AutonomousTaskChildRunResult {
+    if (result.status === 'terminal') {
+      this.tabState.releaseTask(ref.taskId);
+    }
+    return result;
+  }
 }
 
 function mapBlockedReason(reason: AgentRunSnapshot['terminalReason']): AutonomousTaskBlockedReason {

@@ -11,9 +11,11 @@ export class TabRegistry {
   private tabs: BrowserTab[] = [];
   private activeTabId: TabId | null = null;
 
-  addTab(tab: BrowserTab): void {
+  addTab(tab: BrowserTab, options?: { readonly activate?: boolean }): void {
     this.tabs.push(tab);
-    this.activeTabId = tab.id;
+    if (this.activeTabId === null || options?.activate !== false) {
+      this.activeTabId = tab.id;
+    }
   }
 
   updateTab(tabId: TabId, patch: Partial<BrowserTab>): void {

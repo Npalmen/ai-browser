@@ -396,6 +396,10 @@ export class AutonomousTaskCoordinator {
     return this.tabRegistry.getOwnedTabs(taskId);
   }
 
+  getTabOwner(tabId: TabId): TaskTabSnapshot | undefined {
+    return this.tabRegistry.getOwner(tabId);
+  }
+
   resolveTaskTabAlias(taskId: AutonomousTaskId, alias: string): TaskTabSnapshot | undefined {
     return this.tabRegistry.resolveAlias(taskId, alias);
   }

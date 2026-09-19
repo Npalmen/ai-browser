@@ -6,11 +6,12 @@ import type {
   AdapterTypeRequest,
   AdapterViewportScrollRequest,
 } from './interaction-adapter-types';
+import type { CreateTabInput } from './tab-creation';
 import type { PageState, TabId } from '../shared/browser-types';
 import type { ObservePageOptions, PageObservation } from '../shared/observation-types';
 
 export interface BrowserAdapter {
-  createTab(input?: { url?: string }): Promise<TabId>;
+  createTab(input?: CreateTabInput): Promise<TabId>;
   closeTab(tabId: TabId): Promise<void>;
   activateTab(tabId: TabId): Promise<void>;
 

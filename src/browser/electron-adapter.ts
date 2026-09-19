@@ -1,5 +1,9 @@
 import { BrowserWindow, session, WebContentsView, type WebContents } from 'electron';
 
+import {
+  AgentInputDispatchScope,
+  bindClickDispatchScope,
+} from './agent-input-dispatch-scope';
 import type { BrowserAdapter } from './browser-adapter';
 import type {
   AdapterClickRequest,
@@ -19,6 +23,13 @@ import {
 import { InteractionSessionManager } from './interaction-session';
 import { TabNotFoundError, TabRegistry } from './tab-registry';
 import { isMainFrameNavigationInvalidation, type TabInvalidationReason } from './tab-invalidation';
+import {
+  explicitTabCreatedEvent,
+  shouldActivateConvertedPopup,
+  websitePopupCreatedEvent,
+  type BrowserTabCreatedEvent,
+  type CreateTabInput,
+} from './tab-creation';
 import { ElectronPageObserver } from '../observation/electron-page-observer';
 import { TargetRegistry } from '../observation/target-registry';
 import type { BrowserState, PageState, TabId } from '../shared/browser-types';
@@ -38,6 +49,8 @@ import { normalizeRightInset } from '../main/website-view-bounds';
 export interface ElectronBrowserAdapterOptions {
   onStateChange?: (state: BrowserState) => void;
   onTabInvalidated?: (tabId: TabId, reason: TabInvalidationReason) => void;
+  /** Trusted-main lifecycle only. Not renderer IPC. */
+  onTabCreated?: (event: BrowserTabCreatedEvent) => void;
 }
 
 export class ElectronBrowserAdapter implements BrowserAdapter {
@@ -55,6 +68,7 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
   private activeAttachedTabId: TabId | null = null;
   private websiteRightInsetPx = 0;
   private disposed = false;
+  private readonly dispatchScope = new AgentInputDispatchScope();
 
   constructor(
     private readonly mainWindow: BrowserWindow,
@@ -66,40 +80,13 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     return this.targetRegistry;
   }
 
-  async createTab(input?: { url?: string }): Promise<TabId> {
-    this.assertNotDisposed();
-
-    const requestedUrl = input?.url ?? 'about:blank';
-    const normalized = normalizeNavigationUrl(requestedUrl);
-    if (!normalized.ok) {
-      throw new Error(normalized.reason);
-    }
-
-    const tabId = crypto.randomUUID();
-    const view = this.createWebsiteView();
-
-    this.views.set(tabId, view);
-    this.registry.addTab({
-      id: tabId,
-      url: normalized.url,
-      title: '',
-      loading: true,
-      canGoBack: false,
-      canGoForward: false,
+  async createTab(input?: CreateTabInput): Promise<TabId> {
+    return this.createTabInternal({
+      url: input?.url,
+      activate: input?.activate,
+      cause: 'explicit',
+      causedByAgentInputDispatch: false,
     });
-
-    this.attachWebContentsHandlers(tabId, view);
-    await this.activateTab(tabId);
-
-    try {
-      await view.webContents.loadURL(normalized.url);
-    } catch (error) {
-      console.error(`[adapter] failed to load ${normalized.url}:`, error);
-      this.syncMetadata(tabId, true);
-    }
-
-    this.publishState();
-    return tabId;
   }
 
   async closeTab(tabId: TabId): Promise<void> {
@@ -215,9 +202,16 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
 
   async click(request: AdapterClickRequest): Promise<AdapterInteractionResult> {
     this.assertNotDisposed();
-    return this.interactionSessions.withSession(request.target.tabId, this.getWebContents(request.target.tabId), (cdp) =>
-      executeAdapterClick(cdp, request),
-    );
+    const bound = bindClickDispatchScope(this.dispatchScope, request.target.tabId, request);
+    try {
+      return await this.interactionSessions.withSession(
+        request.target.tabId,
+        this.getWebContents(request.target.tabId),
+        (cdp) => executeAdapterClick(cdp, bound.request),
+      );
+    } finally {
+      bound.finish();
+    }
   }
 
   async type(request: AdapterTypeRequest): Promise<AdapterInteractionResult> {
@@ -425,8 +419,23 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
         return { action: 'deny' };
       }
 
+      const causedByAgentInputDispatch = this.dispatchScope.isActive(tabId);
+      let activeTabId: TabId | undefined;
+      try {
+        activeTabId = this.registry.getActiveTabId();
+      } catch {
+        activeTabId = undefined;
+      }
+      const activate = shouldActivateConvertedPopup(tabId, activeTabId);
+
       if (isAllowedWebsiteNavigation(url)) {
-        void this.createTab({ url }).catch((error: unknown) => {
+        void this.createTabInternal({
+          url,
+          activate,
+          cause: 'website-popup',
+          sourceTabId: tabId,
+          causedByAgentInputDispatch,
+        }).catch((error: unknown) => {
           console.error('[adapter] failed to open popup as tab:', error);
         });
         return { action: 'deny' };
@@ -562,6 +571,70 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
       throw new TabNotFoundError(tabId);
     }
     return view;
+  }
+
+  private async createTabInternal(input: {
+    readonly url?: string;
+    readonly activate?: boolean;
+    readonly cause: 'explicit' | 'website-popup';
+    readonly sourceTabId?: TabId;
+    readonly causedByAgentInputDispatch: boolean;
+  }): Promise<TabId> {
+    this.assertNotDisposed();
+
+    const requestedUrl = input.url ?? 'about:blank';
+    const normalized = normalizeNavigationUrl(requestedUrl);
+    if (!normalized.ok) {
+      throw new Error(normalized.reason);
+    }
+
+    const tabId = crypto.randomUUID();
+    const view = this.createWebsiteView();
+
+    this.views.set(tabId, view);
+    this.registry.addTab(
+      {
+        id: tabId,
+        url: normalized.url,
+        title: '',
+        loading: true,
+        canGoBack: false,
+        canGoForward: false,
+      },
+      { activate: input.activate },
+    );
+
+    this.attachWebContentsHandlers(tabId, view);
+    if (this.registry.getActiveTabId() === tabId) {
+      await this.activateTab(tabId);
+    }
+
+    try {
+      await view.webContents.loadURL(normalized.url);
+    } catch (error) {
+      console.error(`[adapter] failed to load ${normalized.url}:`, error);
+      this.syncMetadata(tabId, true);
+    }
+
+    this.publishState();
+    this.emitTabCreated(
+      input.cause === 'website-popup' && input.sourceTabId !== undefined
+        ? websitePopupCreatedEvent({
+            tabId,
+            sourceTabId: input.sourceTabId,
+            causedByAgentInputDispatch: input.causedByAgentInputDispatch,
+          })
+        : explicitTabCreatedEvent(tabId),
+    );
+    return tabId;
+  }
+
+  private emitTabCreated(event: BrowserTabCreatedEvent): void {
+    try {
+      this.options.onTabCreated?.(event);
+    } catch {
+      // Observational lifecycle only. Tab creation already succeeded.
+    }
   }
 
   private assertNotDisposed(): void {
