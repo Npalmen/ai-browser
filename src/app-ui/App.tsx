@@ -1,9 +1,25 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { AiPanelMode } from '../shared/autonomous-task-types';
 import type { BrowserState, BrowserTab } from '../shared/browser-types';
 import { AiSidePanel } from './AiSidePanel';
+import { Omnibox } from './Omnibox';
 import { WorkflowsPanel } from './WorkflowsPanel';
+import {
+  beginSubmit,
+  buildRouteIntentInput,
+  closeContextPicker,
+  emptyOmniboxState,
+  finishSubmit,
+  isExecutableCapability,
+  mapRouteErrorMessage,
+  OMNIBOX_NAV_ERROR,
+  reconcileWithBrowser,
+  setPhaseUnavailable,
+  setSubmitError,
+  syncDraftFromUrl,
+  type OmniboxUiState,
+} from './omnibox-ui-state';
 import {
   acknowledgeAsk,
   appendUserQuestion,
@@ -35,8 +51,6 @@ import {
   type AutonomousTaskUiState,
 } from './autonomous-task-ui-state';
 
-const NAV_ERROR = 'Invalid or unsupported address';
-
 function tabLabel(tab: BrowserTab): string {
   if (tab.title) {
     return tab.title;
@@ -54,15 +68,9 @@ function tabLabel(tab: BrowserTab): string {
   }
 }
 
-function addressBarValue(url: string): string {
-  return url === 'about:blank' ? '' : url;
-}
-
 export function App() {
   const [browserState, setBrowserState] = useState<BrowserState | null>(null);
-  const [addressDraft, setAddressDraft] = useState('');
-  const [isEditingAddress, setIsEditingAddress] = useState(false);
-  const [navError, setNavError] = useState<string | null>(null);
+  const [omniboxState, setOmniboxState] = useState<OmniboxUiState>(emptyOmniboxState());
   const [panelOpen, setPanelOpen] = useState(false);
   const [rightPanelSurface, setRightPanelSurface] = useState<'assistant' | 'workflows'>('assistant');
   const [tabAiState, setTabAiState] = useState<AiUiState>({});
@@ -71,6 +79,8 @@ export function App() {
   const [panelMode, setPanelMode] = useState<AiPanelMode>('read');
   const lastSyncedUrlRef = useRef('');
   const activeTabIdRef = useRef<string | null>(null);
+  const omniboxInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingOmniboxFocusRef = useRef(false);
 
   const activeTab =
     browserState?.tabs.find((tab) => tab.id === browserState.activeTabId) ?? null;
@@ -140,6 +150,7 @@ export function App() {
         event.type === 'approval-required' &&
         event.approval.tabId === activeTabIdRef.current
       ) {
+        setOmniboxState((current) => closeContextPicker(current));
         setRightPanelSurface('assistant');
         void window.aiAssistant
           .setPanelOpen(true)
@@ -189,17 +200,41 @@ export function App() {
   }, [browserState]);
 
   useEffect(() => {
-    if (!activeTab || isEditingAddress) {
+    if (!browserState || !activeTab) {
       return;
     }
+    setOmniboxState((current) => {
+      let next = reconcileWithBrowser(current, browserState.tabs, browserState.activeTabId);
+      if (lastSyncedUrlRef.current !== activeTab.url) {
+        next = syncDraftFromUrl(next, activeTab.url);
+        lastSyncedUrlRef.current = activeTab.url;
+      }
+      return next;
+    });
+  }, [browserState, activeTab]);
 
-    const nextValue = addressBarValue(activeTab.url);
-    if (lastSyncedUrlRef.current !== activeTab.url) {
-      setAddressDraft(nextValue);
-      lastSyncedUrlRef.current = activeTab.url;
-      setNavError(null);
+  useEffect(() => {
+    if (!pendingOmniboxFocusRef.current || activeTab?.url !== 'about:blank') {
+      return;
     }
-  }, [activeTab, isEditingAddress]);
+    pendingOmniboxFocusRef.current = false;
+    omniboxInputRef.current?.focus();
+    omniboxInputRef.current?.select();
+  }, [activeTab?.id, activeTab?.url]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'l') {
+        event.preventDefault();
+        omniboxInputRef.current?.focus();
+        omniboxInputRef.current?.select();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
 
   const runBrowserAction = useCallback(async (action: () => Promise<unknown>) => {
     try {
@@ -210,6 +245,7 @@ export function App() {
   }, []);
 
   const handleCreateTab = () => {
+    pendingOmniboxFocusRef.current = true;
     void runBrowserAction(() => window.browserShell.createTab());
   };
 
@@ -243,21 +279,59 @@ export function App() {
     void runBrowserAction(() => window.browserShell.reload(activeTab.id));
   };
 
-  const handleAddressSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
+  const handleOmniboxSubmit = () => {
     if (!activeTab) {
       return;
     }
 
-    void window.browserShell
-      .navigate(activeTab.id, addressDraft)
-      .then(() => {
-        setNavError(null);
-        setIsEditingAddress(false);
+    const tabId = activeTab.id;
+    if (!isExecutableCapability(omniboxState.capability)) {
+      setOmniboxState((current) => setPhaseUnavailable(beginSubmit(current)));
+      return;
+    }
+
+    const routeInput = buildRouteIntentInput(omniboxState);
+    if (!routeInput) {
+      setOmniboxState((current) => setSubmitError(beginSubmit(current), OMNIBOX_NAV_ERROR));
+      return;
+    }
+
+    setOmniboxState((current) => beginSubmit(current));
+    void window.aiNative
+      .routeIntent(routeInput)
+      .then(async (result) => {
+        if (!result.ok) {
+          setOmniboxState((current) =>
+            setSubmitError(current, mapRouteErrorMessage(result.error.code)),
+          );
+          return;
+        }
+
+        const route = result.route;
+        if (route.kind === 'navigate') {
+          try {
+            await window.browserShell.navigate(tabId, route.url);
+            setOmniboxState((current) => finishSubmit(current));
+          } catch {
+            setOmniboxState((current) => setSubmitError(current, OMNIBOX_NAV_ERROR));
+          }
+          return;
+        }
+
+        if (route.kind === 'search') {
+          try {
+            await window.browserShell.search(tabId, route.query);
+            setOmniboxState((current) => finishSubmit(current));
+          } catch {
+            setOmniboxState((current) => setSubmitError(current, OMNIBOX_NAV_ERROR));
+          }
+          return;
+        }
+
+        setOmniboxState((current) => setSubmitError(current, OMNIBOX_NAV_ERROR));
       })
       .catch(() => {
-        setNavError(NAV_ERROR);
+        setOmniboxState((current) => setSubmitError(current, OMNIBOX_NAV_ERROR));
       });
   };
 
@@ -619,25 +693,18 @@ export function App() {
             </button>
           </div>
 
-          <form className="address-form" onSubmit={handleAddressSubmit}>
-            <input
-              type="text"
-              className={`address-input ${navError ? 'address-input-error' : ''}`}
-              value={addressDraft}
-              placeholder="Enter address"
-              disabled={controlsDisabled}
-              onChange={(event) => setAddressDraft(event.target.value)}
-              onFocus={(event) => {
-                setIsEditingAddress(true);
-                event.currentTarget.select();
-              }}
-              onBlur={() => setIsEditingAddress(false)}
-              spellCheck={false}
-            />
-          </form>
+          <Omnibox
+            state={omniboxState}
+            activeTab={activeTab}
+            tabs={browserState?.tabs ?? []}
+            activeTabId={browserState?.activeTabId ?? null}
+            disabled={controlsDisabled}
+            inputRef={omniboxInputRef}
+            onStateChange={setOmniboxState}
+            onSubmit={handleOmniboxSubmit}
+          />
 
           {activeTab?.loading ? <span className="loading-indicator">Loading…</span> : null}
-          {navError ? <span className="nav-error">{navError}</span> : null}
 
           <button
             type="button"
