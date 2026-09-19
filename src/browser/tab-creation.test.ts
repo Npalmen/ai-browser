@@ -6,6 +6,7 @@ import { describe, it } from 'node:test';
 import {
   explicitTabCreatedEvent,
   shouldActivateConvertedPopup,
+  tabCreatedEventIsBeforeInitialLoad,
   websitePopupCreatedEvent,
 } from './tab-creation';
 
@@ -20,6 +21,23 @@ describe('ElectronBrowserAdapter source isolation', () => {
     ]) {
       assert.equal(source.includes(token), false, token);
     }
+  });
+
+  it('emits BrowserTabCreatedEvent after local registration and before loadURL', () => {
+    const source = readFileSync(path.join(__dirname, 'electron-adapter.ts'), 'utf8');
+    const start = source.indexOf('private async createTabInternal');
+    const end = source.indexOf('private emitTabCreated');
+    const method = source.slice(start, end);
+    assert.equal(tabCreatedEventIsBeforeInitialLoad(method), true);
+    assert.match(method, /this\.registry\.addTab/);
+    assert.match(method, /this\.attachWebContentsHandlers/);
+    const addAt = method.indexOf('this.registry.addTab');
+    const handlersAt = method.indexOf('this.attachWebContentsHandlers');
+    const emitAt = method.indexOf('this.emitTabCreated');
+    const loadAt = method.indexOf('loadURL');
+    assert.ok(addAt < handlersAt);
+    assert.ok(handlersAt < emitAt);
+    assert.ok(emitAt < loadAt);
   });
 });
 

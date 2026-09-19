@@ -165,7 +165,7 @@ export class AutonomousTaskLifecycleController {
     this.tabState.incrementForTab(tabId);
   }
 
-  handleTabCreated(event: BrowserTabCreatedEvent): void {
+  async handleTabCreated(event: BrowserTabCreatedEvent): Promise<void> {
     if (!this.shouldAdoptPopup(event)) {
       return;
     }
@@ -177,12 +177,21 @@ export class AutonomousTaskLifecycleController {
     if (task === undefined) {
       return;
     }
-    const adopted = this.coordinator.adoptTaskTab(toAutonomousTaskRef(task), event.tabId, 'task-created');
+    const ref = toAutonomousTaskRef(task);
+    const child = this.childRuns.getActiveChild(task.taskId);
+    const adopted = this.coordinator.adoptTaskTab(ref, event.tabId, 'task-created');
     if (adopted.status === 'ignored') {
       return;
     }
     if (isAutonomousTaskApplied(adopted) && isTerminalAutonomousTaskState(adopted.snapshot.state)) {
       this.tabState.releaseTask(task.taskId);
+      if (child !== undefined) {
+        // Parent is already terminal. Drain the exact pre-terminal child so it
+        // cannot continue V5 work. Locked Phase 1 cannot upgrade
+        // blocked/TASK_LIMIT_REACHED → execution-state-unknown; Phase 5 owns
+        // that post-dispatch unknown race via task-level V4 correlation.
+        await this.childRuns.cancelActiveChildForLifecycle(child.taskRef, 'USER_CANCELLED');
+      }
       return;
     }
     const created = this.coordinator.getTabOwner(event.tabId);

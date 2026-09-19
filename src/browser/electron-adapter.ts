@@ -609,14 +609,6 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
       await this.activateTab(tabId);
     }
 
-    try {
-      await view.webContents.loadURL(normalized.url);
-    } catch (error) {
-      console.error(`[adapter] failed to load ${normalized.url}:`, error);
-      this.syncMetadata(tabId, true);
-    }
-
-    this.publishState();
     this.emitTabCreated(
       input.cause === 'website-popup' && input.sourceTabId !== undefined
         ? websitePopupCreatedEvent({
@@ -626,6 +618,15 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
           })
         : explicitTabCreatedEvent(tabId),
     );
+
+    try {
+      await view.webContents.loadURL(normalized.url);
+    } catch (error) {
+      console.error(`[adapter] failed to load ${normalized.url}:`, error);
+      this.syncMetadata(tabId, true);
+    }
+
+    this.publishState();
     return tabId;
   }
 

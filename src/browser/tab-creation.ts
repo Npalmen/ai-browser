@@ -50,3 +50,13 @@ export function websitePopupCreatedEvent(input: {
     causedByAgentInputDispatch: input.causedByAgentInputDispatch,
   };
 }
+
+/**
+ * BrowserTabCreatedEvent is local registration, not initial-load completion.
+ * Trusted lifecycle may adopt before loadURL begins.
+ */
+export function tabCreatedEventIsBeforeInitialLoad(createTabInternalSource: string): boolean {
+  const emitAt = createTabInternalSource.indexOf('this.emitTabCreated');
+  const loadAt = createTabInternalSource.indexOf('loadURL');
+  return emitAt !== -1 && loadAt !== -1 && emitAt < loadAt;
+}

@@ -64,6 +64,8 @@ class FakeAgentRuns implements AutonomousTaskAgentRunExecutionPort {
   hold: Deferred<AutonomousTaskAgentRunCompletion> | undefined;
   started = new Deferred<void>();
   cancelCalls: AgentRunRef[] = [];
+  cancelAndWaitCalls: AgentRunRef[] = [];
+  drainCompletion: 'cancelled' | 'completed' = 'cancelled';
 
   async start(
     tabId: TabId,
@@ -98,22 +100,48 @@ class FakeAgentRuns implements AutonomousTaskAgentRunExecutionPort {
   }
 
   async cancelAndWait(ref: AgentRunRef): Promise<void> {
+    this.cancelAndWaitCalls.push(ref);
     this.cancel(ref);
-    this.hold?.resolve({
-      status: 'terminal',
-      run: {
-        runId: ref.runId,
-        tabId: ref.tabId,
-        generation: ref.generation,
-        instruction: 'child',
-        startedAt: 1,
-        state: 'cancelled',
-        modelStepCount: 0,
-        actionAttemptCount: 0,
-        approvalCount: 0,
-        terminalReason: 'USER_CANCELLED',
-      },
-    });
+    if (this.drainCompletion === 'completed') {
+      this.hold?.resolve({
+        status: 'completed',
+        run: {
+          runId: ref.runId,
+          tabId: ref.tabId,
+          generation: ref.generation,
+          instruction: 'child',
+          startedAt: 1,
+          state: 'completed',
+          modelStepCount: 1,
+          actionAttemptCount: 0,
+          approvalCount: 0,
+          terminalReason: 'COMPLETED',
+        },
+        answer: {
+          text: 'late child text',
+          referencedTargets: [],
+          alias: 'page-standard',
+          truncatedContext: false,
+          documentRevision: 'rev-1',
+        },
+      });
+    } else {
+      this.hold?.resolve({
+        status: 'terminal',
+        run: {
+          runId: ref.runId,
+          tabId: ref.tabId,
+          generation: ref.generation,
+          instruction: 'child',
+          startedAt: 1,
+          state: 'cancelled',
+          modelStepCount: 0,
+          actionAttemptCount: 0,
+          approvalCount: 0,
+          terminalReason: 'USER_CANCELLED',
+        },
+      });
+    }
     await this.hold?.promise;
   }
 }
@@ -389,26 +417,26 @@ describe('AutonomousTaskLifecycleController', () => {
     assert.equal(resumed.status, 'applied');
   });
 
-  it('does not adopt explicit or uncorrelated popups', () => {
+  it('does not adopt explicit or uncorrelated popups', async () => {
     const harness = createLifecycle();
     harness.lifecycle.startOnCurrentTab('Book the cheapest refundable flight');
-    harness.lifecycle.handleTabCreated({
+    await harness.lifecycle.handleTabCreated({
       tabId: 'tab-user',
       cause: 'explicit',
       causedByAgentInputDispatch: false,
     });
-    harness.lifecycle.handleTabCreated(popupEvent({ causedByAgentInputDispatch: false }));
-    harness.lifecycle.handleTabCreated(popupEvent({ sourceTabId: 'tab-other' }));
+    await harness.lifecycle.handleTabCreated(popupEvent({ causedByAgentInputDispatch: false }));
+    await harness.lifecycle.handleTabCreated(popupEvent({ sourceTabId: 'tab-other' }));
     assert.equal(harness.coordinator.getOwnedTabs('task-1').length, 1);
   });
 
   it('does not adopt a causal popup without an active child or while paused', async () => {
     const harness = createLifecycle();
     const task = harness.lifecycle.startOnCurrentTab('Book the cheapest refundable flight');
-    harness.lifecycle.handleTabCreated(popupEvent());
+    await harness.lifecycle.handleTabCreated(popupEvent());
     assert.equal(harness.coordinator.getTabOwner('tab-c'), undefined);
     await harness.lifecycle.pause(toAutonomousTaskRef(task));
-    harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-d' }));
+    await harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-d' }));
     assert.equal(harness.coordinator.getTabOwner('tab-d'), undefined);
   });
 
@@ -418,11 +446,12 @@ describe('AutonomousTaskLifecycleController', () => {
     const task = harness.lifecycle.startOnCurrentTab('Book the cheapest refundable flight');
     const pending = harness.childRuns.execute(childRequest(task));
     await waitForChild(harness.childRuns, task.taskId);
-    harness.lifecycle.handleTabCreated(popupEvent());
+    await harness.lifecycle.handleTabCreated(popupEvent());
     const owned = harness.coordinator.getTabOwner('tab-c');
     assert.equal(owned?.alias, 'task-tab-2');
     assert.equal(owned?.ownershipKind, 'task-created');
     assert.equal(harness.tabState.getToken(task.taskId, 'task-tab-2'), 'task-tab-state-v1:1');
+    assert.equal(harness.childRuns.getActiveChild(task.taskId)?.agentRunRef.runId, agentRuns.lastRef?.runId);
     agentRuns.hold?.resolve({
       status: 'terminal',
       run: {
@@ -448,7 +477,7 @@ describe('AutonomousTaskLifecycleController', () => {
     const task = harness.lifecycle.startOnCurrentTab('Book the cheapest refundable flight');
     const pending = harness.childRuns.execute(childRequest(task));
     await waitForChild(harness.childRuns, task.taskId);
-    harness.lifecycle.handleTabCreated(popupEvent({ sourceTabId: 'tab-other', tabId: 'tab-x' }));
+    await harness.lifecycle.handleTabCreated(popupEvent({ sourceTabId: 'tab-other', tabId: 'tab-x' }));
     assert.equal(harness.coordinator.getTabOwner('tab-x'), undefined);
     agentRuns.hold?.resolve({
       status: 'terminal',
@@ -474,31 +503,44 @@ describe('AutonomousTaskLifecycleController', () => {
     const task = harness.lifecycle.startOnCurrentTab('Book the cheapest refundable flight');
     const pending = harness.childRuns.execute(childRequest(task));
     await waitForChild(harness.childRuns, task.taskId);
-    harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-2' }));
-    harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-3' }));
+    const childRef = agentRuns.lastRef;
+    await harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-2' }));
+    await harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-3' }));
     assert.equal(harness.coordinator.getOwnedTabs(task.taskId).length, 3);
-    harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-4' }));
+    await harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-4' }));
+    const child = await pending;
     const current = harness.coordinator.getTask(task.taskId);
     assert.equal(current?.state, 'blocked');
     assert.equal(current?.terminalReason, 'TASK_LIMIT_REACHED');
+    assert.equal(current?.generation, 1);
+    assert.equal(current?.lastCompletedSubgoalFingerprint, undefined);
     assert.equal(harness.coordinator.getTabOwner('tab-4'), undefined);
     assert.equal(harness.coordinator.getOwnedTabs(task.taskId).length, 0);
-    agentRuns.hold?.resolve({
-      status: 'terminal',
-      run: {
-        runId: agentRuns.lastRef!.runId,
-        tabId: 'tab-a',
-        generation: agentRuns.lastRef!.generation,
-        instruction: 'x',
-        startedAt: 1,
-        state: 'cancelled',
-        modelStepCount: 0,
-        actionAttemptCount: 0,
-        approvalCount: 0,
-        terminalReason: 'USER_CANCELLED',
-      },
-    });
-    await pending;
+    assert.equal(agentRuns.cancelAndWaitCalls.length, 1);
+    assert.equal(agentRuns.cancelAndWaitCalls[0]?.runId, childRef?.runId);
+    assert.equal(harness.childRuns.getActiveChild(task.taskId), undefined);
+    assert.equal(child.status, 'ignored');
+  });
+
+  it('does not let a late child completion resurrect a tab-budget terminal task', async () => {
+    const agentRuns = new FakeAgentRuns();
+    agentRuns.drainCompletion = 'completed';
+    const harness = createLifecycle({ agentRuns });
+    const task = harness.lifecycle.startOnCurrentTab('Book the cheapest refundable flight');
+    const pending = harness.childRuns.execute(childRequest(task));
+    await waitForChild(harness.childRuns, task.taskId);
+    await harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-2' }));
+    await harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-3' }));
+    await harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-4' }));
+    const child = await pending;
+    const current = harness.coordinator.getTask(task.taskId);
+    assert.equal(child.status, 'ignored');
+    assert.equal(current?.state, 'blocked');
+    assert.equal(current?.terminalReason, 'TASK_LIMIT_REACHED');
+    assert.equal(current?.generation, 1);
+    assert.equal(current?.lastCompletedSubgoalFingerprint, undefined);
+    assert.equal(harness.coordinator.getOwnedTabs(task.taskId).length, 0);
+    assert.equal(harness.coordinator.getTabOwner('tab-a'), undefined);
   });
 
   it('keeps aliases monotonic after a released tab', async () => {
@@ -507,9 +549,9 @@ describe('AutonomousTaskLifecycleController', () => {
     const task = harness.lifecycle.startOnCurrentTab('Book the cheapest refundable flight');
     const pending = harness.childRuns.execute(childRequest(task));
     await waitForChild(harness.childRuns, task.taskId);
-    harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-2' }));
+    await harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-2' }));
     await harness.lifecycle.handleTabClosed('tab-2');
-    harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-3' }));
+    await harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-3' }));
     assert.equal(harness.coordinator.getTabOwner('tab-3')?.alias, 'task-tab-3');
     agentRuns.hold?.resolve({
       status: 'terminal',
@@ -582,7 +624,7 @@ describe('AutonomousTaskLifecycleController', () => {
     const task = harness.lifecycle.startOnCurrentTab('Book the cheapest refundable flight');
     const pending = harness.childRuns.execute(childRequest(task));
     await waitForChild(harness.childRuns, task.taskId);
-    harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-2' }));
+    await harness.lifecycle.handleTabCreated(popupEvent({ tabId: 'tab-2' }));
     await harness.lifecycle.handleTabClosed('tab-2');
     assert.equal(harness.coordinator.getTabOwner('tab-2'), undefined);
     assert.equal(harness.childRuns.getActiveChild(task.taskId)?.tabId, 'tab-a');
