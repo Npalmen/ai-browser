@@ -1,7 +1,7 @@
 # Plan: V7 — Persistent workflows
 
-**Status:** locked  
-**Implementation:** NOT STARTED  
+**Status:** V7 COMPLETE / CLOSED  
+**Implementation:** complete  
 **Explicit reference:** Implementation tasks must cite `docs/plans/V7-persistent-workflows.md` to treat this file as authoritative.
 
 Authoritative architecture:
@@ -20,9 +20,10 @@ AGENTS.md
 ```
 
 ```text
-V7 architecture locked
-V7 implementation NOT STARTED
+V7 COMPLETE / CLOSED
 ```
+
+Phases 1–7 are complete. The locked architecture in this document and ADR-008 is unchanged.
 
 V0 (shell), V1 (observation), V2 (read-only agent), V3 (permissioned INTERACT), V4 (PREPARE / APPROVAL / EXECUTE), V5 (bounded agent loop), and V6 (autonomous tasks) are **complete and frozen**. V7 must not reopen already-green V3/V4/V5/V6 authority.
 
@@ -154,13 +155,13 @@ Seven implementation phases. Do not implement them in the architecture-lock task
 
 | Phase | Deliverable | Verification | Status |
 |-------|-------------|--------------|--------|
-| 1 | Durable storage foundation: schema, `WorkflowStore`, atomic JSON, single-writer, corruption handling; no scheduler/model/browser | targeted store tests | not started |
-| 2 | Durable workflow core: definitions, revisions, occurrences, queue, interrupted recovery, review-required; no browser execution | targeted coordinator tests | not started |
-| 3 | Scheduler: manual + structured schedule, UTC/IANA, misfire coalesce, idempotent keys; queue only | targeted clock/scheduler tests | not started |
-| 4 | Workflow → V6 execution bridge: fresh background tab, entry URL, fresh V6 task, V4 unchanged, result mapping | targeted runner + V6 mapping tests | not started |
-| 5 | Lifecycle + restart recovery: startup order, stop/cancel, queue vs Delegate, shutdown vs crash | targeted recovery + concurrency tests | not started |
-| 6 | Product integration: typed IPC, Workflows UI, CRUD, run-now, history, review | targeted IPC/UI tests | not started |
-| 7 | Acceptance + closure: deterministic scheduler/crash tests, real Electron scheduled workflow, V2–V7 matrix | full acceptance matrix | not started |
+| 1 | Durable storage foundation: schema, `WorkflowStore`, atomic JSON, single-writer, corruption handling; no scheduler/model/browser | targeted store tests | complete |
+| 2 | Durable workflow core: definitions, revisions, occurrences, queue, interrupted recovery, review-required; no browser execution | targeted coordinator tests | complete |
+| 3 | Scheduler: manual + structured schedule, UTC/IANA, misfire coalesce, idempotent keys; queue only | targeted clock/scheduler tests | complete |
+| 4 | Workflow → V6 execution bridge: fresh background tab, entry URL, fresh V6 task, V4 unchanged, result mapping | targeted runner + V6 mapping tests | complete |
+| 5 | Lifecycle + restart recovery: startup order, stop/cancel, queue vs Delegate, shutdown vs crash | targeted recovery + concurrency tests | complete |
+| 6 | Product integration: typed IPC, Workflows UI, CRUD, run-now, history, review | targeted IPC/UI tests | complete |
+| 7 | Acceptance + closure: deterministic scheduler/crash tests, real Electron scheduled workflow, V2–V7 matrix | full acceptance matrix | complete |
 
 Each phase must remain independently reviewable. Do not collapse later phases into earlier ones.
 
@@ -392,14 +393,9 @@ Dedicated Electron PASS marker (name locked at Phase 7 implementation):
 
 ## Completion criteria
 
-This architecture-lock task is complete when:
+V7 is **COMPLETE / CLOSED**. Phase 7 closure gates are green. Evidence: `docs/acceptance/V7-acceptance.md`.
 
 ```text
-ADR-008 Status: Accepted
-V7 plan Status: locked
-V7 implementation: NOT STARTED
-browser-architecture V7: architecture locked; implementation not started
-V6 remains COMPLETE / CLOSED
+V7 COMPLETE / CLOSED
+V8 NOT STARTED
 ```
-
-V7 implementation is complete only after Phase 7 closure gates are green and evidence is recorded (future `docs/acceptance/V7-acceptance.md`).
