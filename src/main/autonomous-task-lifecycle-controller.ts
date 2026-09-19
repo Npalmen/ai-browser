@@ -3,12 +3,14 @@ import type { BrowserTabCreatedEvent } from '../browser/tab-creation';
 import type { TabId } from '../shared/browser-types';
 import {
   AutonomousTaskChildRunExecutor,
+  type AutonomousTaskChildLifecycleIntent,
   type AutonomousTaskChildRunResult,
 } from '../autonomous-task/autonomous-task-child-run-executor';
 import { AutonomousTaskCoordinator } from '../autonomous-task/autonomous-task-coordinator';
 import { AutonomousTaskError } from '../autonomous-task/autonomous-task-errors';
 import { AutonomousTaskPlannerExecutor } from '../autonomous-task/autonomous-task-planner-executor';
 import {
+  MAX_AUTONOMOUS_TASK_OWNED_TABS,
   isActiveAutonomousTaskState,
   isAutonomousTaskApplied,
   isTerminalAutonomousTaskState,
@@ -84,7 +86,10 @@ export class AutonomousTaskLifecycleController {
     return snapshot;
   }
 
-  async pause(ref: AutonomousTaskRef): Promise<AutonomousTaskMutationResult> {
+  async pause(
+    ref: AutonomousTaskRef,
+    intent: AutonomousTaskChildLifecycleIntent = 'pause',
+  ): Promise<AutonomousTaskMutationResult> {
     const inspected = this.coordinator.inspectTask(ref);
     if (inspected.status === 'missing' || inspected.status === 'superseded') {
       return { status: 'ignored' };
@@ -101,14 +106,49 @@ export class AutonomousTaskLifecycleController {
       await this.planner.cancelAndWait(ref);
       return this.pauseIfNonterminal(ref);
     }
-    if (snapshot.state === 'running-subgoal') {
-      const childResult = await this.childRuns.cancelActiveChildForLifecycle(ref, 'USER_CANCELLED');
+    if (snapshot.state === 'running-subgoal' || snapshot.state === 'awaiting-approval') {
+      const childResult = await this.childRuns.cancelActiveChildForLifecycle(
+        ref,
+        intent === 'trusted-navigation' ? 'TRUSTED_CHROME_NAVIGATION' : 'USER_CANCELLED',
+        intent,
+      );
       return this.pauseAfterChild(ref, childResult);
     }
-    if (snapshot.state === 'awaiting-user-input' || snapshot.state === 'awaiting-approval') {
+    if (snapshot.state === 'awaiting-user-input') {
       return this.pauseIfNonterminal(ref);
     }
     return this.pauseIfNonterminal(ref);
+  }
+
+  async stop(ref: AutonomousTaskRef): Promise<AutonomousTaskMutationResult> {
+    const inspected = this.coordinator.inspectTask(ref);
+    if (inspected.status === 'missing' || inspected.status === 'superseded') {
+      return { status: 'ignored' };
+    }
+    if (inspected.status === 'terminal') {
+      return { status: 'ignored' };
+    }
+    if (inspected.status === 'paused' || inspected.snapshot.state === 'paused') {
+      return this.cancelIfNonterminal(ref);
+    }
+
+    const snapshot = inspected.snapshot;
+    if (snapshot.state === 'planning') {
+      await this.planner.cancelAndWait(ref);
+      return this.cancelIfNonterminal(ref);
+    }
+    if (snapshot.state === 'running-subgoal' || snapshot.state === 'awaiting-approval') {
+      const childResult = await this.childRuns.cancelActiveChildForLifecycle(
+        ref,
+        'USER_CANCELLED',
+        'stop',
+      );
+      return this.stopAfterChild(ref, childResult);
+    }
+    if (snapshot.state === 'awaiting-user-input') {
+      return this.cancelIfNonterminal(ref);
+    }
+    return this.cancelIfNonterminal(ref);
   }
 
   resume(ref: AutonomousTaskRef): AutonomousTaskMutationResult {
@@ -158,7 +198,7 @@ export class AutonomousTaskLifecycleController {
     if (task.state === 'paused') {
       return;
     }
-    await this.pause(toAutonomousTaskRef(task));
+    await this.pause(toAutonomousTaskRef(task), 'trusted-navigation');
   }
 
   handleGenericNavigation(tabId: TabId): void {
@@ -179,6 +219,21 @@ export class AutonomousTaskLifecycleController {
     }
     const ref = toAutonomousTaskRef(task);
     const child = this.childRuns.getActiveChild(task.taskId);
+    if (
+      task.state === 'awaiting-approval' &&
+      task.ownedTabCount >= MAX_AUTONOMOUS_TASK_OWNED_TABS
+    ) {
+      if (child === undefined) {
+        return;
+      }
+      const childResult = await this.childRuns.cancelActiveChildForLifecycle(
+        child.taskRef,
+        'USER_CANCELLED',
+        'task-budget',
+      );
+      this.blockBudgetIfStillNonterminal(ref, childResult);
+      return;
+    }
     const adopted = this.coordinator.adoptTaskTab(ref, event.tabId, 'task-created');
     if (adopted.status === 'ignored') {
       return;
@@ -186,11 +241,11 @@ export class AutonomousTaskLifecycleController {
     if (isAutonomousTaskApplied(adopted) && isTerminalAutonomousTaskState(adopted.snapshot.state)) {
       this.tabState.releaseTask(task.taskId);
       if (child !== undefined) {
-        // Parent is already terminal. Drain the exact pre-terminal child so it
-        // cannot continue V5 work. Locked Phase 1 cannot upgrade
-        // blocked/TASK_LIMIT_REACHED → execution-state-unknown; Phase 5 owns
-        // that post-dispatch unknown race via task-level V4 correlation.
-        await this.childRuns.cancelActiveChildForLifecycle(child.taskRef, 'USER_CANCELLED');
+        await this.childRuns.cancelActiveChildForLifecycle(
+          child.taskRef,
+          'USER_CANCELLED',
+          'task-budget',
+        );
       }
       return;
     }
@@ -214,7 +269,11 @@ export class AutonomousTaskLifecycleController {
     const child = this.childRuns.getActiveChild(task.taskId);
 
     if (child !== undefined && child.tabId === tabId && isActiveAutonomousTaskState(task.state)) {
-      const childResult = await this.childRuns.cancelActiveChildForLifecycle(ref, 'TAB_CLOSED');
+      const childResult = await this.childRuns.cancelActiveChildForLifecycle(
+        ref,
+        'TAB_CLOSED',
+        'tab-close',
+      );
       this.blockIfStillNonterminal(ref, childResult);
       return;
     }
@@ -286,6 +345,49 @@ export class AutonomousTaskLifecycleController {
       return this.pauseIfNonterminal(ref);
     }
     return this.pauseIfNonterminal(ref);
+  }
+
+  private stopAfterChild(
+    ref: AutonomousTaskRef,
+    childResult: AutonomousTaskChildRunResult,
+  ): AutonomousTaskMutationResult {
+    if (childResult.status === 'terminal') {
+      return { status: 'applied', snapshot: childResult.snapshot };
+    }
+    return this.cancelIfNonterminal(ref);
+  }
+
+  private cancelIfNonterminal(ref: AutonomousTaskRef): AutonomousTaskMutationResult {
+    const inspected = this.coordinator.inspectTask(ref);
+    if (inspected.status === 'terminal') {
+      return { status: 'applied', snapshot: inspected.snapshot };
+    }
+    if (inspected.status === 'missing' || inspected.status === 'superseded') {
+      return { status: 'ignored' };
+    }
+    return this.coordinator.cancelTask(ref);
+  }
+
+  private blockBudgetIfStillNonterminal(
+    ref: AutonomousTaskRef,
+    childResult: AutonomousTaskChildRunResult,
+  ): void {
+    if (childResult.status === 'terminal') {
+      this.tabState.releaseTask(ref.taskId);
+      return;
+    }
+    const inspected = this.coordinator.inspectTask(ref);
+    if (inspected.status === 'terminal') {
+      this.tabState.releaseTask(ref.taskId);
+      return;
+    }
+    if (inspected.status === 'missing' || inspected.status === 'superseded') {
+      return;
+    }
+    const blocked = this.coordinator.markBlocked(ref, 'TASK_LIMIT_REACHED');
+    if (isAutonomousTaskApplied(blocked)) {
+      this.tabState.releaseTask(ref.taskId);
+    }
   }
 
   private pauseIfNonterminal(ref: AutonomousTaskRef): AutonomousTaskMutationResult {

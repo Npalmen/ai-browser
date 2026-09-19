@@ -655,6 +655,33 @@ describe('AutonomousTaskLifecycleController', () => {
     assert.equal(harness.coordinator.getTask(task.taskId)?.terminalReason, 'TAB_UNAVAILABLE');
   });
 
+  it('stops a planning task as cancelled', async () => {
+    const harness = createLifecycle();
+    const task = harness.lifecycle.startOnCurrentTab('Book the cheapest refundable flight');
+    const stopped = await harness.lifecycle.stop(toAutonomousTaskRef(task));
+    assert.equal(stopped.status, 'applied');
+    if (stopped.status === 'applied') {
+      assert.equal(stopped.snapshot.state, 'cancelled');
+      assert.equal(stopped.snapshot.terminalReason, 'USER_CANCELLED');
+    }
+    assert.equal(harness.lifecycle.resume(toAutonomousTaskRef(harness.coordinator.getTask(task.taskId)!)).status, 'ignored');
+  });
+
+  it('stops a running child via exact lifecycle cancellation', async () => {
+    const agentRuns = new FakeAgentRuns();
+    const harness = createLifecycle({ agentRuns });
+    const task = harness.lifecycle.startOnCurrentTab('Book the cheapest refundable flight');
+    const pending = harness.childRuns.execute(childRequest(task));
+    await waitForChild(harness.childRuns, task.taskId);
+    const stopped = await harness.lifecycle.stop(toAutonomousTaskRef(task));
+    await pending;
+    assert.equal(stopped.status, 'applied');
+    if (stopped.status === 'applied') {
+      assert.equal(stopped.snapshot.state, 'cancelled');
+    }
+    assert.equal(agentRuns.cancelAndWaitCalls[0]?.runId, agentRuns.lastRef?.runId);
+  });
+
   it('gates manual Act on active owned tabs only', async () => {
     const harness = createLifecycle();
     const task = harness.lifecycle.startOnCurrentTab('Book the cheapest refundable flight');

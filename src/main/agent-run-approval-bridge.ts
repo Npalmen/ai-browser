@@ -12,6 +12,15 @@ import type { ApprovalEvent } from '../shared/approval-types';
 import type { PageObservation } from '../shared/observation-types';
 import type { ApprovalLifecycle } from './approval-lifecycle';
 
+export type AgentRunTaskApprovalPrecheckResult = 'unrelated' | 'allow' | 'blocked' | 'ignored';
+
+export type AgentRunTaskApprovalPresentedResult = 'unrelated' | 'applied' | 'blocked' | 'ignored';
+
+export interface AgentRunTaskApprovalPort {
+  beforePrepare(ref: AgentRunRef): AgentRunTaskApprovalPrecheckResult;
+  onPresented(ref: AgentRunRef, approvalId: string): AgentRunTaskApprovalPresentedResult;
+}
+
 export interface AgentRunApprovalBridgeDependencies {
   coordinator: AgentRunCoordinator;
   prepareActionService: Pick<PrepareActionService, 'prepare'>;
@@ -19,6 +28,7 @@ export interface AgentRunApprovalBridgeDependencies {
   manager: Pick<ApprovalManager, 'getSnapshot' | 'getByApprovalId' | 'markStale'>;
   auditRecorder: Pick<ApprovalAuditRecorder, 'recordStale'>;
   emit: (event: ApprovalEvent) => void;
+  taskApproval?: AgentRunTaskApprovalPort;
 }
 
 export class AgentRunApprovalBridge implements AgentRunApprovalPort {
@@ -38,6 +48,14 @@ export class AgentRunApprovalBridge implements AgentRunApprovalPort {
     }
     if (!this.deps.coordinator.canPrepareAnotherAction(input.ref)) {
       return { status: 'failed' };
+    }
+
+    const precheck = this.deps.taskApproval?.beforePrepare(input.ref) ?? 'unrelated';
+    if (precheck === 'blocked') {
+      return { status: 'failed' };
+    }
+    if (precheck === 'ignored') {
+      return { status: 'ignored' };
     }
 
     let action;
@@ -84,10 +102,29 @@ export class AgentRunApprovalBridge implements AgentRunApprovalPort {
       return { status: 'failed' };
     }
 
-    return {
-      status: 'awaiting-approval',
-      approvalId: action.approvalId,
-    };
+    const taskPresented = this.commitTaskPresentation(input.ref, action.approvalId);
+    if (taskPresented === 'unrelated' || taskPresented === 'applied') {
+      return {
+        status: 'awaiting-approval',
+        approvalId: action.approvalId,
+      };
+    }
+    this.invalidateExactApproval(action.approvalId, true);
+    return { status: 'failed' };
+  }
+
+  private commitTaskPresentation(
+    ref: AgentRunRef,
+    approvalId: string,
+  ): AgentRunTaskApprovalPresentedResult {
+    if (this.deps.taskApproval === undefined) {
+      return 'unrelated';
+    }
+    try {
+      return this.deps.taskApproval.onPresented(ref, approvalId);
+    } catch {
+      return 'ignored';
+    }
   }
 
   private invalidateExactApproval(approvalId: string, emitStaleEvent: boolean): void {

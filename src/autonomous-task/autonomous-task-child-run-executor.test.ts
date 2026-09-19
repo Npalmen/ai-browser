@@ -651,6 +651,162 @@ describe('AutonomousTaskChildRunExecutor', () => {
       assert.notEqual(cancelled.snapshot.terminalReason, 'CHILD_RUN_FAILED');
     }
   });
+
+  it('finds the active child only by exact AgentRunRef', async () => {
+    const harness = createHarness();
+    const task = startTask(harness);
+    const hold = new Deferred<AutonomousTaskAgentRunCompletion>();
+    const startedGate = new Deferred<void>();
+    const port = new FakeAgentRunPort(async (tabId, instruction) => {
+      const ref: AgentRunRef = { runId: 'run-exact', tabId, generation: 7 };
+      startedGate.resolve();
+      return {
+        status: 'started',
+        run: completedSnapshot(ref, instruction),
+        ref,
+        completion: hold.promise,
+      };
+    });
+    const executor = new AutonomousTaskChildRunExecutor({
+      coordinator: harness.coordinator,
+      agentRuns: port,
+      tabState: harness.tabState,
+    });
+    const pending = executor.execute(childRequest(task));
+    await startedGate.promise;
+    for (let attempt = 0; attempt < 20 && executor.getActiveChild(task.taskId) === undefined; attempt += 1) {
+      await Promise.resolve();
+    }
+    const exact: AgentRunRef = { runId: 'run-exact', tabId: 'tab-1', generation: 7 };
+    assert.equal(executor.findActiveChildByAgentRunRef(exact)?.agentRunRef.runId, 'run-exact');
+    assert.equal(
+      executor.findActiveChildByAgentRunRef({ runId: 'run-exact', tabId: 'tab-1', generation: 8 }),
+      undefined,
+    );
+    assert.equal(
+      executor.findActiveChildByAgentRunRef({ runId: 'run-exact', tabId: 'tab-other', generation: 7 }),
+      undefined,
+    );
+    hold.resolve(completedResult(exact, 'Compare refundable prices', 'done'));
+    await pending;
+  });
+
+  it('returns lifecycle-cancelled from awaiting-approval without CHILD_RUN_FAILED', async () => {
+    const harness = createHarness();
+    const task = startTask(harness);
+    const hold = new Deferred<AutonomousTaskAgentRunCompletion>();
+    const startedGate = new Deferred<void>();
+    const port = new FakeAgentRunPort(async (tabId, instruction) => {
+      const ref: AgentRunRef = { runId: 'run-await', tabId, generation: 1 };
+      startedGate.resolve();
+      return {
+        status: 'started',
+        run: completedSnapshot(ref, instruction),
+        ref,
+        completion: hold.promise,
+      };
+    });
+    port.cancelAndWait = async (ref) => {
+      hold.resolve(terminalResult(ref ?? { runId: 'run-await', tabId: 'tab-1', generation: 1 }, 'Compare refundable prices', 'cancelled', 'USER_CANCELLED'));
+    };
+    const executor = new AutonomousTaskChildRunExecutor({
+      coordinator: harness.coordinator,
+      agentRuns: port,
+      tabState: harness.tabState,
+    });
+    const pending = executor.execute(childRequest(task));
+    await startedGate.promise;
+    for (let attempt = 0; attempt < 20 && executor.getActiveChild(task.taskId) === undefined; attempt += 1) {
+      await Promise.resolve();
+    }
+    requireApplied(harness.coordinator.recordApprovalPresented(refOf(task)));
+    assert.equal(harness.coordinator.getTask(task.taskId)?.state, 'awaiting-approval');
+    const cancelled = await executor.cancelActiveChildForLifecycle(refOf(task), 'USER_CANCELLED', 'pause');
+    const executed = await pending;
+    assert.equal(cancelled.status, 'lifecycle-cancelled');
+    assert.equal(executed.status, 'lifecycle-cancelled');
+    if (cancelled.status === 'lifecycle-cancelled') {
+      assert.equal(cancelled.snapshot.state, 'awaiting-approval');
+      assert.notEqual(cancelled.snapshot.terminalReason, 'CHILD_RUN_FAILED');
+    }
+  });
+
+  it('does not treat lifecycle-induced ACTION_STALE as task ACTION_STALE', async () => {
+    const harness = createHarness();
+    const task = startTask(harness);
+    const hold = new Deferred<AutonomousTaskAgentRunCompletion>();
+    const startedGate = new Deferred<void>();
+    const port = new FakeAgentRunPort(async (tabId, instruction) => {
+      const ref: AgentRunRef = { runId: 'run-stale', tabId, generation: 1 };
+      startedGate.resolve();
+      return {
+        status: 'started',
+        run: completedSnapshot(ref, instruction),
+        ref,
+        completion: hold.promise,
+      };
+    });
+    port.cancelAndWait = async (ref) => {
+      hold.resolve(
+        terminalResult(
+          ref ?? { runId: 'run-stale', tabId: 'tab-1', generation: 1 },
+          'Compare refundable prices',
+          'blocked',
+          'ACTION_STALE',
+        ),
+      );
+    };
+    const executor = new AutonomousTaskChildRunExecutor({
+      coordinator: harness.coordinator,
+      agentRuns: port,
+      tabState: harness.tabState,
+    });
+    const pending = executor.execute(childRequest(task));
+    await startedGate.promise;
+    for (let attempt = 0; attempt < 20 && executor.getActiveChild(task.taskId) === undefined; attempt += 1) {
+      await Promise.resolve();
+    }
+    requireApplied(harness.coordinator.recordApprovalPresented(refOf(task)));
+    const cancelled = await executor.cancelActiveChildForLifecycle(refOf(task), 'USER_CANCELLED', 'pause');
+    await pending;
+    assert.equal(cancelled.status, 'lifecycle-cancelled');
+    assert.equal(harness.coordinator.getTask(task.taskId)?.state, 'awaiting-approval');
+    assert.equal(harness.coordinator.getTask(task.taskId)?.terminalReason, undefined);
+  });
+
+  it('does not let a child final answer move awaiting-approval to planning', async () => {
+    const harness = createHarness();
+    const task = startTask(harness);
+    const hold = new Deferred<AutonomousTaskAgentRunCompletion>();
+    const startedGate = new Deferred<void>();
+    const port = new FakeAgentRunPort(async (tabId, instruction) => {
+      const ref: AgentRunRef = { runId: 'run-answer', tabId, generation: 1 };
+      startedGate.resolve();
+      return {
+        status: 'started',
+        run: completedSnapshot(ref, instruction),
+        ref,
+        completion: hold.promise,
+      };
+    });
+    const executor = new AutonomousTaskChildRunExecutor({
+      coordinator: harness.coordinator,
+      agentRuns: port,
+      tabState: harness.tabState,
+    });
+    const pending = executor.execute(childRequest(task));
+    await startedGate.promise;
+    for (let attempt = 0; attempt < 20 && executor.getActiveChild(task.taskId) === undefined; attempt += 1) {
+      await Promise.resolve();
+    }
+    requireApplied(harness.coordinator.recordApprovalPresented(refOf(task)));
+    hold.resolve(
+      completedResult({ runId: 'run-answer', tabId: 'tab-1', generation: 1 }, 'Compare refundable prices', 'final'),
+    );
+    const result = await pending;
+    assert.equal(result.status, 'ignored');
+    assert.equal(harness.coordinator.getTask(task.taskId)?.state, 'awaiting-approval');
+  });
 });
 
 describe('AutonomousTaskChildRunExecutor source isolation', () => {

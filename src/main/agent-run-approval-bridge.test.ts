@@ -319,4 +319,134 @@ describe('AgentRunApprovalBridge', () => {
     assert.equal(types.includes('AgentRunRef'), false);
     assert.equal(types.includes('generation'), false);
   });
+
+  it('skips prepare when the optional task hook reports blocked', () => {
+    const harness = createBridgeHarness();
+    const run = harness.coordinator.startRun('tab-1', 'buy it');
+    const calls: string[] = [];
+    const bridge = new AgentRunApprovalBridge({
+      coordinator: harness.coordinator,
+      prepareActionService: {
+        prepare(input) {
+          harness.prepareCalls.count += 1;
+          return new PrepareActionService({
+            manager: harness.manager,
+            audit: harness.audit,
+          }).prepare(input);
+        },
+      },
+      lifecycle: harness.lifecycle,
+      manager: harness.manager,
+      auditRecorder: new ApprovalAuditRecorder({
+        manager: harness.manager,
+        audit: harness.audit,
+        now: () => harness.clock.now,
+      }),
+      emit: (event) => {
+        harness.events.push(event);
+      },
+      taskApproval: {
+        beforePrepare() {
+          calls.push('before');
+          return 'blocked';
+        },
+        onPresented() {
+          calls.push('presented');
+          return 'applied';
+        },
+      },
+    });
+    const result = bridge.prepareAndPresent({
+      ref: toAgentRunRef(run),
+      proposal: boundClick(),
+      observation: buyNowPage(),
+    });
+    assert.equal(result.status, 'failed');
+    assert.deepEqual(calls, ['before']);
+    assert.equal(harness.prepareCalls.count, 0);
+    assert.equal(harness.manager.getPendingForTab('tab-1'), undefined);
+    assert.equal(
+      harness.events.some((event) => event.type === 'approval-required'),
+      false,
+    );
+  });
+
+  it('leaves V5 behavior unchanged when the task hook is unrelated', () => {
+    const harness = createBridgeHarness();
+    const run = harness.coordinator.startRun('tab-1', 'buy it');
+    const bridge = new AgentRunApprovalBridge({
+      coordinator: harness.coordinator,
+      prepareActionService: new PrepareActionService({
+        manager: harness.manager,
+        audit: harness.audit,
+      }),
+      lifecycle: harness.lifecycle,
+      manager: harness.manager,
+      auditRecorder: new ApprovalAuditRecorder({
+        manager: harness.manager,
+        audit: harness.audit,
+        now: () => harness.clock.now,
+      }),
+      emit: (event) => {
+        harness.events.push(event);
+      },
+      taskApproval: {
+        beforePrepare() {
+          return 'unrelated';
+        },
+        onPresented() {
+          return 'unrelated';
+        },
+      },
+    });
+    const result = bridge.prepareAndPresent({
+      ref: toAgentRunRef(run),
+      proposal: boundClick(),
+      observation: buyNowPage(),
+    });
+    assert.equal(result.status, 'awaiting-approval');
+    assert.equal(harness.events[0]?.type, 'approval-required');
+  });
+
+  it('stales the exact approval if V4 presents but task correlation cannot commit', () => {
+    const harness = createBridgeHarness();
+    const run = harness.coordinator.startRun('tab-1', 'buy it');
+    const bridge = new AgentRunApprovalBridge({
+      coordinator: harness.coordinator,
+      prepareActionService: new PrepareActionService({
+        manager: harness.manager,
+        audit: harness.audit,
+      }),
+      lifecycle: harness.lifecycle,
+      manager: harness.manager,
+      auditRecorder: new ApprovalAuditRecorder({
+        manager: harness.manager,
+        audit: harness.audit,
+        now: () => harness.clock.now,
+      }),
+      emit: (event) => {
+        harness.events.push(event);
+      },
+      taskApproval: {
+        beforePrepare() {
+          return 'allow';
+        },
+        onPresented() {
+          return 'ignored';
+        },
+      },
+    });
+    const result = bridge.prepareAndPresent({
+      ref: toAgentRunRef(run),
+      proposal: boundClick(),
+      observation: buyNowPage(),
+    });
+    assert.equal(result.status, 'failed');
+    assert.equal(harness.manager.getByApprovalId('appr-1')?.state, 'stale');
+    assert.equal(harness.coordinator.getRun(run.runId)?.state, 'awaiting-approval');
+    assert.equal(
+      harness.events.some((event) => event.type === 'approval-stale' && event.approvalId === 'appr-1'),
+      true,
+    );
+  });
 });

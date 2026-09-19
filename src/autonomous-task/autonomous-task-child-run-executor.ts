@@ -39,11 +39,19 @@ export type AutonomousTaskChildRunResult =
       readonly status: 'ignored';
     };
 
+export type AutonomousTaskChildLifecycleIntent =
+  | 'pause'
+  | 'stop'
+  | 'trusted-navigation'
+  | 'tab-close'
+  | 'task-budget';
+
 export interface AutonomousTaskActiveChild {
   readonly taskRef: AutonomousTaskRef;
   readonly agentRunRef: AgentRunRef;
   readonly taskTabAlias: string;
   readonly tabId: string;
+  readonly lifecycleIntent?: AutonomousTaskChildLifecycleIntent;
 }
 
 interface ActiveChildCorrelation {
@@ -53,6 +61,7 @@ interface ActiveChildCorrelation {
   readonly fingerprint: string;
   readonly tabId: string;
   lifecycleCancellationRequested: boolean;
+  lifecycleIntent: AutonomousTaskChildLifecycleIntent | undefined;
   readonly settled: Promise<AutonomousTaskChildRunResult>;
   resolveSettled: (result: AutonomousTaskChildRunResult) => void;
 }
@@ -149,6 +158,7 @@ export class AutonomousTaskChildRunExecutor {
       fingerprint,
       tabId,
       lifecycleCancellationRequested: false,
+      lifecycleIntent: undefined,
       settled,
       resolveSettled,
     });
@@ -169,12 +179,33 @@ export class AutonomousTaskChildRunExecutor {
       agentRunRef: active.agentRunRef,
       taskTabAlias: active.taskTabAlias,
       tabId: active.tabId,
+      ...(active.lifecycleIntent !== undefined ? { lifecycleIntent: active.lifecycleIntent } : {}),
     };
+  }
+
+  findActiveChildByAgentRunRef(ref: AgentRunRef): AutonomousTaskActiveChild | undefined {
+    for (const active of this.activeByTask.values()) {
+      if (
+        active.agentRunRef.runId === ref.runId &&
+        active.agentRunRef.tabId === ref.tabId &&
+        active.agentRunRef.generation === ref.generation
+      ) {
+        return {
+          taskRef: active.taskRef,
+          agentRunRef: active.agentRunRef,
+          taskTabAlias: active.taskTabAlias,
+          tabId: active.tabId,
+          ...(active.lifecycleIntent !== undefined ? { lifecycleIntent: active.lifecycleIntent } : {}),
+        };
+      }
+    }
+    return undefined;
   }
 
   async cancelActiveChildForLifecycle(
     ref: AutonomousTaskRef,
     reason: AgentRunCancelledReason,
+    intent: AutonomousTaskChildLifecycleIntent = 'pause',
   ): Promise<AutonomousTaskChildRunResult> {
     const active = this.activeByTask.get(ref.taskId);
     if (
@@ -184,6 +215,7 @@ export class AutonomousTaskChildRunExecutor {
     ) {
       return { status: 'ignored' };
     }
+    active.lifecycleIntent = intent;
     active.lifecycleCancellationRequested = true;
     await this.agentRuns.cancelAndWait(active.agentRunRef, reason);
     return active.settled;
@@ -204,17 +236,16 @@ export class AutonomousTaskChildRunExecutor {
     agentRunRef: AgentRunRef,
     completion: AutonomousTaskAgentRunCompletion,
   ): AutonomousTaskChildRunResult {
-    if (!this.isExactCurrentChild(request.ref, agentRunRef)) {
-      this.clearIfMatch(request.ref.taskId, agentRunRef);
-      return { status: 'ignored' };
-    }
-
     if (completion.status === 'ignored') {
       return this.failCurrentChild(request.ref, agentRunRef);
     }
 
     const snapshot = completion.run;
     if (completion.status === 'completed' && snapshot.state === 'completed') {
+      if (!this.isExactCurrentChild(request.ref, agentRunRef)) {
+        this.clearIfMatch(request.ref.taskId, agentRunRef);
+        return { status: 'ignored' };
+      }
       const recorded = this.coordinator.recordCompletedSubgoalFingerprint(request.ref, fingerprint);
       if (recorded.status === 'ignored') {
         this.clearIfMatch(request.ref.taskId, agentRunRef);
@@ -247,12 +278,18 @@ export class AutonomousTaskChildRunExecutor {
     agentRunRef: AgentRunRef,
     snapshot: AgentRunSnapshot,
   ): AutonomousTaskChildRunResult {
-    if (!this.isExactCurrentChild(ref, agentRunRef)) {
+    if (!this.isExactLiveChild(ref, agentRunRef)) {
       this.clearIfMatch(ref.taskId, agentRunRef);
       return { status: 'ignored' };
     }
 
     if (snapshot.state === 'blocked') {
+      if (
+        this.activeByTask.get(ref.taskId)?.lifecycleCancellationRequested === true &&
+        snapshot.terminalReason === 'ACTION_STALE'
+      ) {
+        return this.lifecycleCancelledIfLive(ref, agentRunRef);
+      }
       const blocked = this.coordinator.markBlocked(ref, mapBlockedReason(snapshot.terminalReason));
       this.clearIfMatch(ref.taskId, agentRunRef);
       return this.releaseOnTerminal(ref, this.appliedOrIgnored(blocked));
@@ -263,14 +300,8 @@ export class AutonomousTaskChildRunExecutor {
       return this.releaseOnTerminal(ref, this.appliedOrIgnored(unknown));
     }
     if (snapshot.state === 'cancelled') {
-      const active = this.activeByTask.get(ref.taskId);
-      if (active?.lifecycleCancellationRequested === true) {
-        this.clearIfMatch(ref.taskId, agentRunRef);
-        const current = this.coordinator.inspectTask(ref);
-        if (current.status === 'current' && current.snapshot.state === 'running-subgoal') {
-          return { status: 'lifecycle-cancelled', snapshot: current.snapshot };
-        }
-        return { status: 'ignored' };
+      if (this.activeByTask.get(ref.taskId)?.lifecycleCancellationRequested === true) {
+        return this.lifecycleCancelledIfLive(ref, agentRunRef);
       }
       return this.failCurrentChild(ref, agentRunRef);
     }
@@ -289,11 +320,26 @@ export class AutonomousTaskChildRunExecutor {
     return this.releaseOnTerminal(ref, this.appliedOrIgnored(failed));
   }
 
+  private lifecycleCancelledIfLive(
+    ref: AutonomousTaskRef,
+    agentRunRef: AgentRunRef,
+  ): AutonomousTaskChildRunResult {
+    this.clearIfMatch(ref.taskId, agentRunRef);
+    const current = this.coordinator.inspectTask(ref);
+    if (
+      current.status === 'current' &&
+      (current.snapshot.state === 'running-subgoal' || current.snapshot.state === 'awaiting-approval')
+    ) {
+      return { status: 'lifecycle-cancelled', snapshot: current.snapshot };
+    }
+    return { status: 'ignored' };
+  }
+
   private failCurrentChild(
     ref: AutonomousTaskRef,
     agentRunRef: AgentRunRef,
   ): AutonomousTaskChildRunResult {
-    if (!this.isExactCurrentChild(ref, agentRunRef)) {
+    if (!this.isExactLiveChild(ref, agentRunRef)) {
       this.clearIfMatch(ref.taskId, agentRunRef);
       return { status: 'ignored' };
     }
@@ -310,11 +356,33 @@ export class AutonomousTaskChildRunExecutor {
     if (inspected.status !== 'current' || inspected.snapshot.state !== 'running-subgoal') {
       return false;
     }
+    return this.matchesActiveChild(ref, agentRunRef);
+  }
+
+  private isExactLiveChild(
+    ref: AutonomousTaskRef,
+    agentRunRef: AgentRunRef,
+  ): boolean {
+    const inspected = this.coordinator.inspectTask(ref);
+    if (inspected.status !== 'current') {
+      return false;
+    }
+    if (
+      inspected.snapshot.state !== 'running-subgoal' &&
+      inspected.snapshot.state !== 'awaiting-approval'
+    ) {
+      return false;
+    }
+    return this.matchesActiveChild(ref, agentRunRef);
+  }
+
+  private matchesActiveChild(ref: AutonomousTaskRef, agentRunRef: AgentRunRef): boolean {
     const active = this.activeByTask.get(ref.taskId);
     return (
       active !== undefined &&
       active.taskRef.generation === ref.generation &&
       active.agentRunRef.runId === agentRunRef.runId &&
+      active.agentRunRef.tabId === agentRunRef.tabId &&
       active.agentRunRef.generation === agentRunRef.generation
     );
   }
