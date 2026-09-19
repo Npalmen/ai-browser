@@ -31,6 +31,16 @@ describe('resolveObservationFixtureRoute', () => {
     assert.ok(aiReadonly);
     assert.equal(aiReadonly.absolutePath, path.join(OBSERVATION_FIXTURE_DIR, 'ai-readonly.html'));
     assert.equal(aiReadonly.contentType, 'text/html; charset=utf-8');
+
+    const hostileAsk = resolveObservationFixtureRoute('/v8-hostile-ask.html');
+    assert.ok(hostileAsk);
+    assert.equal(hostileAsk.absolutePath, path.join(OBSERVATION_FIXTURE_DIR, 'v8-hostile-ask.html'));
+    const hostileWorkflow = resolveObservationFixtureRoute('/v8-hostile-workflow.html');
+    assert.ok(hostileWorkflow);
+    assert.equal(
+      hostileWorkflow.absolutePath,
+      path.join(OBSERVATION_FIXTURE_DIR, 'v8-hostile-workflow.html'),
+    );
   });
 
   it('rejects unknown and traversal paths for observation routes', () => {

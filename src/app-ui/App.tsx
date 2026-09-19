@@ -405,7 +405,8 @@ export function App() {
       openAssistantPanel();
 
       try {
-        const result = await window.aiAssistant.askCurrentPage({ tabId, question: text, mode });
+        const question = text;
+        const result = await window.aiAssistant.askCurrentPage({ tabId, question, mode });
         if (!result.ok) {
           setTabAiState((current) =>
             applyAskStartFailure(current, tabId, result.error, rendererRequestId),

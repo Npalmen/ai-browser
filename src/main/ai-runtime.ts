@@ -8,7 +8,11 @@ import { SafeAgentLoop } from '../agent-run/safe-agent-loop';
 import { InteractiveStepAgent } from '../ai/interactive-step-agent';
 import { ReadOnlyAgent } from '../ai/read-only-agent';
 import { ConversationStore } from '../ai/conversation-store';
+import type { InteractionModelRuntime } from '../ai/interaction-model-runtime';
 import { AiSdkGatewayRuntime } from '../ai/providers/ai-sdk-gateway';
+import type { ModelRuntime } from '../ai/model-runtime';
+import type { AutonomousTaskPlannerRuntime } from '../autonomous-task/autonomous-task-planner-runtime';
+import type { WorkflowDraftRuntime } from '../ai-native/workflow-draft-runtime';
 import type {
   AutonomousTaskAgentRunExecutionPort,
   AutonomousTaskAgentRunExecutionStartResult,
@@ -145,10 +149,18 @@ export function handleAutonomousTaskRendererCrash(tabId: TabId): void {
   });
 }
 
-export function initializeAiRuntime(browserAdapter: ElectronBrowserAdapter): void {
+export type AiRuntimeModelInjection = ModelRuntime &
+  InteractionModelRuntime &
+  AutonomousTaskPlannerRuntime &
+  WorkflowDraftRuntime;
+
+export function initializeAiRuntime(
+  browserAdapter: ElectronBrowserAdapter,
+  options?: { modelRuntime?: AiRuntimeModelInjection },
+): void {
   disposeAiRuntime();
   adapter = browserAdapter;
-  const gatewayRuntime = new AiSdkGatewayRuntime();
+  const gatewayRuntime = options?.modelRuntime ?? new AiSdkGatewayRuntime();
   const observationSource = {
     observePage: (tabId: string, options?: Parameters<ElectronBrowserAdapter['observePage']>[1]) =>
       browserAdapter.observePage(tabId, options),

@@ -11,6 +11,8 @@ const OBSERVATION_ROUTE_MAP: Record<string, { fileName: string; contentType: str
   '/index.html': { fileName: 'index.html', contentType: 'text/html; charset=utf-8' },
   '/iframe.html': { fileName: 'iframe.html', contentType: 'text/html; charset=utf-8' },
   '/ai-readonly.html': { fileName: 'ai-readonly.html', contentType: 'text/html; charset=utf-8' },
+  '/v8-hostile-ask.html': { fileName: 'v8-hostile-ask.html', contentType: 'text/html; charset=utf-8' },
+  '/v8-hostile-workflow.html': { fileName: 'v8-hostile-workflow.html', contentType: 'text/html; charset=utf-8' },
 };
 
 const INTERACTION_ROUTE_MAP: Record<string, { fileName: string; contentType: string }> = {

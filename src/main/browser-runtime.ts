@@ -53,6 +53,7 @@ export async function initializeBrowserRuntime(
     onBeforeDispose?: () => void;
     onTabInvalidated?: (tabId: TabId, reason: TabInvalidationReason) => void;
     onTabCreated?: (event: BrowserTabCreatedEvent) => void;
+    initialUrl?: string;
   },
 ): Promise<ElectronBrowserAdapter> {
   mainWindow = window;
@@ -74,7 +75,7 @@ export async function initializeBrowserRuntime(
   });
 
   readiness = adapter
-    .createTab({ url: 'https://example.com' })
+    .createTab({ url: options?.initialUrl ?? 'https://example.com' })
     .then(() => {
       publishBrowserState();
     });

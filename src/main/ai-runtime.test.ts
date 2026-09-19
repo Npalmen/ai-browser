@@ -64,6 +64,21 @@ describe('ai-runtime composition', () => {
     assert.match(source, /getSlotOwner\(\)/);
     assert.match(source, /getPendingForTab\(tabId\)/);
     assert.match(source, /activityController = null/);
+    assert.match(source, /options\?\.modelRuntime \?\? new AiSdkGatewayRuntime/);
+    assert.match(source, /export type AiRuntimeModelInjection/);
+  });
+
+  it('does not expose a renderer, IPC, or environment model-runtime selector', () => {
+    const runtime = readSrc('src/main/ai-runtime.ts');
+    const ipc = readSrc('src/main/ipc.ts');
+    const preload = readSrc('src/preload/app-preload.ts');
+    const main = readSrc('src/main/main.ts');
+    assert.match(main, /initializeAiRuntime\(adapter\)/);
+    assert.equal(main.includes('modelRuntime'), false);
+    assert.equal(ipc.includes('modelRuntime'), false);
+    assert.equal(preload.includes('modelRuntime'), false);
+    assert.equal(runtime.includes('AI_GATEWAY_API_KEY'), false);
+    assert.equal(runtime.includes('process.env'), false);
   });
 
   it('does not call InteractiveAgent.interact on the production Act path', () => {

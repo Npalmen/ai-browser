@@ -20,6 +20,7 @@
     "test:v5-acceptance": "tsx --test src/v5-acceptance/*.test.ts && node scripts/run-v5-electron-agent-loop.cjs",
     "test:v6-acceptance": "tsx --test src/v6-acceptance/*.test.ts && node scripts/run-v6-electron-autonomous-task.cjs",
     "test:v7-acceptance": "tsx --test src/v7-acceptance/*.test.ts && node scripts/run-v7-electron-persistent-workflow.cjs",
+    "test:v8-acceptance": "tsx --test src/v8-acceptance/*.test.ts && node scripts/run-v8-electron-ai-native.cjs",
     "test:v2-catalog-live": "tsx --test src/v2-live/catalog-freshness.test.ts",
     "smoke:v2-gateway": "node scripts/run-v2-gateway-smoke.cjs",
     "fixture:observation": "tsx scripts/observation-fixture-server.ts"

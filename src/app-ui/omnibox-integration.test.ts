@@ -33,7 +33,7 @@ describe('V8 omnibox integration', () => {
     assert.match(submit, /route\.kind === 'ask'/);
     assert.match(submit, /route\.context\.kind === 'current-tab'/);
     assert.match(submit, /startCurrentPageRequest\(\{[\s\S]*mode: 'read'/);
-    assert.match(app, /askCurrentPage\(\{ tabId, question: text, mode \}\)/);
+    assert.match(app, /askCurrentPage\(\{ tabId, question, mode \}\)/);
     assert.match(app, /void startCurrentPageRequest/);
   });
 
