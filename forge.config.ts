@@ -12,6 +12,14 @@ const config: ForgeConfig = {
   makers: [],
   plugins: [
     new WebpackPlugin({
+      // Sandboxed preload shares the renderer dev-server multi-compiler. Forge
+      // defaults hot:true, which injects webpack-dev-server/HMR client into
+      // every entry including preload — incompatible with sandbox=true.
+      devServer: {
+        hot: false,
+        liveReload: false,
+        client: false,
+      },
       mainConfig,
       renderer: {
         config: rendererConfig,
