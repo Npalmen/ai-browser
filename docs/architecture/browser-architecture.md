@@ -590,10 +590,12 @@ V5  bounded agent loop — COMPLETE
     no persistence / background autonomy
     ADR-006
 
-V6  autonomous tasks — architecture locked; implementation not started
-    one delegated objective → planner → sequential child V5 runs
-    session-scoped; may continue on owned tabs while user works elsewhere
-    per-action V4 approval unchanged; no persistence / schedules
+V6  autonomous tasks — COMPLETE
+    explicit Delegate mode
+    bounded planner → sequential child V5 AgentRuns
+    task-owned session tabs; background continuation while the app remains open
+    per-action V4 approval; Pause/Resume/Stop
+    no persistence / schedules
     ADR-007
 
 V7  persistent workflows                  (future)
@@ -711,4 +713,4 @@ This architecture implements `.cursor/rules/browser-agent-safety.mdc`: action le
 
 It follows `AGENTS.md` and `.cursor/rules/execution.mdc`: smallest correct implementation, explicit permissions, and semantic action classification.
 
-The runtime choice is locked in `docs/architecture/ADR-001-browser-runtime.md` (Status: Accepted). V3 INTERACT is locked in `docs/architecture/ADR-004-interaction-authority.md`. V4 PREPARE_ACTION / APPROVAL / EXECUTE is locked in `docs/architecture/ADR-005-approval-execute-authority.md`. V5 bounded agent-loop orchestration is locked in `docs/architecture/ADR-006-agent-loop-orchestration.md` (Status: Accepted; implementation complete). V6 autonomous task orchestration is locked in `docs/architecture/ADR-007-autonomous-task-orchestration.md` (Status: Accepted; implementation not started).
+The runtime choice is locked in `docs/architecture/ADR-001-browser-runtime.md` (Status: Accepted). V3 INTERACT is locked in `docs/architecture/ADR-004-interaction-authority.md`. V4 PREPARE_ACTION / APPROVAL / EXECUTE is locked in `docs/architecture/ADR-005-approval-execute-authority.md`. V5 bounded agent-loop orchestration is locked in `docs/architecture/ADR-006-agent-loop-orchestration.md` (Status: Accepted; implementation complete). V6 autonomous task orchestration is locked in `docs/architecture/ADR-007-autonomous-task-orchestration.md` (Status: Accepted; implementation complete).

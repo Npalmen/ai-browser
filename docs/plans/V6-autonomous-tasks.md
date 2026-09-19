@@ -1,7 +1,7 @@
 # Plan: V6 — Autonomous tasks
 
-**Status:** architecture locked  
-**Implementation:** not started  
+**Status:** V6 COMPLETE / CLOSED  
+**Implementation:** complete  
 **Explicit reference:** Implementation tasks must cite `docs/plans/V6-autonomous-tasks.md` to treat this file as authoritative.
 
 Authoritative architecture:
@@ -20,9 +20,10 @@ AGENTS.md
 ```
 
 ```text
-V6 autonomous tasks — architecture locked
-implementation not started
+V6 COMPLETE / CLOSED
 ```
+
+Phases 1–7 are complete. The locked architecture in this document and ADR-007 is unchanged.
 
 V0 (shell), V1 (observation), V2 (read-only agent), V3 (permissioned INTERACT), V4 (PREPARE / APPROVAL / EXECUTE), and V5 (bounded agent loop) are **complete and frozen**. V6 must not reopen already-green V3/V4/V5 authority.
 
@@ -139,13 +140,13 @@ No live or paid model calls in acceptance. Recording / fake planner and model ru
 
 | Phase | Deliverable | Verification | Status |
 |-------|-------------|--------------|--------|
-| 1 | `AutonomousTask` types, state machine, budgets, generation, audit; `TaskTabRegistry`; no model/browser | targeted unit tests | not started |
-| 2 | `AutonomousTaskPlanner` structured-output runtime; trusted task-progress/context builder; no child execution | targeted planner tests | not started |
-| 3 | `AgentRunExecutor` abstraction; decouple child runs from product `ConversationStore`; single-tab sequential subgoals | targeted executor + coordinator tests | not started |
-| 4 | Task-owned tab lifecycle; causal new-tab adoption; pause/resume; manual navigation semantics | targeted tab/lifecycle tests | not started |
-| 5 | V4 approval-aware task integration; task approval budget; pause/stop after dispatch; unknown propagation | targeted approval-task tests | not started |
-| 6 | Main/runtime/IPC/UI task center; Ask and Act unchanged; explicit Autonomous Task mode | targeted main + UI tests | not started |
-| 7 | Deterministic V6 fixtures; Electron session-background acceptance; V2–V6 closure | full acceptance matrix | not started |
+| 1 | `AutonomousTask` types, state machine, budgets, generation, audit; `TaskTabRegistry`; no model/browser | targeted unit tests | complete |
+| 2 | `AutonomousTaskPlanner` structured-output runtime; trusted task-progress/context builder; no child execution | targeted planner tests | complete |
+| 3 | `AgentRunExecutor` abstraction; decouple child runs from product `ConversationStore`; single-tab sequential subgoals | targeted executor + coordinator tests | complete |
+| 4 | Task-owned tab lifecycle; causal new-tab adoption; pause/resume; manual navigation semantics | targeted tab/lifecycle tests | complete |
+| 5 | V4 approval-aware task integration; task approval budget; pause/stop after dispatch; unknown propagation | targeted approval-task tests | complete |
+| 6 | Main/runtime/IPC/UI task center; Ask and Act unchanged; explicit Autonomous Task mode | targeted main + UI tests | complete |
+| 7 | Deterministic V6 fixtures; Electron session-background acceptance; V2–V6 closure | full acceptance matrix | complete |
 
 Each phase must remain independently reviewable. Do not collapse later phases into earlier ones.
 
@@ -372,11 +373,9 @@ Dedicated Electron PASS marker:
 
 ## Completion criteria
 
-V6 is complete only when Phase 7 closure gates are green and this plan’s status is updated to `complete` by a later implementation task.
-
-Until then:
+V6 is **COMPLETE / CLOSED**. Phase 7 closure gates are green. Evidence: `docs/acceptance/V6-acceptance.md`.
 
 ```text
-V6 architecture locked
-implementation not started
+V6 COMPLETE / CLOSED
+V7 NOT STARTED
 ```
