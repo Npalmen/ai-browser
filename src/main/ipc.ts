@@ -26,6 +26,7 @@ import {
 import { approvalSafeError } from './approval-safe-error';
 import { aiSafeError, toAiSafeError } from './ai-safe-error';
 import { getBrowserAdapter, whenBrowserReady } from './browser-runtime';
+import { getPersistentWorkflowRuntime } from './persistent-workflow-runtime';
 import { assertTrustedAppSender } from './ipc-security';
 
 let handlersRegistered = false;
@@ -210,6 +211,10 @@ export function registerBrowserShellIpc(): void {
       if (!parsed.ok) {
         return parsed;
       }
+      const runtime = getPersistentWorkflowRuntime();
+      if (runtime) {
+        return runtime.startManualAutonomousTask(parsed.input.objective);
+      }
       const taskController = getAutonomousTaskController();
       if (!taskController) {
         return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };
@@ -227,6 +232,10 @@ export function registerBrowserShellIpc(): void {
       const parsed = parseAutonomousTaskIdRequest(input);
       if (!parsed.ok) {
         return parsed;
+      }
+      const runtime = getPersistentWorkflowRuntime();
+      if (runtime) {
+        return await runtime.pauseAutonomousTask(parsed.input.taskId);
       }
       const taskController = getAutonomousTaskController();
       if (!taskController) {
@@ -246,6 +255,10 @@ export function registerBrowserShellIpc(): void {
       if (!parsed.ok) {
         return parsed;
       }
+      const runtime = getPersistentWorkflowRuntime();
+      if (runtime) {
+        return runtime.resumeManualAutonomousTask(parsed.input.taskId);
+      }
       const taskController = getAutonomousTaskController();
       if (!taskController) {
         return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };
@@ -263,6 +276,10 @@ export function registerBrowserShellIpc(): void {
       const parsed = parseAutonomousTaskIdRequest(input);
       if (!parsed.ok) {
         return parsed;
+      }
+      const runtime = getPersistentWorkflowRuntime();
+      if (runtime) {
+        return await runtime.stopAutonomousTask(parsed.input.taskId);
       }
       const taskController = getAutonomousTaskController();
       if (!taskController) {

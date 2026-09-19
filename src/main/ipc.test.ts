@@ -56,10 +56,16 @@ describe('autonomous task IPC wiring', () => {
     ]) {
       const start = ipc.indexOf(channel);
       assert.ok(start >= 0, channel);
-      const block = ipc.slice(start, start + 500);
+      const block = ipc.slice(start, start + 900);
       const sender = block.indexOf('assertTrustedAppSender(event)');
       assert.ok(sender >= 0, `${channel} sender`);
-      assert.ok(sender < block.indexOf('getAutonomousTaskController') || channel.includes('getState'), channel);
+      const controller = block.indexOf('getAutonomousTaskController');
+      const runtime = block.indexOf('getPersistentWorkflowRuntime');
+      const gate = [controller, runtime].filter((index) => index >= 0).sort((left, right) => left - right)[0];
+      assert.ok(
+        channel.includes('getState') || (gate !== undefined && sender < gate),
+        channel,
+      );
     }
     for (const forbidden of [
       'autonomous-task:execute-child',

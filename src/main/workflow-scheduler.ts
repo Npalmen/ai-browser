@@ -26,6 +26,7 @@ export class WorkflowScheduler {
   private readonly now: () => Date;
   private readonly timer: SchedulerTimerPort;
   private readonly onBackgroundError: ((error: unknown) => void) | undefined;
+  private readonly onQueueChanged: (() => void) | undefined;
   private lifecycle: SchedulerLifecycle = 'stopped';
   private startPromise: Promise<void> | undefined;
   private timerGeneration = 0;
@@ -37,6 +38,7 @@ export class WorkflowScheduler {
     this.now = options.now ?? (() => new Date());
     this.timer = options.timer ?? createNodeSchedulerTimerPort();
     this.onBackgroundError = options.onBackgroundError;
+    this.onQueueChanged = options.onQueueChanged;
   }
 
   async start(): Promise<void> {
@@ -171,6 +173,18 @@ export class WorkflowScheduler {
       return;
     }
     this.armTimer(generation, now, earliestFuture);
+    this.notifyQueueChanged();
+  }
+
+  private notifyQueueChanged(): void {
+    if (this.lifecycle !== 'started') {
+      return;
+    }
+    try {
+      this.onQueueChanged?.();
+    } catch {
+      // Queue listeners must not break due-time evaluation.
+    }
   }
 
   private canEvaluate(mode: 'start' | 'active'): boolean {

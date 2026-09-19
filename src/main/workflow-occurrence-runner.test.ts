@@ -330,6 +330,34 @@ describe('WorkflowOccurrenceRunner', () => {
     assert.equal(harness.tasks.starts.length, 0);
   });
 
+  it('maps live runtime loss to unknown and keeps a startup-pending failed fact', async () => {
+    const live = await createHarness();
+    const liveOcc = await enqueue(live);
+    await live.runner.startOccurrence(liveOcc.occurrence.occurrenceId);
+    await live.runner.handleExecutionRuntimeUnavailable();
+    const unknown = await live.coordinator.getOccurrence(liveOcc.occurrence.occurrenceId);
+    assert.equal(unknown?.state, 'execution-state-unknown');
+    assert.equal((await live.coordinator.getWorkflow(liveOcc.workflow.workflowId))?.reviewRequired, true);
+    assert.equal(live.browser.created.length, 1);
+    assert.equal(live.tasks.starts.length, 1);
+
+    const pending = await createHarness();
+    pending.browser.failCreate = new Error('tab start failed');
+    pending.durable.failTerminal = true;
+    const pendingOcc = await enqueue(pending);
+    await pending.runner.startOccurrence(pendingOcc.occurrence.occurrenceId);
+    await pending.runner.handleExecutionRuntimeUnavailable();
+    assert.equal((await pending.coordinator.getOccurrence(pendingOcc.occurrence.occurrenceId))?.state, 'running');
+    pending.durable.failTerminal = false;
+    await pending.runner.reconcilePendingTerminal();
+    assert.equal(
+      (await pending.coordinator.getOccurrence(pendingOcc.occurrence.occurrenceId))?.terminalReason,
+      WORKFLOW_START_REASON.TAB,
+    );
+    assert.equal(pending.browser.created.length, 1);
+    assert.equal(pending.tasks.starts.length, 0);
+  });
+
   it('maps V6 completed to a durable completed occurrence with the bounded answer', async () => {
     const harness = await createHarness();
     const { occurrence } = await enqueue(harness);
@@ -551,7 +579,7 @@ describe('WorkflowOccurrenceRunner', () => {
     assert.equal(scheduler.includes('startOccurrence'), false);
     assert.equal(runtime.includes('WorkflowOccurrenceRunner'), false);
     assert.equal(main.includes('WorkflowOccurrenceRunner'), false);
-    assert.equal(main.includes('requestSingleInstanceLock'), false);
+    assert.match(main, /app\.requestSingleInstanceLock\(\)/);
     const occurrenceKeys = storeTypes.slice(
       storeTypes.indexOf('export const WORKFLOW_OCCURRENCE_KEYS'),
       storeTypes.indexOf(

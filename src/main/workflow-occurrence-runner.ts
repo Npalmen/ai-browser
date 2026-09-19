@@ -115,6 +115,10 @@ export class WorkflowOccurrenceRunner {
     };
   }
 
+  hasPendingTerminal(): boolean {
+    return this.owned?.pendingTerminal !== undefined;
+  }
+
   async startOccurrence(occurrenceId: string): Promise<WorkflowOccurrenceStartResult> {
     if (this.owned !== undefined) {
       return { status: 'busy' };
@@ -205,6 +209,25 @@ export class WorkflowOccurrenceRunner {
     } catch {
       // Retain the exact pending terminal fact. Caller may retry bookkeeping.
     }
+  }
+
+  /**
+   * Fail-closed bookkeeping when live browser/V6 execution is being detached.
+   * Startup-pending keeps its more specific failed fact. Live execution without
+   * a pending terminal becomes execution-state-unknown. No browser retry.
+   */
+  async handleExecutionRuntimeUnavailable(): Promise<void> {
+    const owned = this.owned;
+    if (owned === undefined) {
+      return;
+    }
+    if (owned.kind === 'live' && owned.pendingTerminal === undefined) {
+      owned.pendingTerminal = {
+        state: 'execution-state-unknown',
+        terminalReason: 'EXECUTION_STATE_UNKNOWN',
+      };
+    }
+    await this.reconcilePendingTerminal();
   }
 
   private async dispatchTaskEvent(event: AutonomousTaskEvent): Promise<void> {

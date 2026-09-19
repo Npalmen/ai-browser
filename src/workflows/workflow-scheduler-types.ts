@@ -35,6 +35,11 @@ export interface WorkflowSchedulerOptions {
   readonly timer?: SchedulerTimerPort;
   /** Timer-driven failures only. Must not throw; the scheduler wraps it if it does. */
   readonly onBackgroundError?: (error: unknown) => void;
+  /**
+   * Queue-change notification only. Must not start occurrences or own browser
+   * authority. Redundant notifications are safe.
+   */
+  readonly onQueueChanged?: () => void;
 }
 
 export function createNodeSchedulerTimerPort(): SchedulerTimerPort {

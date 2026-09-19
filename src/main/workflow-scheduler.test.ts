@@ -46,11 +46,35 @@ describe('WorkflowScheduler', () => {
       'writeFile',
       'createTab',
       'navigate(',
+      'WorkflowOccurrenceRunner',
+      'startOccurrence',
     ]) {
       assert.equal(source.includes(banned), false, banned);
     }
     assert.equal(MIN_SCHEDULER_TIMER_DELAY_MS, 1);
     assert.equal(MAX_SCHEDULER_TIMER_DELAY_MS, 2_147_483_647);
+  });
+
+  it('notifies queue listeners after due enqueue without starting occurrences', async () => {
+    const runAt = '2026-09-19T08:00:00.000Z';
+    let notifications = 0;
+    const harness = createScheduler({
+      now: SAT_NOON_UTC,
+      workflows: [definition('wf-1', oneTime(runAt))],
+    });
+    const scheduler = new WorkflowScheduler({
+      coordinator: harness.coordinator,
+      now: () => new Date(SAT_NOON_UTC),
+      timer: harness.timer,
+      onQueueChanged: () => {
+        notifications += 1;
+      },
+    });
+    await scheduler.start();
+    assert.equal(notifications, 1);
+    assert.equal(harness.coordinator.scheduledEnqueues.length, 1);
+    scheduler.dispose();
+    assert.equal(notifications, 1);
   });
 
   it('no-ops recompute and store-change notifications before start', async () => {

@@ -58,6 +58,7 @@ let approvalRuntime: ApprovalRuntime | null = null;
 let autonomousTaskController: AutonomousTaskController | null = null;
 let autonomousTaskCoordinator: AutonomousTaskCoordinator | null = null;
 let autonomousTaskApprovalIntegration: AutonomousTaskApprovalIntegration | null = null;
+let autonomousTaskEventListeners = new Set<(event: AutonomousTaskEvent) => void>();
 
 export function getAiController(): AiRequestController | null {
   return controller;
@@ -77,6 +78,15 @@ export function getApprovalWorkflowController(): ApprovalWorkflowController | nu
 
 export function getAutonomousTaskController(): AutonomousTaskController | null {
   return autonomousTaskController;
+}
+
+export function subscribeAutonomousTaskEvents(
+  listener: (event: AutonomousTaskEvent) => void,
+): () => void {
+  autonomousTaskEventListeners.add(listener);
+  return () => {
+    autonomousTaskEventListeners.delete(listener);
+  };
 }
 
 export function invalidateApprovalTab(tabId: TabId): void {
@@ -279,6 +289,7 @@ export function disposeAiRuntime(): void {
   autonomousTaskController = null;
   autonomousTaskCoordinator = null;
   autonomousTaskApprovalIntegration = null;
+  autonomousTaskEventListeners.clear();
 }
 
 function asChildAgentRunPort(executor: AgentRunExecutor): AutonomousTaskAgentRunExecutionPort {
@@ -302,6 +313,13 @@ function emitApprovalEvent(event: ApprovalEvent): void {
 
 function emitAutonomousTaskEvent(event: AutonomousTaskEvent): void {
   sendToTrustedAppRenderer(AUTONOMOUS_TASK_IPC_CHANNELS.event, event);
+  for (const listener of autonomousTaskEventListeners) {
+    try {
+      listener(event);
+    } catch {
+      // Workflow observers must not break V6 emission.
+    }
+  }
 }
 
 function sendToTrustedAppRenderer(channel: string, payload: unknown): void {
