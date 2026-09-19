@@ -246,4 +246,31 @@ describe('V8 AI-native IPC wiring', () => {
     const block = adapter.slice(blockStart, blockStart + 450);
     assert.equal(block.includes('preload:'), false);
   });
+
+  it('requires trusted sender before generateWorkflowDraft', () => {
+    const ipc = readSrc('src/main/ipc.ts');
+    const start = ipc.indexOf('AI_NATIVE_IPC_CHANNELS.generateWorkflowDraft');
+    assert.ok(start >= 0);
+    const block = ipc.slice(start, start + 900);
+    const sender = block.indexOf('assertTrustedAppSender(event)');
+    const ready = block.indexOf('await whenBrowserReady()');
+    const parse = block.indexOf('parseGenerateWorkflowDraftRequest(input)');
+    const controller = block.indexOf('getAiNativeWorkflowDraftController()');
+    assert.ok(sender >= 0);
+    assert.ok(ready > sender);
+    assert.ok(parse > ready);
+    assert.ok(controller > parse);
+    assert.equal(block.includes('workflows.create'), false);
+    assert.equal(block.includes('createWorkflow'), false);
+    assert.equal(block.includes('getWorkflowProductController'), false);
+    assert.equal(block.includes('runNow'), false);
+  });
+
+  it('exposes aiNative.generateWorkflowDraft from preload only', () => {
+    const preload = readSrc('src/preload/app-preload.ts');
+    assert.match(preload, /generateWorkflowDraft:/);
+    assert.match(preload, /AI_NATIVE_IPC_CHANNELS\.generateWorkflowDraft/);
+    assert.equal(preload.includes('invoke(channel'), false);
+    assert.equal(preload.includes('workflows.create'), false);
+  });
 });

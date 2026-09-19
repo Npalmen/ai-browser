@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import {
   parseCancelContextAskRequest,
   parseContextAskRequest,
+  parseGenerateWorkflowDraftRequest,
   parseRouteIntentRequest,
 } from './ai-native-ipc-guards';
 
@@ -165,5 +166,74 @@ describe('parseRouteIntentRequest', () => {
         assert.equal(result.error.code, 'AI_NATIVE_CONTEXT_INVALID');
       }
     }
+  });
+});
+
+describe('parseGenerateWorkflowDraftRequest', () => {
+  it('accepts current-tab and selected-tabs contexts', () => {
+    const current = parseGenerateWorkflowDraftRequest({
+      instruction: 'Every weekday at 08:00 check this page',
+      context: { kind: 'current-tab', tabId: 'tab-a' },
+    });
+    assert.equal(current.ok, true);
+
+    const selected = parseGenerateWorkflowDraftRequest({
+      instruction: 'Check these tabs',
+      context: { kind: 'selected-tabs', tabIds: ['tab-b', 'tab-a'] },
+    });
+    assert.equal(selected.ok, true);
+    if (selected.ok && selected.input.context.kind === 'selected-tabs') {
+      assert.deepEqual(selected.input.context.tabIds, ['tab-b', 'tab-a']);
+    }
+  });
+
+  it('rejects missing context and empty instruction', () => {
+    assert.equal(
+      parseGenerateWorkflowDraftRequest({
+        instruction: 'Create a workflow',
+      }).ok,
+      false,
+    );
+    const empty = parseGenerateWorkflowDraftRequest({
+      instruction: '   ',
+      context: { kind: 'current-tab', tabId: 'tab-a' },
+    });
+    assert.equal(empty.ok, false);
+    if (!empty.ok) {
+      assert.equal(empty.error.code, 'AI_NATIVE_EMPTY_INPUT');
+    }
+  });
+
+  it('rejects authority extras including now and timeZone', () => {
+    for (const extra of [
+      { enabled: true },
+      { workflowId: 'wf-1' },
+      { occurrenceId: 'occ-1' },
+      { runNow: true },
+      { approvalId: 'a-1' },
+      { taskId: 't-1' },
+      { targetId: 'target-1' },
+      { triggerKey: 'k' },
+      { timeZone: 'UTC' },
+      { now: '2026-09-19T10:00:00.000Z' },
+    ]) {
+      const result = parseGenerateWorkflowDraftRequest({
+        instruction: 'Create a workflow',
+        context: { kind: 'current-tab', tabId: 'tab-a' },
+        ...extra,
+      });
+      assert.equal(result.ok, false, JSON.stringify(extra));
+    }
+  });
+
+  it('rejects oversized selected-tab context', () => {
+    const result = parseGenerateWorkflowDraftRequest({
+      instruction: 'Create a workflow',
+      context: {
+        kind: 'selected-tabs',
+        tabIds: ['tab-1', 'tab-2', 'tab-3', 'tab-4', 'tab-5', 'tab-6'],
+      },
+    });
+    assert.equal(result.ok, false);
   });
 });

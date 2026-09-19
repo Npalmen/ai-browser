@@ -12,6 +12,7 @@ import type {
   AiNativeContextAnswerEvent,
   AiNativeContextAskInput,
   AiNativeContextCancelAskInput,
+  AiNativeWorkflowDraftInput,
   BrowserIntentRouteInput,
 } from '../shared/ai-native-types';
 import type { BrowserState, TabId } from '../shared/browser-types';
@@ -165,6 +166,8 @@ const aiNative: AiNativeApi = {
       ipcRenderer.removeListener(AI_NATIVE_IPC_CHANNELS.contextAnswerEvent, wrapped);
     };
   },
+  generateWorkflowDraft: (input: AiNativeWorkflowDraftInput) =>
+    ipcRenderer.invoke(AI_NATIVE_IPC_CHANNELS.generateWorkflowDraft, input),
 };
 
 contextBridge.exposeInMainWorld('browserShell', browserShell);

@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 
 import type {
-  WorkflowCreateInput,
-  WorkflowDetailView,
   WorkflowProductError,
   WorkflowProductTrigger,
   WorkflowSummaryView,
@@ -20,6 +18,13 @@ import {
   showWorkflowList,
   workflowStorageLocked,
 } from './workflow-ui-state';
+import {
+  emptyWorkflowForm,
+  workflowCreateInputFromForm,
+  workflowFormFromDetail,
+  workflowTriggerFromForm,
+  type WorkflowFormState,
+} from './workflow-draft-ui-state';
 
 const WEEKDAYS: readonly { value: number; label: string }[] = [
   { value: 1, label: 'Monday' },
@@ -30,130 +35,6 @@ const WEEKDAYS: readonly { value: number; label: string }[] = [
   { value: 6, label: 'Saturday' },
   { value: 7, label: 'Sunday' },
 ];
-
-interface WorkflowDraft {
-  name: string;
-  objective: string;
-  url: string;
-  triggerKind: 'manual' | 'one-time' | 'daily' | 'weekly';
-  runAtLocal: string;
-  timeZone: string;
-  hour: string;
-  minute: string;
-  daysOfWeek: number[];
-  enabled: boolean;
-}
-
-function defaultTimeZone(): string {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-}
-
-function emptyDraft(enabled = true): WorkflowDraft {
-  return {
-    name: '',
-    objective: '',
-    url: '',
-    triggerKind: 'manual',
-    runAtLocal: '',
-    timeZone: defaultTimeZone(),
-    hour: '9',
-    minute: '0',
-    daysOfWeek: [1],
-    enabled,
-  };
-}
-
-function draftFromDetail(detail: WorkflowDetailView): WorkflowDraft {
-  const trigger = detail.trigger;
-  const base = emptyDraft(detail.enabled);
-  base.name = detail.name;
-  base.objective = detail.objective;
-  base.url = detail.entryPoint.url;
-  if (trigger.kind === 'manual') {
-    return { ...base, triggerKind: 'manual' };
-  }
-  if (trigger.schedule.kind === 'one-time') {
-    return {
-      ...base,
-      triggerKind: 'one-time',
-      runAtLocal: utcIsoToLocalDatetime(trigger.schedule.runAtUtc),
-    };
-  }
-  if (trigger.schedule.kind === 'recurring-daily') {
-    return {
-      ...base,
-      triggerKind: 'daily',
-      timeZone: trigger.schedule.timeZone,
-      hour: String(trigger.schedule.hour),
-      minute: String(trigger.schedule.minute),
-    };
-  }
-  return {
-    ...base,
-    triggerKind: 'weekly',
-    timeZone: trigger.schedule.timeZone,
-    hour: String(trigger.schedule.hour),
-    minute: String(trigger.schedule.minute),
-    daysOfWeek: [...trigger.schedule.daysOfWeek],
-  };
-}
-
-function utcIsoToLocalDatetime(iso: string): string {
-  const date = new Date(iso);
-  if (!Number.isFinite(date.getTime())) {
-    return '';
-  }
-  const pad = (value: number) => String(value).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function localDatetimeToUtcIso(value: string): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-  const parsed = new Date(value);
-  if (!Number.isFinite(parsed.getTime())) {
-    return undefined;
-  }
-  return parsed.toISOString();
-}
-
-function draftTrigger(draft: WorkflowDraft): WorkflowProductTrigger | undefined {
-  if (draft.triggerKind === 'manual') {
-    return { kind: 'manual' };
-  }
-  if (draft.triggerKind === 'one-time') {
-    const runAtUtc = localDatetimeToUtcIso(draft.runAtLocal);
-    if (!runAtUtc) {
-      return undefined;
-    }
-    return { kind: 'schedule', schedule: { kind: 'one-time', runAtUtc } };
-  }
-  const hour = Number(draft.hour);
-  const minute = Number(draft.minute);
-  if (!Number.isInteger(hour) || !Number.isInteger(minute)) {
-    return undefined;
-  }
-  if (draft.triggerKind === 'daily') {
-    return {
-      kind: 'schedule',
-      schedule: { kind: 'recurring-daily', timeZone: draft.timeZone, hour, minute },
-    };
-  }
-  if (draft.daysOfWeek.length === 0) {
-    return undefined;
-  }
-  return {
-    kind: 'schedule',
-    schedule: {
-      kind: 'recurring-weekly',
-      timeZone: draft.timeZone,
-      hour,
-      minute,
-      daysOfWeek: [...draft.daysOfWeek].sort((left, right) => left - right),
-    },
-  };
-}
 
 function triggerLabel(trigger: WorkflowProductTrigger): string {
   if (trigger.kind === 'manual') {
@@ -186,9 +67,15 @@ function lastResultLabel(workflow: WorkflowSummaryView): string {
   return `${workflow.lastResult.state} · ${formatInstant(workflow.lastResult.finishedAt)}`;
 }
 
-export function WorkflowsPanel(props: { onClose: () => void }) {
+export function WorkflowsPanel(props: {
+  onClose: () => void;
+  aiDraftForm?: WorkflowFormState | null;
+  onAiDraftFormChange?: (form: WorkflowFormState) => void;
+  onDiscardAiDraft?: () => void;
+  onAiDraftSaved?: (workflowId?: string) => void;
+}) {
   const [state, setState] = useState(emptyWorkflowUiState);
-  const [draft, setDraft] = useState<WorkflowDraft>(emptyDraft());
+  const [draft, setDraft] = useState<WorkflowFormState>(emptyWorkflowForm());
   const locked = workflowStorageLocked(state);
   const selected = useMemo(
     () => state.workflows.find((workflow) => workflow.workflowId === state.selectedWorkflowId) ?? null,
@@ -234,13 +121,13 @@ export function WorkflowsPanel(props: { onClose: () => void }) {
 
   useEffect(() => {
     if (state.detail && state.screen === 'detail') {
-      setDraft(draftFromDetail(state.detail));
+      setDraft(workflowFormFromDetail(state.detail));
     }
   }, [state.detail, state.screen]);
 
   const runMutation = (
     action: () => Promise<{ ok: true; workflowId?: string } | { ok: false; error: WorkflowProductError }>,
-    options: { select?: boolean; closeDetail?: boolean } = {},
+    options: { select?: boolean; closeDetail?: boolean; clearAiDraft?: boolean } = {},
   ) => {
     if (state.mutating || locked) {
       return;
@@ -256,6 +143,9 @@ export function WorkflowsPanel(props: { onClose: () => void }) {
           setState((current) => showWorkflowList(endWorkflowMutation(current)));
         } else if (options.select && result.workflowId) {
           setState((current) => selectWorkflow(endWorkflowMutation(current), result.workflowId as string));
+          if (options.clearAiDraft) {
+            props.onAiDraftSaved?.(result.workflowId);
+          }
         } else {
           setState((current) => endWorkflowMutation(current));
         }
@@ -274,8 +164,8 @@ export function WorkflowsPanel(props: { onClose: () => void }) {
 
   const handleCreate = (event: FormEvent) => {
     event.preventDefault();
-    const trigger = draftTrigger(draft);
-    if (!trigger) {
+    const input = workflowCreateInputFromForm(draft);
+    if (!input) {
       setState((current) =>
         applyWorkflowOperationError(current, {
           code: 'WORKFLOW_INVALID_REQUEST',
@@ -284,14 +174,25 @@ export function WorkflowsPanel(props: { onClose: () => void }) {
       );
       return;
     }
-    const input: WorkflowCreateInput = {
-      name: draft.name,
-      objective: draft.objective,
-      entryPoint: { kind: 'url', url: draft.url },
-      trigger,
-      enabled: draft.enabled,
-    };
     runMutation(() => window.workflows.create(input), { select: true });
+  };
+
+  const handleSaveAiDraft = (event: FormEvent) => {
+    event.preventDefault();
+    if (!props.aiDraftForm) {
+      return;
+    }
+    const input = workflowCreateInputFromForm(props.aiDraftForm);
+    if (!input) {
+      setState((current) =>
+        applyWorkflowOperationError(current, {
+          code: 'WORKFLOW_INVALID_REQUEST',
+          message: 'The workflow request was invalid.',
+        }),
+      );
+      return;
+    }
+    runMutation(() => window.workflows.create(input), { select: true, clearAiDraft: true });
   };
 
   const handleSave = (event: FormEvent) => {
@@ -299,7 +200,7 @@ export function WorkflowsPanel(props: { onClose: () => void }) {
     if (!state.selectedWorkflowId) {
       return;
     }
-    const trigger = draftTrigger(draft);
+    const trigger = workflowTriggerFromForm(draft);
     if (!trigger) {
       setState((current) =>
         applyWorkflowOperationError(current, {
@@ -346,7 +247,35 @@ export function WorkflowsPanel(props: { onClose: () => void }) {
         </p>
       ) : null}
 
-      {state.screen === 'list' ? (
+      {props.aiDraftForm ? (
+        <form className="workflow-body workflow-form workflow-ai-draft" onSubmit={handleSaveAiDraft}>
+          <p className="workflow-ai-draft-label">AI-generated draft</p>
+          <h3 className="workflow-subtitle">Review AI workflow draft</h3>
+          <WorkflowFormFields
+            draft={props.aiDraftForm}
+            onChange={(form) => props.onAiDraftFormChange?.(form)}
+            includeEnabled
+            enabledLabel="Enable after saving"
+            locked={locked || state.mutating}
+            triggerName="ai-workflow-trigger"
+          />
+          <div className="workflow-actions">
+            <button type="submit" className="workflow-button" disabled={locked || state.mutating}>
+              Save workflow
+            </button>
+            <button
+              type="button"
+              className="workflow-button"
+              disabled={state.mutating}
+              onClick={() => props.onDiscardAiDraft?.()}
+            >
+              Discard draft
+            </button>
+          </div>
+        </form>
+      ) : null}
+
+      {!props.aiDraftForm && state.screen === 'list' ? (
         <div className="workflow-body">
           <div className="workflow-toolbar">
             <button
@@ -354,7 +283,7 @@ export function WorkflowsPanel(props: { onClose: () => void }) {
               className="workflow-button"
               disabled={locked}
               onClick={() => {
-                setDraft(emptyDraft());
+                setDraft(emptyWorkflowForm());
                 setState((current) => beginWorkflowCreate(current));
               }}
             >
@@ -393,20 +322,20 @@ export function WorkflowsPanel(props: { onClose: () => void }) {
         </div>
       ) : null}
 
-      {state.screen === 'create' ? (
+      {!props.aiDraftForm && state.screen === 'create' ? (
         <form className="workflow-body workflow-form" onSubmit={handleCreate}>
           <button type="button" className="workflow-link" onClick={() => setState((current) => showWorkflowList(current))}>
             Back to list
           </button>
           <h3 className="workflow-subtitle">New workflow</h3>
-          <WorkflowDraftFields draft={draft} onChange={setDraft} includeEnabled locked={locked || state.mutating} />
+          <WorkflowFormFields draft={draft} onChange={setDraft} includeEnabled locked={locked || state.mutating} triggerName="workflow-trigger-create" />
           <button type="submit" className="workflow-button" disabled={locked || state.mutating}>
             Create workflow
           </button>
         </form>
       ) : null}
 
-      {state.screen === 'detail' && selected ? (
+      {!props.aiDraftForm && state.screen === 'detail' && selected ? (
         <div className="workflow-body">
           <button type="button" className="workflow-link" onClick={() => setState((current) => showWorkflowList(current))}>
             Back to list
@@ -482,7 +411,7 @@ export function WorkflowsPanel(props: { onClose: () => void }) {
             <p className="workflow-note">
               Changes apply only to future queued runs. Existing queued/running runs retain their saved definition.
             </p>
-            <WorkflowDraftFields draft={draft} onChange={setDraft} includeEnabled={false} locked={locked || state.mutating} />
+            <WorkflowFormFields draft={draft} onChange={setDraft} includeEnabled={false} locked={locked || state.mutating} triggerName="workflow-trigger-edit" />
             <button type="submit" className="workflow-button" disabled={locked || state.mutating}>
               Save changes
             </button>
@@ -575,14 +504,16 @@ export function WorkflowsPanel(props: { onClose: () => void }) {
   );
 }
 
-function WorkflowDraftFields(props: {
-  draft: WorkflowDraft;
-  onChange: (draft: WorkflowDraft) => void;
+function WorkflowFormFields(props: {
+  draft: WorkflowFormState;
+  onChange: (draft: WorkflowFormState) => void;
   includeEnabled: boolean;
+  enabledLabel?: string;
   locked: boolean;
+  triggerName: string;
 }) {
   const { draft, locked } = props;
-  const update = (patch: Partial<WorkflowDraft>) => props.onChange({ ...draft, ...patch });
+  const update = (patch: Partial<WorkflowFormState>) => props.onChange({ ...draft, ...patch });
   return (
     <>
       <label className="workflow-field">
@@ -618,7 +549,7 @@ function WorkflowDraftFields(props: {
         <label>
           <input
             type="radio"
-            name="workflow-trigger"
+            name={props.triggerName}
             checked={draft.triggerKind === 'manual'}
             onChange={() => update({ triggerKind: 'manual' })}
           />
@@ -627,7 +558,7 @@ function WorkflowDraftFields(props: {
         <label>
           <input
             type="radio"
-            name="workflow-trigger"
+            name={props.triggerName}
             checked={draft.triggerKind === 'one-time'}
             onChange={() => update({ triggerKind: 'one-time' })}
           />
@@ -636,7 +567,7 @@ function WorkflowDraftFields(props: {
         <label>
           <input
             type="radio"
-            name="workflow-trigger"
+            name={props.triggerName}
             checked={draft.triggerKind === 'daily'}
             onChange={() => update({ triggerKind: 'daily' })}
           />
@@ -645,7 +576,7 @@ function WorkflowDraftFields(props: {
         <label>
           <input
             type="radio"
-            name="workflow-trigger"
+            name={props.triggerName}
             checked={draft.triggerKind === 'weekly'}
             onChange={() => update({ triggerKind: 'weekly' })}
           />
@@ -718,9 +649,10 @@ function WorkflowDraftFields(props: {
             disabled={locked}
             onChange={(event) => update({ enabled: event.target.checked })}
           />
-          Enabled
+          {props.enabledLabel ?? 'Enabled'}
         </label>
       ) : null}
     </>
   );
 }
+

@@ -38,6 +38,8 @@ import { AgentRunController } from './agent-run-controller';
 import { AgentRunExecutor } from './agent-run-executor';
 import { CompositeAgentRunApprovalOutcomePort } from './agent-run-approval-outcome-composite';
 import { AiNativeContextController } from './ai-native-context-controller';
+import { AiNativeWorkflowDraftController } from './ai-native-workflow-draft-controller';
+import { WorkflowDraftAgent } from '../ai-native/workflow-draft-agent';
 import { AiRequestController } from './ai-request-controller';
 import { AutonomousTaskApprovalIntegration } from './autonomous-task-approval-integration';
 import { AutonomousTaskApprovalPortProxy } from './autonomous-task-approval-port-proxy';
@@ -56,6 +58,7 @@ interface ApprovalRuntime {
 
 let controller: AiRequestController | null = null;
 let contextController: AiNativeContextController | null = null;
+let workflowDraftController: AiNativeWorkflowDraftController | null = null;
 let agentRunController: AgentRunController | null = null;
 let agentRunExecutor: AgentRunExecutor | null = null;
 let adapter: ElectronBrowserAdapter | null = null;
@@ -71,6 +74,10 @@ export function getAiController(): AiRequestController | null {
 
 export function getAiNativeContextController(): AiNativeContextController | null {
   return contextController;
+}
+
+export function getAiNativeWorkflowDraftController(): AiNativeWorkflowDraftController | null {
+  return workflowDraftController;
 }
 
 export function getAgentRunController(): AgentRunController | null {
@@ -234,6 +241,14 @@ export function initializeAiRuntime(browserAdapter: ElectronBrowserAdapter): voi
     getBrowserState: () => browserAdapter.getBrowserState(),
     emit: emitAiNativeContextAnswerEvent,
   });
+  const workflowDraftAgent = new WorkflowDraftAgent({
+    runtime: gatewayRuntime,
+  });
+  workflowDraftController = new AiNativeWorkflowDraftController({
+    observationSource,
+    agent: workflowDraftAgent,
+    getBrowserState: () => browserAdapter.getBrowserState(),
+  });
 
   const taskCoordinator = new AutonomousTaskCoordinator();
   const tabState = new TaskTabStateRegistry();
@@ -298,9 +313,11 @@ export function disposeAiRuntime(): void {
   autonomousTaskApprovalIntegration?.dispose();
   autonomousTaskCoordinator?.dispose();
   contextController?.dispose();
+  workflowDraftController?.dispose();
   controller?.dispose();
   agentRunExecutor?.dispose();
   contextController = null;
+  workflowDraftController = null;
   controller = null;
   agentRunController = null;
   agentRunExecutor = null;

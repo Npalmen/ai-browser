@@ -1,6 +1,7 @@
 import { MODEL_CONTEXT_BUDGETS } from '../ai/context-builder';
 import type {
   AiNativeContextAskInput,
+  AiNativeWorkflowDraftInput,
   BrowserContextScope,
   BrowserIntentCapability,
   BrowserIntentRouteInput,
@@ -14,6 +15,7 @@ const CURRENT_TAB_KEYS = new Set(['kind', 'tabId']);
 const SELECTED_TABS_KEYS = new Set(['kind', 'tabIds']);
 const ASK_CONTEXT_KEYS = new Set(['question', 'context']);
 const CANCEL_CONTEXT_ASK_KEYS = new Set(['askId']);
+const GENERATE_WORKFLOW_DRAFT_KEYS = new Set(['instruction', 'context']);
 
 const FORBIDDEN_CONTEXT_ASK_FIELDS = new Set([
   'targetId',
@@ -32,6 +34,11 @@ const FORBIDDEN_CONTEXT_ASK_FIELDS = new Set([
   'runId',
   'preparedActionId',
   'executionId',
+  'enabled',
+  'runNow',
+  'occurrenceId',
+  'timeZone',
+  'now',
 ]);
 
 const FORBIDDEN_ROUTE_INTENT_FIELDS = new Set([
@@ -243,6 +250,59 @@ export function parseCancelContextAskRequest(
     return invalidRequest();
   }
   return { ok: true, askId: record.askId };
+}
+
+export function parseGenerateWorkflowDraftRequest(
+  input: unknown,
+): { ok: true; input: AiNativeWorkflowDraftInput } | { ok: false; error: AiNativeSafeError } {
+  if (typeof input !== 'object' || input === null) {
+    return invalidRequest();
+  }
+
+  const record = input as Record<string, unknown>;
+  if (rejectForbiddenContextAskKeys(record)) {
+    return invalidRequest();
+  }
+  if (!hasOnlyKeys(record, GENERATE_WORKFLOW_DRAFT_KEYS)) {
+    return invalidRequest();
+  }
+  if (typeof record.instruction !== 'string') {
+    return invalidRequest();
+  }
+  const instruction = record.instruction.trim();
+  if (instruction.length === 0) {
+    return { ok: false, error: aiNativeSafeError('AI_NATIVE_EMPTY_INPUT') };
+  }
+  if (instruction.length > MODEL_CONTEXT_BUDGETS.maxUserQuestionChars) {
+    return invalidRequest();
+  }
+
+  const parsedContext = parseWorkflowDraftContext(record.context);
+  if (isAiNativeSafeError(parsedContext)) {
+    return { ok: false, error: parsedContext };
+  }
+
+  return {
+    ok: true,
+    input: {
+      instruction,
+      context: parsedContext,
+    },
+  };
+}
+
+function parseWorkflowDraftContext(value: unknown): BrowserContextScope | AiNativeSafeError {
+  if (typeof value !== 'object' || value === null) {
+    return aiNativeSafeError('AI_NATIVE_CONTEXT_INVALID');
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind === 'current-tab') {
+    return parseContext(value);
+  }
+  if (record.kind === 'selected-tabs') {
+    return parseSelectedTabsContext(value);
+  }
+  return aiNativeSafeError('AI_NATIVE_CONTEXT_INVALID');
 }
 
 export function parseRouteIntentRequest(

@@ -792,6 +792,22 @@ body {
   gap: 10px;
 }
 
+.workflow-ai-draft {
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  background: #eff6ff;
+  padding: 12px;
+}
+
+.workflow-ai-draft-label {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #1d4ed8;
+}
+
 .workflow-field {
   display: flex;
   flex-direction: column;

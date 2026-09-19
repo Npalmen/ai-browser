@@ -25,7 +25,6 @@ import {
   OMNIBOX_NAV_ERROR,
   reconcileWithBrowser,
   resetAfterSuccessfulAiSubmit,
-  setPhaseUnavailable,
   setSubmitError,
   syncDraftFromUrl,
   type OmniboxUiState,
@@ -60,6 +59,10 @@ import {
   setAutonomousTaskReplyDraft,
   type AutonomousTaskUiState,
 } from './autonomous-task-ui-state';
+import {
+  workflowFormFromAiDraft,
+  type WorkflowFormState,
+} from './workflow-draft-ui-state';
 
 function tabLabel(tab: BrowserTab): string {
   if (tab.title) {
@@ -89,6 +92,7 @@ export function App() {
   const [contextAnswerState, setContextAnswerState] = useState<ContextAnswerUiState>(
     emptyContextAnswerUiState(),
   );
+  const [aiDraftForm, setAiDraftForm] = useState<WorkflowFormState | null>(null);
   const [panelMode, setPanelMode] = useState<AiPanelMode>('read');
   const lastSyncedUrlRef = useRef('');
   const activeTabIdRef = useRef<string | null>(null);
@@ -318,6 +322,25 @@ export function App() {
       });
   }, [panelOpen, rightPanelSurface]);
 
+  const openWorkflowsPanel = useCallback(() => {
+    if (panelOpen && rightPanelSurface === 'workflows') {
+      return;
+    }
+    void window.aiAssistant
+      .setPanelOpen(true)
+      .then((result) => {
+        if (!result.ok) {
+          console.error('[app-ui] failed to set AI panel open:', result.error.message);
+          return;
+        }
+        setRightPanelSurface('workflows');
+        setPanelOpen(true);
+      })
+      .catch((error: unknown) => {
+        console.error('[app-ui] failed to set AI panel open:', error);
+      });
+  }, [panelOpen, rightPanelSurface]);
+
   const startCurrentPageRequest = useCallback(
     async ({
       tabId,
@@ -408,6 +431,30 @@ export function App() {
       }
     },
     [openAssistantPanel],
+  );
+
+  const startWorkflowDraft = useCallback(
+    async (
+      instruction: string,
+      context: { kind: 'current-tab'; tabId: string } | { kind: 'selected-tabs'; tabIds: readonly string[] },
+    ): Promise<{ ok: true } | { ok: false; message: string }> => {
+      try {
+        const result = await window.aiNative.generateWorkflowDraft({
+          instruction,
+          context,
+        });
+        if (!result.ok) {
+          return { ok: false, message: result.error.message };
+        }
+        setAiDraftForm(workflowFormFromAiDraft(result.draft));
+        openWorkflowsPanel();
+        return { ok: true };
+      } catch (error: unknown) {
+        console.error('[app-ui] failed to generate workflow draft:', error);
+        return { ok: false, message: 'Unable to generate workflow draft.' };
+      }
+    },
+    [openWorkflowsPanel],
   );
 
   const handleOmniboxSubmit = () => {
@@ -515,7 +562,12 @@ export function App() {
         }
 
         if (route.kind === 'draft-workflow') {
-          setOmniboxState((current) => setPhaseUnavailable(finishSubmit(current)));
+          const started = await startWorkflowDraft(route.instruction, route.context);
+          setOmniboxState((current) =>
+            started.ok
+              ? resetAfterSuccessfulAiSubmit(finishSubmit(current))
+              : setSubmitError(finishSubmit(current), mapAiStartErrorMessage(started.message)),
+          );
           return;
         }
 
@@ -932,7 +984,15 @@ export function App() {
           onReplyTask={(taskId) => handleTaskReply(taskId)}
         />
       ) : null}
-      {panelOpen && rightPanelSurface === 'workflows' ? <WorkflowsPanel onClose={handleClosePanel} /> : null}
+      {panelOpen && rightPanelSurface === 'workflows' ? (
+        <WorkflowsPanel
+          onClose={handleClosePanel}
+          aiDraftForm={aiDraftForm}
+          onAiDraftFormChange={setAiDraftForm}
+          onDiscardAiDraft={() => setAiDraftForm(null)}
+          onAiDraftSaved={() => setAiDraftForm(null)}
+        />
+      ) : null}
     </div>
   );
 }

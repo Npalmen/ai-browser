@@ -11,6 +11,8 @@ const SAFE_MESSAGES: Record<AiNativeSafeErrorCode, string> = {
   AI_NATIVE_CONTEXT_UNAVAILABLE: 'The selected browser context is unavailable.',
   AI_NATIVE_REQUEST_CANCELLED: 'The browser context request was cancelled.',
   AI_NATIVE_MODEL_FAILED: 'The browser context request failed.',
+  AI_NATIVE_DRAFT_INVALID: 'The generated workflow draft was invalid.',
+  AI_NATIVE_DRAFT_FAILED: 'Unable to generate workflow draft.',
 };
 
 export function aiNativeSafeError(code: AiNativeSafeErrorCode): AiNativeSafeError {

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, it } from 'node:test';
 
 import {
@@ -748,6 +750,132 @@ describe('AiSdkGatewayRuntime.generateAutonomousTaskDecision', () => {
         error instanceof ModelError && error.code === 'REQUEST_CANCELLED',
     );
     assert.equal(calls, 1);
+  });
+});
+
+function workflowDraftStreamResult(
+  overrides: Partial<GatewayStreamTextResult> = {},
+): GatewayStreamTextResult {
+  return {
+    partialOutputStream: (async function* () {})(),
+    output: settled({
+      name: 'Status check',
+      objective: 'Check the status page.',
+      entryPoint: { kind: 'url', url: 'https://example.test/status' },
+      trigger: { kind: 'manual' },
+    }),
+    usage: settled({
+      inputTokens: 10,
+      outputTokens: 4,
+    }),
+    providerMetadata: settled({ gateway: { cost: 0.002 } }),
+    response: settled({ modelId: 'google/gemini-2.5-flash' }),
+    ...overrides,
+  };
+}
+
+describe('AiSdkGatewayRuntime.generateWorkflowDraft', () => {
+  it('returns a validated workflow draft from structured output', async () => {
+    const log = new ModelRequestLog();
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: log,
+      streamText: () => workflowDraftStreamResult(),
+    });
+
+    const response = await runtime.generateWorkflowDraft(request());
+    assert.equal(response.draft.name, 'Status check');
+    assert.equal(response.draft.trigger.kind, 'manual');
+    assert.equal('enabled' in response.draft, false);
+    assert.equal(log.list()[0]?.success, true);
+    assert.equal(log.list()[0]?.requestId, 'req-1');
+  });
+
+  it('requests the workflow draft schema with no tools', async () => {
+    const seen: GatewayStreamTextArgs[] = [];
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: new ModelRequestLog(),
+      streamText: (args) => {
+        seen.push(args);
+        return workflowDraftStreamResult();
+      },
+    });
+
+    await runtime.generateWorkflowDraft(request());
+    assert.equal(seen[0]?.outputSchema, 'workflowDraft');
+    assert.equal('tools' in (seen[0] ?? {}), false);
+  });
+
+  it('uses Output.object with maxRetries 0 and no tools in the workflow draft SDK path', () => {
+    const source = readFileSync(path.join(__dirname, 'ai-sdk-gateway.ts'), 'utf8');
+    const start = source.indexOf('function defaultWorkflowDraftStreamText');
+    const block = source.slice(start, start + 700);
+    assert.match(block, /Output\.object\(/);
+    assert.match(block, /schema: WORKFLOW_DRAFT_SCHEMA/);
+    assert.match(block, /maxRetries: 0/);
+    assert.equal(block.includes('tools:'), false);
+  });
+
+  it('rejects unknown and authority-shaped fields as MODEL_OUTPUT_INVALID', async () => {
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: new ModelRequestLog(),
+      streamText: () =>
+        workflowDraftStreamResult({
+          output: settled({
+            name: 'x',
+            objective: 'x',
+            entryPoint: { kind: 'url', url: 'https://example.test' },
+            trigger: { kind: 'manual' },
+            enabled: true,
+            taskId: 'task-1',
+          }),
+        }),
+    });
+
+    await assert.rejects(
+      () => runtime.generateWorkflowDraft(request()),
+      (error: unknown) =>
+        error instanceof ModelError && error.code === 'MODEL_OUTPUT_INVALID',
+    );
+  });
+
+  it('rejects forbidden draft URLs as MODEL_OUTPUT_INVALID', async () => {
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: new ModelRequestLog(),
+      streamText: () =>
+        workflowDraftStreamResult({
+          output: settled({
+            name: 'x',
+            objective: 'x',
+            entryPoint: { kind: 'url', url: 'file:///tmp/secret' },
+            trigger: { kind: 'manual' },
+          }),
+        }),
+    });
+
+    await assert.rejects(
+      () => runtime.generateWorkflowDraft(request()),
+      (error: unknown) =>
+        error instanceof ModelError && error.code === 'MODEL_OUTPUT_INVALID',
+    );
+  });
+
+  it('logs draft generation metadata without instruction, page, or draft payloads', async () => {
+    const log = new ModelRequestLog();
+    const runtime = new AiSdkGatewayRuntime({
+      readGatewayApiKey: () => 'test-key',
+      requestLog: log,
+      streamText: () => workflowDraftStreamResult(),
+    });
+    await runtime.generateWorkflowDraft(request());
+    const entry = JSON.stringify(log.list()[0]);
+    assert.match(entry, /"requestId":"req-1"/);
+    assert.equal(entry.includes('Status check'), false);
+    assert.equal(entry.includes('USER_INSTRUCTION'), false);
+    assert.equal(entry.includes('example.test'), false);
   });
 });
 

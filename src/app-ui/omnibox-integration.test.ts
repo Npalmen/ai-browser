@@ -64,13 +64,23 @@ describe('V8 omnibox integration', () => {
     assert.match(app, /void startDelegateTask/);
   });
 
-  it('keeps Automate as draft-workflow placeholder without workflow execution', () => {
+  it('wires Automate draft-workflow through generateWorkflowDraft without workflow execution', () => {
     const app = readSrc('src/app-ui/App.tsx');
     const submit = submitBlock(app);
     assert.match(submit, /route\.kind === 'draft-workflow'/);
-    assert.match(submit, /setPhaseUnavailable/);
+    assert.match(submit, /startWorkflowDraft/);
+    assert.match(app, /generateWorkflowDraft/);
+    assert.equal(submit.includes('setPhaseUnavailable'), false);
     assert.equal(submit.includes('workflows.create'), false);
+    assert.equal(submit.includes('runNow'), false);
     assert.equal(submit.includes('askContext'), false);
+    assert.equal(submit.includes('startAutonomousTask'), false);
+    const askBlock = app.slice(app.indexOf('if (route.kind === \'ask\')'), app.indexOf('if (route.kind === \'act\')'));
+    const actBlock = app.slice(app.indexOf('if (route.kind === \'act\')'), app.indexOf('if (route.kind === \'delegate\')'));
+    const delegateBlock = app.slice(app.indexOf('if (route.kind === \'delegate\')'), app.indexOf('if (route.kind === \'draft-workflow\')'));
+    assert.equal(askBlock.includes('generateWorkflowDraft'), false);
+    assert.equal(actBlock.includes('generateWorkflowDraft'), false);
+    assert.equal(delegateBlock.includes('generateWorkflowDraft'), false);
   });
 
   it('resets omnibox after successful AI capability start', () => {

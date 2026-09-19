@@ -1,4 +1,5 @@
 import type { BrowserState, TabId } from './browser-types';
+import type { WorkflowProductTrigger } from './workflow-product-types';
 
 export const MAX_BROWSER_INTENT_TEXT_CHARS = 4_000;
 export const MAX_SEARCH_QUERY_CHARS = 512;
@@ -89,7 +90,9 @@ export type AiNativeSafeErrorCode =
   | 'AI_NATIVE_CONTEXT_TOO_LARGE'
   | 'AI_NATIVE_CONTEXT_UNAVAILABLE'
   | 'AI_NATIVE_REQUEST_CANCELLED'
-  | 'AI_NATIVE_MODEL_FAILED';
+  | 'AI_NATIVE_MODEL_FAILED'
+  | 'AI_NATIVE_DRAFT_INVALID'
+  | 'AI_NATIVE_DRAFT_FAILED';
 
 export interface AiNativeSafeError {
   readonly code: AiNativeSafeErrorCode;
@@ -128,7 +131,33 @@ export const AI_NATIVE_IPC_CHANNELS = {
   askContext: 'ai-native:ask-context',
   cancelContextAsk: 'ai-native:cancel-context-ask',
   contextAnswerEvent: 'ai-native:context-answer-event',
+  generateWorkflowDraft: 'ai-native:generate-workflow-draft',
 } as const;
+
+export interface WorkflowDraft {
+  readonly name: string;
+  readonly objective: string;
+  readonly entryPoint: {
+    readonly kind: 'url';
+    readonly url: string;
+  };
+  readonly trigger: WorkflowProductTrigger;
+}
+
+export interface AiNativeWorkflowDraftInput {
+  readonly instruction: string;
+  readonly context: BrowserContextScope;
+}
+
+export type AiNativeWorkflowDraftResult =
+  | {
+      readonly ok: true;
+      readonly draft: WorkflowDraft;
+    }
+  | {
+      readonly ok: false;
+      readonly error: AiNativeSafeError;
+    };
 
 export interface AiNativeContextAskInput {
   readonly question: string;
@@ -189,6 +218,7 @@ export interface AiNativeApi {
   askContext(input: AiNativeContextAskInput): Promise<AiNativeContextAskStartResult>;
   cancelContextAsk(input: AiNativeContextCancelAskInput): Promise<AiNativeContextCancelAskResult>;
   onContextAnswerEvent(listener: (event: AiNativeContextAnswerEvent) => void): () => void;
+  generateWorkflowDraft(input: AiNativeWorkflowDraftInput): Promise<AiNativeWorkflowDraftResult>;
 }
 
 export type BrowserIntentRouterState = {
