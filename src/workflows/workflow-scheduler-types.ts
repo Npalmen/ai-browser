@@ -33,6 +33,8 @@ export interface WorkflowSchedulerOptions {
   readonly coordinator: WorkflowSchedulerCoordinatorPort;
   readonly now?: () => Date;
   readonly timer?: SchedulerTimerPort;
+  /** Timer-driven failures only. Must not throw; the scheduler wraps it if it does. */
+  readonly onBackgroundError?: (error: unknown) => void;
 }
 
 export function createNodeSchedulerTimerPort(): SchedulerTimerPort {

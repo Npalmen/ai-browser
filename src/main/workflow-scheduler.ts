@@ -13,16 +13,21 @@ import {
   scheduledTriggerKey,
 } from '../workflows/workflow-schedule';
 
+type SchedulerLifecycle = 'stopped' | 'starting' | 'started' | 'disposed';
+
 /**
  * Trusted due-time calculator. Owns scheduled occurrence identity and one
  * next-due timer hint. Does not start occurrences or own browser authority.
+ *
+ * Constructed ≠ active. Only a successful `start()` may evaluate schedules.
  */
 export class WorkflowScheduler {
   private readonly coordinator: WorkflowSchedulerCoordinatorPort;
   private readonly now: () => Date;
   private readonly timer: SchedulerTimerPort;
-  private started = false;
-  private disposed = false;
+  private readonly onBackgroundError: ((error: unknown) => void) | undefined;
+  private lifecycle: SchedulerLifecycle = 'stopped';
+  private startPromise: Promise<void> | undefined;
   private timerGeneration = 0;
   private timerHandle: SchedulerTimerHandle | undefined;
   private tail: Promise<void> = Promise.resolve();
@@ -31,14 +36,29 @@ export class WorkflowScheduler {
     this.coordinator = options.coordinator;
     this.now = options.now ?? (() => new Date());
     this.timer = options.timer ?? createNodeSchedulerTimerPort();
+    this.onBackgroundError = options.onBackgroundError;
   }
 
   async start(): Promise<void> {
-    if (this.disposed) {
+    if (this.lifecycle === 'disposed') {
       throw new Error('Workflow scheduler is disposed.');
     }
-    this.started = true;
-    await this.recompute();
+    if (this.lifecycle === 'started') {
+      return;
+    }
+    if (this.startPromise) {
+      return this.startPromise;
+    }
+    this.lifecycle = 'starting';
+    const attempt = this.activate();
+    this.startPromise = attempt;
+    try {
+      await attempt;
+    } finally {
+      if (this.startPromise === attempt) {
+        this.startPromise = undefined;
+      }
+    }
   }
 
   async notifyStoreChanged(): Promise<void> {
@@ -46,10 +66,34 @@ export class WorkflowScheduler {
   }
 
   async recompute(): Promise<void> {
-    if (this.disposed) {
+    if (this.lifecycle !== 'started') {
       return;
     }
-    const run = this.tail.then(() => this.recomputeOnce());
+    return this.queueCycle('active');
+  }
+
+  dispose(): void {
+    this.lifecycle = 'disposed';
+    this.invalidateTimer();
+  }
+
+  private async activate(): Promise<void> {
+    try {
+      await this.queueCycle('start');
+      if (this.lifecycle !== 'started') {
+        throw new Error('Workflow scheduler is disposed.');
+      }
+    } catch (error) {
+      if (this.lifecycle === 'starting') {
+        this.lifecycle = 'stopped';
+        this.invalidateTimer();
+      }
+      throw error;
+    }
+  }
+
+  private queueCycle(mode: 'start' | 'active'): Promise<void> {
+    const run = this.tail.then(() => this.recomputeOnce(mode));
     this.tail = run.then(
       () => undefined,
       () => undefined,
@@ -57,27 +101,21 @@ export class WorkflowScheduler {
     return run;
   }
 
-  dispose(): void {
-    this.disposed = true;
-    this.started = false;
-    this.invalidateTimer();
-  }
-
-  private async recomputeOnce(): Promise<void> {
+  private async recomputeOnce(mode: 'start' | 'active'): Promise<void> {
     const generation = this.invalidateTimer();
-    if (this.disposed) {
+    if (!this.canEvaluate(mode)) {
       return;
     }
 
     const now = this.now();
     const workflows = await this.coordinator.listWorkflows();
-    if (this.disposed) {
+    if (!this.canEvaluate(mode)) {
       return;
     }
 
     let earliestFuture: string | null = null;
     for (const workflow of workflows) {
-      if (this.disposed) {
+      if (!this.canEvaluate(mode)) {
         return;
       }
       if (workflow.trigger.kind !== 'schedule' || !workflow.enabled || workflow.reviewRequired) {
@@ -92,6 +130,9 @@ export class WorkflowScheduler {
         nextFuture = evaluation.nextFuture;
       } catch (error) {
         if (isWorkflowScheduleError(error)) {
+          if (!this.canEvaluate(mode)) {
+            return;
+          }
           await this.coordinator.markScheduleReviewRequired(workflow.workflowId);
           continue;
         }
@@ -99,8 +140,14 @@ export class WorkflowScheduler {
       }
 
       if (latestDue !== null) {
+        if (!this.canEvaluate(mode)) {
+          return;
+        }
         const triggerKey = scheduledTriggerKey(workflow.workflowId, latestDue);
         const existing = await this.coordinator.listOccurrences(workflow.workflowId);
+        if (!this.canEvaluate(mode)) {
+          return;
+        }
         if (!existing.some((occurrence) => occurrence.triggerKey === triggerKey)) {
           await this.coordinator.enqueueScheduledOccurrence({
             workflowId: workflow.workflowId,
@@ -114,14 +161,30 @@ export class WorkflowScheduler {
       }
     }
 
-    if (this.disposed || this.timerGeneration !== generation) {
+    if (!this.canEvaluate(mode) || this.timerGeneration !== generation) {
+      return;
+    }
+    if (mode === 'start') {
+      this.lifecycle = 'started';
+    }
+    if (this.lifecycle !== 'started') {
       return;
     }
     this.armTimer(generation, now, earliestFuture);
   }
 
+  private canEvaluate(mode: 'start' | 'active'): boolean {
+    if (this.lifecycle === 'disposed') {
+      return false;
+    }
+    if (mode === 'start') {
+      return this.lifecycle === 'starting';
+    }
+    return this.lifecycle === 'started';
+  }
+
   private armTimer(generation: number, now: Date, earliestFuture: string | null): void {
-    if (this.disposed || this.timerGeneration !== generation || earliestFuture === null) {
+    if (this.lifecycle !== 'started' || this.timerGeneration !== generation || earliestFuture === null) {
       return;
     }
     const dueMs = Date.parse(earliestFuture);
@@ -135,11 +198,21 @@ export class WorkflowScheduler {
       delayMs = MAX_SCHEDULER_TIMER_DELAY_MS;
     }
     this.timerHandle = this.timer.setTimer(delayMs, () => {
-      if (this.disposed || this.timerGeneration !== generation) {
+      if (this.lifecycle !== 'started' || this.timerGeneration !== generation) {
         return;
       }
-      return this.recompute();
+      return this.recompute().catch((error) => {
+        this.reportBackgroundError(error);
+      });
     });
+  }
+
+  private reportBackgroundError(error: unknown): void {
+    try {
+      this.onBackgroundError?.(error);
+    } catch {
+      // Diagnostic failures must not escape a timer callback.
+    }
   }
 
   private invalidateTimer(): number {

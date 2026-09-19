@@ -53,6 +53,26 @@ describe('WorkflowScheduler', () => {
     assert.equal(MAX_SCHEDULER_TIMER_DELAY_MS, 2_147_483_647);
   });
 
+  it('no-ops recompute and store-change notifications before start', async () => {
+    const runAt = '2026-09-19T08:00:00.000Z';
+    const harness = createScheduler({
+      now: SAT_NOON_UTC,
+      workflows: [definition('wf-1', oneTime(runAt))],
+    });
+    await harness.scheduler.recompute();
+    await harness.scheduler.notifyStoreChanged();
+    assert.equal(harness.coordinator.listCalls, 0);
+    assert.equal(harness.coordinator.occurrenceListCalls, 0);
+    assert.equal(harness.coordinator.scheduledEnqueues.length, 0);
+    assert.equal(harness.coordinator.reviewMarks.length, 0);
+    assert.equal(harness.timer.size, 0);
+
+    await harness.scheduler.start();
+    assert.deepEqual(harness.coordinator.scheduledEnqueues, [{ workflowId: 'wf-1', scheduledFor: runAt }]);
+    assert.equal(harness.coordinator.listCalls, 1);
+    assert.equal(harness.timer.size, 0);
+  });
+
   it('ignores manual workflows', async () => {
     const { scheduler, coordinator, timer } = createScheduler({
       now: SAT_NOON_UTC,
@@ -304,7 +324,7 @@ describe('WorkflowScheduler', () => {
     assert.equal(harness.coordinator.scheduledEnqueues.length, 0);
   });
 
-  it('does not re-arm a timer from a recompute that finishes after dispose', async () => {
+  it('does not re-arm a timer from a start that finishes after dispose', async () => {
     const coordinator = new RecordingCoordinator([definition('wf-1', oneTime('2026-09-19T12:00:00.000Z'))]);
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => {
@@ -321,16 +341,33 @@ describe('WorkflowScheduler', () => {
       now: () => utc('2026-09-19T11:00:00.000Z'),
       timer,
     });
-    const pending = scheduler.recompute();
+    const pending = scheduler.start();
     scheduler.dispose();
     release?.();
-    await pending;
+    await assert.rejects(
+      pending,
+      (error: unknown) => error instanceof Error && error.message === 'Workflow scheduler is disposed.',
+    );
     assert.equal(timer.size, 0);
+    assert.equal(coordinator.scheduledEnqueues.length, 0);
+    await scheduler.recompute();
+    await scheduler.notifyStoreChanged();
+    assert.equal(timer.size, 0);
+    await assert.rejects(
+      () => scheduler.start(),
+      (error: unknown) => error instanceof Error && error.message === 'Workflow scheduler is disposed.',
+    );
     assert.equal(coordinator.scheduledEnqueues.length, 0);
   });
 
   it('serializes concurrent recomputes onto one enqueue', async () => {
     const coordinator = new RecordingCoordinator([definition('wf-1', oneTime('2026-09-19T10:00:00.000Z'))]);
+    const scheduler = new WorkflowScheduler({
+      coordinator,
+      now: () => utc(SAT_NOON_UTC),
+      timer: new FakeTimer(),
+    });
+    await scheduler.start();
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -340,11 +377,6 @@ describe('WorkflowScheduler', () => {
       await gate;
       return original();
     };
-    const scheduler = new WorkflowScheduler({
-      coordinator,
-      now: () => utc(SAT_NOON_UTC),
-      timer: new FakeTimer(),
-    });
     const first = scheduler.recompute();
     const second = scheduler.recompute();
     release?.();
@@ -352,14 +384,121 @@ describe('WorkflowScheduler', () => {
     assert.equal(coordinator.scheduledEnqueues.length, 1);
   });
 
-  it('calling start twice keeps a single timer', async () => {
-    const { scheduler, timer } = createScheduler({
+  it('calling start twice after success does not evaluate again', async () => {
+    const { scheduler, coordinator, timer } = createScheduler({
       now: '2026-09-19T11:00:00.000Z',
       workflows: [definition('wf-1', oneTime('2026-09-19T12:00:00.000Z'))],
     });
     await scheduler.start();
+    assert.equal(coordinator.listCalls, 1);
     await scheduler.start();
+    assert.equal(coordinator.listCalls, 1);
+    assert.equal(coordinator.scheduledEnqueues.length, 0);
     assert.equal(timer.size, 1);
+  });
+
+  it('shares one in-flight start across concurrent callers', async () => {
+    const coordinator = new RecordingCoordinator([
+      definition('wf-1', oneTime('2026-09-19T10:00:00.000Z')),
+    ]);
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const original = coordinator.listWorkflows.bind(coordinator);
+    coordinator.listWorkflows = async () => {
+      await gate;
+      return original();
+    };
+    const timer = new FakeTimer();
+    const scheduler = new WorkflowScheduler({
+      coordinator,
+      now: () => utc(SAT_NOON_UTC),
+      timer,
+    });
+    const first = scheduler.start();
+    const second = scheduler.start();
+    release?.();
+    await Promise.all([first, second]);
+    assert.equal(coordinator.listCalls, 1);
+    assert.equal(coordinator.scheduledEnqueues.length, 1);
+    assert.equal(timer.size, 0);
+  });
+
+  it('contains timer-driven recompute failures without retrying', async () => {
+    const testError = new DurableWorkflowError('WORKFLOW_NOT_INITIALIZED', 'timer-boom');
+    const reported: unknown[] = [];
+    let resolveReported: (() => void) | undefined;
+    const reportedSeen = new Promise<void>((resolve) => {
+      resolveReported = resolve;
+    });
+    const { scheduler, coordinator, timer } = createScheduler({
+      now: '2026-09-19T11:00:00.000Z',
+      workflows: [definition('wf-1', oneTime('2026-09-19T12:00:00.000Z'))],
+      onBackgroundError: (error) => {
+        reported.push(error);
+        resolveReported?.();
+      },
+    });
+    await scheduler.start();
+    assert.equal(coordinator.scheduledEnqueues.length, 0);
+    assert.equal(timer.size, 1);
+    let failedLists = 0;
+    coordinator.listWorkflows = async () => {
+      failedLists += 1;
+      throw testError;
+    };
+    timer.invokeOnlyLikeTimeout();
+    await reportedSeen;
+    assert.deepEqual(reported, [testError]);
+    assert.equal(failedLists, 1);
+    assert.equal(coordinator.scheduledEnqueues.length, 0);
+    assert.equal(timer.size, 0);
+  });
+
+  it('contains a throwing background error handler', async () => {
+    const testError = new DurableWorkflowError('WORKFLOW_NOT_INITIALIZED', 'timer-boom');
+    let calls = 0;
+    let resolveReported: (() => void) | undefined;
+    const reportedSeen = new Promise<void>((resolve) => {
+      resolveReported = resolve;
+    });
+    const { scheduler, coordinator, timer } = createScheduler({
+      now: '2026-09-19T11:00:00.000Z',
+      workflows: [definition('wf-1', oneTime('2026-09-19T12:00:00.000Z'))],
+      onBackgroundError: () => {
+        calls += 1;
+        resolveReported?.();
+        throw new Error('diagnostic failed');
+      },
+    });
+    await scheduler.start();
+    coordinator.listWorkflows = async () => {
+      throw testError;
+    };
+    timer.invokeOnlyLikeTimeout();
+    await reportedSeen;
+    assert.equal(calls, 1);
+    assert.equal(timer.size, 0);
+  });
+
+  it('still rejects explicit recompute after start when the coordinator fails', async () => {
+    const testError = new DurableWorkflowError('WORKFLOW_NOT_INITIALIZED', 'explicit-boom');
+    const reported: unknown[] = [];
+    const { scheduler, coordinator } = createScheduler({
+      now: '2026-09-19T11:00:00.000Z',
+      workflows: [definition('wf-1', oneTime('2026-09-19T12:00:00.000Z'))],
+      onBackgroundError: (error) => {
+        reported.push(error);
+      },
+    });
+    await scheduler.start();
+    coordinator.listWorkflows = async () => {
+      throw testError;
+    };
+    await assert.rejects(() => scheduler.recompute(), (error: unknown) => error === testError);
+    await assert.rejects(() => scheduler.notifyStoreChanged(), (error: unknown) => error === testError);
+    assert.equal(reported.length, 0);
   });
 
   it('enqueues the latest due after a forward clock jump and not a future slot on a backward jump', async () => {
@@ -384,20 +523,35 @@ describe('WorkflowScheduler', () => {
     assert.equal(coordinator.scheduledEnqueues.length, enqueues);
   });
 
-  it('rejects the scheduler cycle when the coordinator fails', async () => {
+  it('rejects a failed start, stays inactive, then retries after the fault is fixed', async () => {
     const coordinator = new RecordingCoordinator([definition('wf-1', oneTime(SAT_NINE_STOCKHOLM))]);
+    const boom = new DurableWorkflowError('WORKFLOW_NOT_INITIALIZED', 'boom');
     coordinator.listWorkflows = async () => {
-      throw new DurableWorkflowError('WORKFLOW_NOT_INITIALIZED', 'boom');
+      throw boom;
     };
+    const timer = new FakeTimer();
     const scheduler = new WorkflowScheduler({
       coordinator,
       now: () => utc(SAT_NOON_UTC),
-      timer: new FakeTimer(),
+      timer,
     });
     await assert.rejects(
       () => scheduler.start(),
-      (error: unknown) => error instanceof DurableWorkflowError,
+      (error: unknown) => error === boom,
     );
+    assert.equal(timer.size, 0);
+    assert.equal(coordinator.scheduledEnqueues.length, 0);
+
+    const listsAfterFailure = coordinator.listCalls;
+    await scheduler.recompute();
+    await scheduler.notifyStoreChanged();
+    assert.equal(coordinator.listCalls, listsAfterFailure);
+    assert.equal(coordinator.scheduledEnqueues.length, 0);
+    assert.equal(timer.size, 0);
+
+    coordinator.listWorkflows = RecordingCoordinator.prototype.listWorkflows.bind(coordinator);
+    await scheduler.start();
+    assert.deepEqual(coordinator.scheduledEnqueues, [{ workflowId: 'wf-1', scheduledFor: SAT_NINE_STOCKHOLM }]);
   });
 
   it('enqueues a due one-time through a real store and keeps it after reload', async () => {
@@ -573,6 +727,7 @@ function createScheduler(input: {
   clock?: Clock;
   workflows: DurableWorkflowDefinitionRecord[];
   occurrences?: WorkflowOccurrenceRecord[];
+  onBackgroundError?: (error: unknown) => void;
 }): {
   scheduler: WorkflowScheduler;
   coordinator: RecordingCoordinator;
@@ -585,6 +740,7 @@ function createScheduler(input: {
     coordinator,
     now: () => clock.now(),
     timer,
+    onBackgroundError: input.onBackgroundError,
   });
   return { scheduler, coordinator, timer };
 }
@@ -593,6 +749,7 @@ class RecordingCoordinator implements WorkflowSchedulerCoordinatorPort {
   readonly scheduledEnqueues: { workflowId: string; scheduledFor: string }[] = [];
   readonly reviewMarks: string[] = [];
   listCalls = 0;
+  occurrenceListCalls = 0;
   workflows: DurableWorkflowDefinitionRecord[];
   occurrences: WorkflowOccurrenceRecord[];
 
@@ -616,6 +773,7 @@ class RecordingCoordinator implements WorkflowSchedulerCoordinatorPort {
   }
 
   async listOccurrences(workflowId: string): Promise<readonly WorkflowOccurrenceRecord[]> {
+    this.occurrenceListCalls += 1;
     return this.occurrences.filter((occurrence) => occurrence.workflowId === workflowId);
   }
 
@@ -680,6 +838,10 @@ class FakeTimer implements SchedulerTimerPort {
     const timer = this.timers.get(id);
     this.timers.delete(id);
     await timer?.callback();
+  }
+
+  invokeOnlyLikeTimeout(): void {
+    void this.only.callback();
   }
 }
 
