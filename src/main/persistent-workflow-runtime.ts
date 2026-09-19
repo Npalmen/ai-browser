@@ -82,6 +82,7 @@ export class PersistentWorkflowRuntime {
   private shuttingDown = false;
   private disposed = false;
   private executionDisabled = false;
+  private executionBindingGeneration = 0;
   private markRunningGate: (() => Promise<void>) | undefined;
   private terminalizeGate: (() => Promise<void>) | undefined;
 
@@ -105,10 +106,7 @@ export class PersistentWorkflowRuntime {
     try {
       await store.load();
     } catch (error) {
-      if (isWorkflowStoreError(error)) {
-        return new PersistentWorkflowRuntime({ status: 'storage-error', slot });
-      }
-      throw error;
+      return PersistentWorkflowRuntime.containStartupStorageError(slot, error);
     }
 
     const runtimeSessionId = options.runtimeSessionId ?? randomUUID();
@@ -116,7 +114,11 @@ export class PersistentWorkflowRuntime {
       store,
       now: options.now,
     });
-    await coordinator.initialize(runtimeSessionId);
+    try {
+      await coordinator.initialize(runtimeSessionId);
+    } catch (error) {
+      return PersistentWorkflowRuntime.containStartupStorageError(slot, error);
+    }
 
     const runtime = new PersistentWorkflowRuntime({
       status: 'ready',
@@ -124,7 +126,7 @@ export class PersistentWorkflowRuntime {
       slot,
       coordinator,
     });
-    runtime.scheduler = new WorkflowScheduler({
+    const scheduler = new WorkflowScheduler({
       coordinator,
       now: options.now,
       timer: options.timer,
@@ -135,8 +137,29 @@ export class PersistentWorkflowRuntime {
         runtime.executionDisabled = true;
       },
     });
-    await runtime.scheduler.start();
+    runtime.scheduler = scheduler;
+    try {
+      await scheduler.start();
+    } catch (error) {
+      scheduler.dispose();
+      runtime.scheduler = undefined;
+      return PersistentWorkflowRuntime.containStartupStorageError(slot, error);
+    }
     return runtime;
+  }
+
+  private static containStartupStorageError(
+    slot: AutonomousTaskExecutionSlot,
+    error: unknown,
+  ): PersistentWorkflowRuntime {
+    if (isWorkflowStoreError(error)) {
+      return PersistentWorkflowRuntime.createStorageErrorRuntime(slot);
+    }
+    throw error;
+  }
+
+  private static createStorageErrorRuntime(slot: AutonomousTaskExecutionSlot): PersistentWorkflowRuntime {
+    return new PersistentWorkflowRuntime({ status: 'storage-error', slot });
   }
 
   getSlotOwner() {
@@ -162,6 +185,7 @@ export class PersistentWorkflowRuntime {
     if (this.disposed || this.shuttingDown) {
       return;
     }
+    this.executionBindingGeneration += 1;
     this.detachEventSubscription();
     this.binding = binding;
     if (subscribe) {
@@ -184,9 +208,21 @@ export class PersistentWorkflowRuntime {
   }
 
   detachExecutionRuntime(): void {
+    this.executionBindingGeneration += 1;
     this.detachEventSubscription();
+    this.releaseManualReservationOnDetach();
     this.binding = undefined;
-    this.detachTail = this.detachTail.then(() => this.finishDetach()).catch(() => undefined);
+    const detachedRunner = this.runner;
+    if (detachedRunner === undefined) {
+      return;
+    }
+    if (detachedRunner.getActiveOccurrence() === undefined) {
+      this.runner = undefined;
+      return;
+    }
+    this.detachTail = this.detachTail
+      .then(() => this.finishDetach(detachedRunner))
+      .catch(() => undefined);
   }
 
   handleAutonomousTaskEvent(event: AutonomousTaskEvent): void {
@@ -357,20 +393,21 @@ export class PersistentWorkflowRuntime {
   }
 
   private async drainOnce(): Promise<void> {
-    if (!this.canDrain()) {
+    const generation = this.executionBindingGeneration;
+    const runner = this.runner;
+    if (!this.canDrain() || runner === undefined) {
       return;
     }
     const coordinator = this.coordinator;
-    const runner = this.runner;
-    if (coordinator === undefined || runner === undefined) {
+    if (coordinator === undefined) {
       return;
     }
     const queued = await coordinator.listQueuedOccurrences();
-    if (!this.canDrain()) {
+    if (!this.drainStillOwns(generation, runner)) {
       return;
     }
     const workflows = await coordinator.listWorkflows();
-    if (!this.canDrain()) {
+    if (!this.drainStillOwns(generation, runner)) {
       return;
     }
     const byId = new Map(workflows.map((workflow) => [workflow.workflowId, workflow]));
@@ -378,7 +415,7 @@ export class PersistentWorkflowRuntime {
     const epochLimit = queued.length;
     let examined = 0;
     for (const occurrence of queued) {
-      if (examined >= epochLimit || !this.canDrain() || !this.slot.isFree()) {
+      if (examined >= epochLimit || !this.drainStillOwns(generation, runner) || !this.slot.isFree()) {
         return;
       }
       examined += 1;
@@ -392,6 +429,16 @@ export class PersistentWorkflowRuntime {
       }
       this.workflowReservation = reservation;
       const result = await runner.startOccurrence(occurrence.occurrenceId);
+      if (this.runner !== runner) {
+        if (runner.getActiveOccurrence() !== undefined) {
+          await runner.handleExecutionRuntimeUnavailable();
+        }
+        if (this.workflowReservation === reservation && runner.getActiveOccurrence() === undefined) {
+          this.slot.release(reservation);
+          this.workflowReservation = undefined;
+        }
+        return;
+      }
       if (result.status === 'started') {
         const live = runner.inspectLiveExecution();
         if (live?.taskId) {
@@ -408,6 +455,14 @@ export class PersistentWorkflowRuntime {
         return;
       }
     }
+  }
+
+  private drainStillOwns(generation: number, runner: WorkflowOccurrenceRunner): boolean {
+    return (
+      this.executionBindingGeneration === generation &&
+      this.runner === runner &&
+      this.canDrain()
+    );
   }
 
   private canDrain(): boolean {
@@ -472,42 +527,46 @@ export class PersistentWorkflowRuntime {
     }
   }
 
+  private releaseManualReservationOnDetach(): void {
+    if (this.slot.owner()?.kind !== 'manual' || this.manualReservation === undefined) {
+      return;
+    }
+    this.slot.release(this.manualReservation);
+    this.manualReservation = undefined;
+  }
+
   private detachEventSubscription(): void {
     this.unsubscribeEvents?.();
     this.unsubscribeEvents = undefined;
   }
 
-  private async finishDetach(): Promise<void> {
-    const runner = this.runner;
-    if (runner === undefined) {
-      return;
-    }
-    if (runner.getActiveOccurrence() === undefined) {
-      this.runner = undefined;
-      return;
-    }
-    await runner.handleExecutionRuntimeUnavailable();
-    if (runner.getActiveOccurrence() !== undefined) {
+  private async finishDetach(detachedRunner: WorkflowOccurrenceRunner): Promise<void> {
+    await detachedRunner.handleExecutionRuntimeUnavailable();
+    if (detachedRunner.getActiveOccurrence() !== undefined) {
       this.executionDisabled = true;
       return;
     }
-    this.releaseWorkflowSlotIfRunnerFree();
-    this.runner = undefined;
-    if (
-      this.binding !== undefined &&
-      this.status === 'ready' &&
-      this.coordinator !== undefined &&
-      !this.executionDisabled &&
-      !this.disposed &&
-      !this.shuttingDown
-    ) {
-      this.runner = new WorkflowOccurrenceRunner({
-        durable: this.createDurablePort(this.coordinator),
-        browser: this.binding.browser,
-        autonomousTasks: this.binding.autonomousTasks,
-      });
-      this.requestDrain();
+    if (this.runner === detachedRunner) {
+      this.releaseWorkflowSlotIfRunnerFree();
+      this.runner = undefined;
     }
+    if (
+      this.binding === undefined ||
+      this.status !== 'ready' ||
+      this.coordinator === undefined ||
+      this.executionDisabled ||
+      this.disposed ||
+      this.shuttingDown ||
+      this.runner !== undefined
+    ) {
+      return;
+    }
+    this.runner = new WorkflowOccurrenceRunner({
+      durable: this.createDurablePort(this.coordinator),
+      browser: this.binding.browser,
+      autonomousTasks: this.binding.autonomousTasks,
+    });
+    this.requestDrain();
   }
 }
 

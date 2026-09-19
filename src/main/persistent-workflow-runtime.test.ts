@@ -6,10 +6,18 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 
 import { PersistentWorkflowRuntime } from './persistent-workflow-runtime';
-import { WORKFLOW_STORE_CANONICAL_FILENAME } from './workflow-store';
+import { AtomicJsonWorkflowStore, WORKFLOW_STORE_CANONICAL_FILENAME } from './workflow-store';
 import { DurableWorkflowError } from '../workflows/durable-workflow-errors';
-import type { CreateDurableWorkflowInput } from '../workflows/durable-workflow-types';
+import type {
+  CreateDurableWorkflowInput,
+  WorkflowStorePort,
+} from '../workflows/durable-workflow-types';
+import { WorkflowStoreError } from '../workflows/workflow-store-errors';
 import type { SchedulerTimerPort } from '../workflows/workflow-scheduler-types';
+import type {
+  WorkflowStoreMutation,
+  WorkflowStoreSnapshot,
+} from '../workflows/workflow-store-types';
 import type {
   AutonomousTaskControlResult,
   AutonomousTaskEvent,
@@ -351,6 +359,108 @@ describe('PersistentWorkflowRuntime', () => {
     });
   });
 
+  it('contains a recovery-commit WorkflowStoreError without starting the scheduler', async () => {
+    await withDirectory(async (directory) => {
+      const first = await PersistentWorkflowRuntime.initialize({
+        directory,
+        runtimeSessionId: 'runtime-A',
+        now: () => new Date(BASE_TIME),
+        timer: new FakeTimer(),
+      });
+      const { occurrence } = await enqueue(first, { name: 'Recover me' });
+      first.attachExecutionRuntime({ browser: new FakeBrowser(), autonomousTasks: new FakeTasks() });
+      await first.flush();
+      assert.equal((await first.getCoordinator()?.getOccurrence(occurrence.occurrenceId))?.state, 'running');
+      first.dispose();
+
+      const inner = new AtomicJsonWorkflowStore({ directory });
+      const store = new CommitFailingStore(inner);
+      store.failNextCommit(
+        new WorkflowStoreError('WORKFLOW_STORE_IO_FAILED', 'Workflow store I/O failed.'),
+      );
+      const timer = new FakeTimer();
+      const second = await PersistentWorkflowRuntime.initialize({
+        directory,
+        store,
+        runtimeSessionId: 'runtime-B',
+        now: () => new Date(BASE_TIME + 1000),
+        timer,
+      });
+      assert.equal(second.status, 'storage-error');
+      assert.equal(second.getCoordinator(), undefined);
+      assert.equal(second.getRunner(), undefined);
+      assert.equal(timer.size, 0);
+      const persisted = (await inner.load()).occurrences.find(
+        (item) => item.occurrenceId === occurrence.occurrenceId,
+      );
+      assert.equal(persisted?.state, 'running');
+      await assertManualUsableWithoutWorkflow(second);
+      second.dispose();
+    });
+  });
+
+  it('contains a scheduler-start WorkflowStoreError and disposes any timer', async () => {
+    await withDirectory(async (directory) => {
+      const first = await PersistentWorkflowRuntime.initialize({
+        directory,
+        runtimeSessionId: 'runtime-sched-a',
+        now: () => new Date(BASE_TIME),
+        timer: new FakeTimer(),
+      });
+      await first.getCoordinator()?.createWorkflow({
+        name: 'Due',
+        objective: 'Scheduled research',
+        entryPoint: { kind: 'url', url: 'https://example.test/due' },
+        trigger: { kind: 'schedule', schedule: { kind: 'one-time', runAtUtc: '2026-09-19T08:00:00.000Z' } },
+      });
+      first.dispose();
+
+      const inner = new AtomicJsonWorkflowStore({ directory });
+      const store = new CommitFailingStore(inner);
+      store.failNextCommit(
+        new WorkflowStoreError('WORKFLOW_STORE_IO_FAILED', 'Workflow store I/O failed.'),
+      );
+      const timer = new FakeTimer();
+      const second = await PersistentWorkflowRuntime.initialize({
+        directory,
+        store,
+        runtimeSessionId: 'runtime-sched-b',
+        now: () => new Date(BASE_TIME),
+        timer,
+      });
+      assert.equal(second.status, 'storage-error');
+      assert.equal(second.getCoordinator(), undefined);
+      assert.equal(second.getRunner(), undefined);
+      assert.equal(timer.size, 0);
+      assert.equal((await inner.load()).occurrences.length, 0);
+      await assertManualUsableWithoutWorkflow(second);
+      second.dispose();
+    });
+  });
+
+  it('rejects initialization for unexpected non-storage errors', async () => {
+    await withDirectory(async (directory) => {
+      const store: WorkflowStorePort = {
+        async load(): Promise<WorkflowStoreSnapshot> {
+          throw new Error('programmer failure');
+        },
+        async commit(): Promise<WorkflowStoreSnapshot> {
+          throw new Error('commit should not run');
+        },
+      };
+      await assert.rejects(
+        () =>
+          PersistentWorkflowRuntime.initialize({
+            directory,
+            store,
+            runtimeSessionId: 'runtime-bug',
+            timer: new FakeTimer(),
+          }),
+        (error: unknown) => error instanceof Error && error.message === 'programmer failure',
+      );
+    });
+  });
+
   it('ignores stale scheduler callbacks and events after shutdown', async () => {
     await withDirectory(async (directory) => {
       const timer = new FakeTimer();
@@ -408,6 +518,122 @@ describe('PersistentWorkflowRuntime', () => {
       runtime.attachExecutionRuntime({ browser, autonomousTasks: tasks }, subscribe);
       await runtime.flush();
       assert.equal(listeners.size, 1);
+    });
+  });
+
+  it('releases an active manual slot when execution runtime detaches', async () => {
+    await withRuntime(async ({ runtime }) => {
+      const browser = new FakeBrowser();
+      const tasks = new FakeTasks((event) => runtime.handleAutonomousTaskEvent(event));
+      runtime.attachExecutionRuntime({ browser, autonomousTasks: tasks });
+      const started = runtime.startManualAutonomousTask('Keep going');
+      assert.equal(started.ok, true);
+      if (!started.ok) {
+        throw new Error('expected manual');
+      }
+      assert.equal(runtime.getSlotOwner()?.kind, 'manual');
+      runtime.detachExecutionRuntime();
+      assert.equal(runtime.getSlotOwner(), undefined);
+      assert.equal(browser.created.length, 0);
+    });
+  });
+
+  it('starts a queued workflow after a detached manual Delegate is gone', async () => {
+    await withRuntime(async ({ runtime }) => {
+      const { occurrence } = await enqueue(runtime);
+      const browserA = new FakeBrowser();
+      const tasksA = new FakeTasks((event) => runtime.handleAutonomousTaskEvent(event));
+      runtime.attachExecutionRuntime({ browser: browserA, autonomousTasks: tasksA });
+      const started = runtime.startManualAutonomousTask('Hold then close');
+      assert.equal(started.ok, true);
+      runtime.detachExecutionRuntime();
+      await runtime.flush();
+      assert.equal(runtime.getSlotOwner(), undefined);
+      assert.equal(browserA.created.length, 0);
+      assert.equal(
+        (await runtime.getCoordinator()?.getOccurrence(occurrence.occurrenceId))?.state,
+        'queued',
+      );
+      const browserB = new FakeBrowser();
+      const tasksB = new FakeTasks((event) => runtime.handleAutonomousTaskEvent(event));
+      runtime.attachExecutionRuntime({ browser: browserB, autonomousTasks: tasksB });
+      await runtime.flush();
+      assert.equal((await runtime.getCoordinator()?.getOccurrence(occurrence.occurrenceId))?.state, 'running');
+      assert.equal(browserB.created.length, 1);
+      assert.equal(tasksB.trustedStarts.length, 1);
+      assert.equal(runtime.getSlotOwner()?.kind, 'workflow');
+    });
+  });
+
+  it('does not let a stale detach clear a freshly attached runner', async () => {
+    await withRuntime(async ({ runtime }) => {
+      const { occurrence } = await enqueue(runtime);
+      const listeners = new Set<(event: AutonomousTaskEvent) => void>();
+      const subscribe = (listener: (event: AutonomousTaskEvent) => void) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      };
+      const browserA = new FakeBrowser();
+      const tasksA = new FakeTasks();
+      const browserB = new FakeBrowser();
+      const tasksB = new FakeTasks();
+      runtime.attachExecutionRuntime({ browser: browserA, autonomousTasks: tasksA }, subscribe);
+      runtime.detachExecutionRuntime();
+      runtime.attachExecutionRuntime({ browser: browserB, autonomousTasks: tasksB }, subscribe);
+      await runtime.flush();
+      assert.equal(listeners.size, 1);
+      assert.ok(runtime.getRunner());
+      assert.equal((await runtime.getCoordinator()?.getOccurrence(occurrence.occurrenceId))?.state, 'running');
+      assert.equal(browserA.created.length, 0);
+      assert.equal(tasksA.trustedStarts.length, 0);
+      assert.equal(browserB.created.length, 1);
+      assert.equal(tasksB.trustedStarts.length, 1);
+    });
+  });
+
+  it('maps an active workflow detach to unknown before a new runner can drain', async () => {
+    await withRuntime(async ({ runtime }) => {
+      const { occurrence, workflow } = await enqueue(runtime);
+      const browserA = new FakeBrowser();
+      const tasksA = new FakeTasks((event) => runtime.handleAutonomousTaskEvent(event));
+      runtime.attachExecutionRuntime({ browser: browserA, autonomousTasks: tasksA });
+      await runtime.flush();
+      assert.equal((await runtime.getCoordinator()?.getOccurrence(occurrence.occurrenceId))?.state, 'running');
+      const browserB = new FakeBrowser();
+      const tasksB = new FakeTasks();
+      runtime.detachExecutionRuntime();
+      runtime.attachExecutionRuntime({ browser: browserB, autonomousTasks: tasksB });
+      await runtime.flush();
+      assert.equal(
+        (await runtime.getCoordinator()?.getOccurrence(occurrence.occurrenceId))?.state,
+        'execution-state-unknown',
+      );
+      assert.equal((await runtime.getCoordinator()?.getWorkflow(workflow.workflowId))?.reviewRequired, true);
+      assert.equal(tasksB.trustedStarts.length, 0);
+      assert.equal(browserB.created.length, 0);
+    });
+  });
+
+  it('disables automatic workflow execution when detach terminal persistence fails', async () => {
+    await withRuntime(async ({ runtime }) => {
+      await enqueue(runtime);
+      const browserA = new FakeBrowser();
+      const tasksA = new FakeTasks((event) => runtime.handleAutonomousTaskEvent(event));
+      runtime.attachExecutionRuntime({ browser: browserA, autonomousTasks: tasksA });
+      await runtime.flush();
+      runtime.setTerminalizeGate(async () => {
+        throw new WorkflowStoreError('WORKFLOW_STORE_IO_FAILED', 'Workflow store I/O failed.');
+      });
+      const browserB = new FakeBrowser();
+      const tasksB = new FakeTasks();
+      runtime.detachExecutionRuntime();
+      runtime.attachExecutionRuntime({ browser: browserB, autonomousTasks: tasksB });
+      await runtime.flush();
+      assert.equal(runtime.getRunner()?.getActiveOccurrence() !== undefined, true);
+      assert.equal(tasksB.trustedStarts.length, 0);
+      assert.equal(browserB.created.length, 0);
     });
   });
 });
@@ -674,6 +900,43 @@ class FakeTasks implements WorkflowExecutionTaskPort {
   emitPaused(taskId: string): void {
     this.activeTaskId = undefined;
     this.emit?.({ type: 'autonomous-task-paused', task: taskView(taskId, 'paused') });
+  }
+}
+
+async function assertManualUsableWithoutWorkflow(runtime: PersistentWorkflowRuntime): Promise<void> {
+  const browser = new FakeBrowser();
+  const tasks = new FakeTasks();
+  runtime.attachExecutionRuntime({ browser, autonomousTasks: tasks });
+  const manual = runtime.startManualAutonomousTask('manual');
+  assert.equal(manual.ok, true);
+  assert.equal(browser.created.length, 0);
+  assert.equal(tasks.trustedStarts.length, 0);
+  assert.equal(runtime.getRunner(), undefined);
+}
+
+class CommitFailingStore implements WorkflowStorePort {
+  private nextCommitError: unknown = undefined;
+
+  constructor(private readonly inner: WorkflowStorePort) {}
+
+  failNextCommit(error: unknown): void {
+    this.nextCommitError = error;
+  }
+
+  load(): Promise<WorkflowStoreSnapshot> {
+    return this.inner.load();
+  }
+
+  async commit(
+    expectedStoreRevision: number,
+    mutation: WorkflowStoreMutation,
+  ): Promise<WorkflowStoreSnapshot> {
+    if (this.nextCommitError !== undefined) {
+      const error = this.nextCommitError;
+      this.nextCommitError = undefined;
+      throw error;
+    }
+    return this.inner.commit(expectedStoreRevision, mutation);
   }
 }
 
