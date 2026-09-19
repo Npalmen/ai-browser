@@ -1,12 +1,12 @@
 import type { Configuration } from 'webpack';
 
-import { rules } from './webpack.rules';
+import { createMainRules } from './webpack.rules';
 import { plugins } from './webpack.plugins';
 
 export const mainConfig: Configuration = {
   entry: './src/main/main.ts',
   module: {
-    rules,
+    rules: createMainRules(),
   },
   plugins,
   resolve: {

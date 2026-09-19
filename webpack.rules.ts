@@ -1,6 +1,17 @@
-import type { ModuleOptions } from 'webpack';
+import type { RuleSetRule } from 'webpack';
 
-export const rules: Required<ModuleOptions>['rules'] = [
+export const typescriptRule: RuleSetRule = {
+  test: /\.tsx?$/,
+  exclude: /(node_modules|\.webpack)/,
+  use: {
+    loader: 'ts-loader',
+    options: {
+      transpileOnly: true,
+    },
+  },
+};
+
+export const mainNativeModuleRules: RuleSetRule[] = [
   {
     test: /native_modules[/\\].+\.node$/,
     use: 'node-loader',
@@ -15,14 +26,17 @@ export const rules: Required<ModuleOptions>['rules'] = [
       },
     },
   },
-  {
-    test: /\.tsx?$/,
-    exclude: /(node_modules|\.webpack)/,
-    use: {
-      loader: 'ts-loader',
-      options: {
-        transpileOnly: true,
-      },
-    },
-  },
 ];
+
+export const rendererCssRule: RuleSetRule = {
+  test: /\.css$/,
+  use: [{ loader: 'style-loader' }, { loader: 'css-loader' }],
+};
+
+export function createMainRules(): RuleSetRule[] {
+  return [...mainNativeModuleRules, typescriptRule];
+}
+
+export function createRendererRules(): RuleSetRule[] {
+  return [typescriptRule, rendererCssRule];
+}

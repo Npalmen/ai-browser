@@ -9,6 +9,7 @@
     "start": "electron-forge start",
     "package": "electron-forge package",
     "typecheck": "tsc --noEmit",
+    "test:webpack": "tsx --test webpack.config.test.ts",
     "test:ai": "tsx --test src/ai/model-catalog.test.ts src/ai/model-router.test.ts src/ai/usage.test.ts src/ai/request-log.test.ts src/ai/providers/ai-sdk-gateway.test.ts src/ai/export-policy.test.ts src/ai/context-builder.test.ts src/ai/conversation-store.test.ts src/ai/read-only-agent.test.ts src/ai/interaction-output-schema.test.ts src/ai/interaction-context-builder.test.ts src/ai/interactive-agent.test.ts src/main/website-view-bounds.test.ts src/main/ai-safe-error.test.ts src/main/ai-request-controller.test.ts src/main/ai-runtime.test.ts src/main/ai-ipc-guards.test.ts src/app-ui/ai-ui-state.test.ts",
     "test:url": "tsx --test src/shared/navigation-url.test.ts",
     "test:tabs": "tsx --test src/browser/tab-registry.test.ts",

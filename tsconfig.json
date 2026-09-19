@@ -13,5 +13,5 @@
     "noEmit": true,
     "baseUrl": "."
   },
-  "include": ["src/**/*", "forge.config.ts", "webpack.*.ts"]
+  "include": ["src/**/*", "forge.config.ts", "webpack.*.ts", "webpack.config.test.ts"]
 }
