@@ -21,6 +21,20 @@ import {
 export const WORKFLOW_STORE_CANONICAL_FILENAME = 'workflows-v1.json';
 export const WORKFLOW_STORE_BACKUP_FILENAME = 'workflows-v1.last-known-good.json';
 
+const TEMP_SUFFIX = '.tmp';
+const ASIDE_SUFFIX = '.aside';
+
+export function isWorkflowStoreTemporaryArtifact(name: string): boolean {
+  return (
+    isOwnedTempOrAside(name, WORKFLOW_STORE_CANONICAL_FILENAME) ||
+    isOwnedTempOrAside(name, WORKFLOW_STORE_BACKUP_FILENAME)
+  );
+}
+
+export function isCanonicalRecoveryAside(name: string): boolean {
+  return isOwnedNamedArtifact(name, WORKFLOW_STORE_CANONICAL_FILENAME, ASIDE_SUFFIX);
+}
+
 export interface AtomicJsonWorkflowStoreOptions {
   readonly directory: string;
   readonly maxBytes?: number;
@@ -134,6 +148,12 @@ export class AtomicJsonWorkflowStore {
       stats = await fs.stat(this.canonicalPath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        if (await this.hasPriorStoreEvidence()) {
+          throw new WorkflowStoreError(
+            'WORKFLOW_STORE_IO_FAILED',
+            'Workflow store canonical file is missing.',
+          );
+        }
         return cloneWorkflowStoreSnapshot(EMPTY_WORKFLOW_STORE_SNAPSHOT);
       }
       throw wrapIo(error);
@@ -214,6 +234,28 @@ export class AtomicJsonWorkflowStore {
     }
   }
 
+  private async hasPriorStoreEvidence(): Promise<boolean> {
+    try {
+      await fs.lstat(this.backupPath);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw wrapIo(error);
+      }
+    }
+
+    let entries: string[];
+    try {
+      entries = await fs.readdir(this.directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return false;
+      }
+      throw wrapIo(error);
+    }
+    return entries.some((name) => isCanonicalRecoveryAside(name));
+  }
+
   private async cleanupStaleTempFiles(): Promise<void> {
     let entries: string[];
     try {
@@ -223,10 +265,26 @@ export class AtomicJsonWorkflowStore {
     }
     await Promise.all(
       entries
-        .filter((name) => name.endsWith('.tmp') || name.endsWith('.aside'))
+        .filter((name) => isWorkflowStoreTemporaryArtifact(name))
         .map((name) => fs.unlink(path.join(this.directory, name)).catch(() => undefined)),
     );
   }
+}
+
+function isOwnedTempOrAside(name: string, baseFileName: string): boolean {
+  return (
+    isOwnedNamedArtifact(name, baseFileName, TEMP_SUFFIX) ||
+    isOwnedNamedArtifact(name, baseFileName, ASIDE_SUFFIX)
+  );
+}
+
+function isOwnedNamedArtifact(name: string, baseFileName: string, suffix: string): boolean {
+  const prefix = `${baseFileName}.`;
+  if (!name.startsWith(prefix) || !name.endsWith(suffix)) {
+    return false;
+  }
+  const middle = name.slice(prefix.length, name.length - suffix.length);
+  return middle.length > 0 && !middle.includes('/') && !middle.includes('\\') && !middle.includes('\0');
 }
 
 async function writeFileFsynced(filePath: string, bytes: Buffer): Promise<void> {

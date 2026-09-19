@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { readFileSync, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,6 +8,8 @@ import { describe, it } from 'node:test';
 import { replaceFileAtomically } from './atomic-file-replace';
 import {
   AtomicJsonWorkflowStore,
+  isCanonicalRecoveryAside,
+  isWorkflowStoreTemporaryArtifact,
   WORKFLOW_STORE_BACKUP_FILENAME,
   WORKFLOW_STORE_CANONICAL_FILENAME,
 } from './workflow-store';
@@ -30,6 +33,94 @@ describe('AtomicJsonWorkflowStore', () => {
       assert.deepEqual(snapshot, emptySnapshot());
       assert.equal(await exists(path.join(directory, WORKFLOW_STORE_CANONICAL_FILENAME)), false);
       assert.deepEqual(await fs.readdir(directory), []);
+    });
+  });
+
+  it('preserves unrelated .tmp and .aside files during successful commit cleanup', async () => {
+    await withTempDir(async (directory) => {
+      const unrelated = [
+        ['other-component.tmp', 'keep-component'],
+        ['renderer-cache.aside', 'keep-renderer'],
+        ['random.tmp', 'keep-random'],
+        ['other.tmp', 'keep-other-tmp'],
+        ['other.aside', 'keep-other-aside'],
+      ] as const;
+      for (const [name, contents] of unrelated) {
+        await fs.writeFile(path.join(directory, name), contents);
+      }
+
+      const store = new AtomicJsonWorkflowStore({ directory });
+      await store.commit(0, () => payloadWith(validWorkflow('wf-1', 'one')));
+      await store.commit(1, () => payloadWith(validWorkflow('wf-2', 'two')));
+
+      for (const [name, contents] of unrelated) {
+        const actual = await fs.readFile(path.join(directory, name));
+        assert.equal(actual.toString('utf8'), contents);
+      }
+    });
+  });
+
+  it('removes only store-owned stale temp artifacts after a successful commit', async () => {
+    await withTempDir(async (directory) => {
+      const staleOwned = path.join(directory, `${WORKFLOW_STORE_CANONICAL_FILENAME}.${randomUUID()}.tmp`);
+      const unrelated = path.join(directory, 'other-component.tmp');
+      await fs.writeFile(staleOwned, 'stale-owned');
+      await fs.writeFile(unrelated, 'leave-me');
+
+      const store = new AtomicJsonWorkflowStore({ directory });
+      await store.commit(0, () => payloadWith(validWorkflow()));
+
+      assert.equal(await exists(staleOwned), false);
+      assert.equal(await fs.readFile(unrelated, 'utf8'), 'leave-me');
+    });
+  });
+
+  it('fails closed when canonical is missing and a valid backup exists', async () => {
+    await withTempDir(async (directory) => {
+      const store = new AtomicJsonWorkflowStore({ directory });
+      await store.commit(0, () => payloadWith(validWorkflow()));
+      await store.commit(1, () => payloadWith(validWorkflow('wf-2', 'second')));
+
+      const canonical = path.join(directory, WORKFLOW_STORE_CANONICAL_FILENAME);
+      const backup = path.join(directory, WORKFLOW_STORE_BACKUP_FILENAME);
+      const backupBefore = await fs.readFile(backup);
+      await fs.unlink(canonical);
+
+      await assert.rejects(
+        () => new AtomicJsonWorkflowStore({ directory }).load(),
+        (error: unknown) => error instanceof WorkflowStoreError && error.code === 'WORKFLOW_STORE_IO_FAILED',
+      );
+      assert.deepEqual(await fs.readFile(backup), backupBefore);
+      assert.equal(await exists(canonical), false);
+    });
+  });
+
+  it('fails closed when canonical is missing and an invalid backup exists', async () => {
+    await withTempDir(async (directory) => {
+      const backup = path.join(directory, WORKFLOW_STORE_BACKUP_FILENAME);
+      await fs.writeFile(backup, '{ this is not json\n');
+
+      await assert.rejects(
+        () => new AtomicJsonWorkflowStore({ directory }).load(),
+        (error: unknown) => error instanceof WorkflowStoreError && error.code === 'WORKFLOW_STORE_IO_FAILED',
+      );
+      assert.equal(await fs.readFile(backup, 'utf8'), '{ this is not json\n');
+      assert.equal(await exists(path.join(directory, WORKFLOW_STORE_CANONICAL_FILENAME)), false);
+    });
+  });
+
+  it('fails closed when canonical is missing and a canonical-owned aside remains', async () => {
+    await withTempDir(async (directory) => {
+      const asideName = `${WORKFLOW_STORE_CANONICAL_FILENAME}.${randomUUID()}.aside`;
+      const aside = path.join(directory, asideName);
+      await fs.writeFile(aside, 'previous-canonical-bytes');
+
+      await assert.rejects(
+        () => new AtomicJsonWorkflowStore({ directory }).load(),
+        (error: unknown) => error instanceof WorkflowStoreError && error.code === 'WORKFLOW_STORE_IO_FAILED',
+      );
+      assert.equal(await fs.readFile(aside, 'utf8'), 'previous-canonical-bytes');
+      assert.equal(await exists(path.join(directory, WORKFLOW_STORE_CANONICAL_FILENAME)), false);
     });
   });
 
@@ -274,8 +365,8 @@ describe('AtomicJsonWorkflowStore', () => {
       assert.equal(parseWorkflowStoreJson(canonical).workflows[0]?.name, 'two');
       const backup = await fs.readFile(path.join(directory, WORKFLOW_STORE_BACKUP_FILENAME), 'utf8');
       assert.equal(parseWorkflowStoreJson(backup).storeRevision, 1);
-      const leftovers = (await fs.readdir(directory)).filter(
-        (name) => name.endsWith('.tmp') || name.endsWith('.aside'),
+      const leftovers = (await fs.readdir(directory)).filter((name) =>
+        isWorkflowStoreTemporaryArtifact(name),
       );
       assert.deepEqual(leftovers, []);
       assert.equal(second.storeRevision, 2);
@@ -341,6 +432,25 @@ describe('AtomicJsonWorkflowStore', () => {
       assert.equal(source.includes(banned), false, banned);
       assert.equal(replaceSource.includes(banned), false, banned);
     }
+  });
+});
+
+describe('workflow store artifact names', () => {
+  it('recognizes only WorkflowStore-owned temp and aside names', () => {
+    const uuid = '11111111-2222-3333-4444-555555555555';
+    assert.equal(isWorkflowStoreTemporaryArtifact(`${WORKFLOW_STORE_CANONICAL_FILENAME}.${uuid}.tmp`), true);
+    assert.equal(isWorkflowStoreTemporaryArtifact(`${WORKFLOW_STORE_CANONICAL_FILENAME}.${uuid}.aside`), true);
+    assert.equal(
+      isWorkflowStoreTemporaryArtifact(`${WORKFLOW_STORE_BACKUP_FILENAME}.${uuid}.tmp`),
+      true,
+    );
+    assert.equal(isCanonicalRecoveryAside(`${WORKFLOW_STORE_CANONICAL_FILENAME}.${uuid}.aside`), true);
+    assert.equal(isCanonicalRecoveryAside(`${WORKFLOW_STORE_BACKUP_FILENAME}.${uuid}.aside`), false);
+    assert.equal(isWorkflowStoreTemporaryArtifact('other-component.tmp'), false);
+    assert.equal(isWorkflowStoreTemporaryArtifact('renderer-cache.aside'), false);
+    assert.equal(isWorkflowStoreTemporaryArtifact('random.tmp'), false);
+    assert.equal(isWorkflowStoreTemporaryArtifact(WORKFLOW_STORE_CANONICAL_FILENAME), false);
+    assert.equal(isWorkflowStoreTemporaryArtifact(WORKFLOW_STORE_BACKUP_FILENAME), false);
   });
 });
 
