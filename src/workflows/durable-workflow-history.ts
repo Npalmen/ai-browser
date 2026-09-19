@@ -1,5 +1,6 @@
 import {
   MAX_ORDINARY_TERMINAL_HISTORY_PER_WORKFLOW,
+  MAX_SCHEDULED_DEDUPE_ANCHORS_PER_WORKFLOW,
 } from './durable-workflow-types';
 import type {
   DurableWorkflowDefinitionRecord,
@@ -16,9 +17,16 @@ const REVIEW_SENSITIVE_STATES = new Set(['interrupted', 'execution-state-unknown
  *    `execution-state-unknown` occurrence (review evidence).
  * 3. From remaining ordinary terminal history, keep the 50 newest by
  *    `finishedAt` descending, `occurrenceId` descending.
+ * 4. Keep the latest occurrence with a non-null `scheduledFor` as the
+ *    scheduled dedupe anchor (`scheduledFor` desc, `occurrenceId` desc)
+ *    if it is not already retained. This preserves triggerKey
+ *    idempotency across history compaction.
  *
- * After review is acknowledged, interrupted/unknown compete in the ordinary
- * 50-record terminal window.
+ * The anchor is not duplicated if it is already kept as nonterminal,
+ * review-sensitive, or one of the 50 newest ordinary terminals.
+ * A terminal anchor older than that window may make ordinary retained
+ * records 51 (50 + 1). Manual run-now rows (`scheduledFor = null`) are
+ * never anchors, even if their frozen trigger is a schedule.
  */
 export function pruneWorkflowOccurrenceHistory(
   workflows: readonly DurableWorkflowDefinitionRecord[],
@@ -46,22 +54,60 @@ function pruneOneWorkflow(
   occurrences: readonly WorkflowOccurrenceRecord[],
   reviewRequired: boolean,
 ): WorkflowOccurrenceRecord[] {
+  const keptIds = new Set<string>();
   const kept: WorkflowOccurrenceRecord[] = [];
-  const ordinaryTerminal: WorkflowOccurrenceRecord[] = [];
+
+  const keep = (occurrence: WorkflowOccurrenceRecord): void => {
+    if (keptIds.has(occurrence.occurrenceId)) {
+      return;
+    }
+    keptIds.add(occurrence.occurrenceId);
+    kept.push(occurrence);
+  };
+
   for (const occurrence of occurrences) {
     if (NONTERMINAL_STATES.has(occurrence.state)) {
-      kept.push(occurrence);
-      continue;
+      keep(occurrence);
     }
-    if (reviewRequired && REVIEW_SENSITIVE_STATES.has(occurrence.state)) {
-      kept.push(occurrence);
-      continue;
-    }
-    ordinaryTerminal.push(occurrence);
   }
+
+  if (reviewRequired) {
+    for (const occurrence of occurrences) {
+      if (REVIEW_SENSITIVE_STATES.has(occurrence.state)) {
+        keep(occurrence);
+      }
+    }
+  }
+
+  const ordinaryTerminal = occurrences.filter((occurrence) => !keptIds.has(occurrence.occurrenceId));
   ordinaryTerminal.sort(compareOrdinaryTerminalNewestFirst);
-  kept.push(...ordinaryTerminal.slice(0, MAX_ORDINARY_TERMINAL_HISTORY_PER_WORKFLOW));
+  for (const occurrence of ordinaryTerminal.slice(0, MAX_ORDINARY_TERMINAL_HISTORY_PER_WORKFLOW)) {
+    keep(occurrence);
+  }
+
+  const anchors = occurrences
+    .filter((occurrence) => occurrence.scheduledFor !== null)
+    .sort(compareScheduledAnchorNewestFirst)
+    .slice(0, MAX_SCHEDULED_DEDUPE_ANCHORS_PER_WORKFLOW);
+  for (const anchor of anchors) {
+    keep(anchor);
+  }
+
   return kept;
+}
+
+function compareScheduledAnchorNewestFirst(
+  left: WorkflowOccurrenceRecord,
+  right: WorkflowOccurrenceRecord,
+): number {
+  const scheduled = compareNullableInstantDescending(left.scheduledFor, right.scheduledFor);
+  if (scheduled !== 0) {
+    return scheduled;
+  }
+  if (left.occurrenceId === right.occurrenceId) {
+    return 0;
+  }
+  return left.occurrenceId < right.occurrenceId ? 1 : -1;
 }
 
 function compareOrdinaryTerminalNewestFirst(

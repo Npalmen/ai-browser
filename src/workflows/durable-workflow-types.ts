@@ -12,6 +12,7 @@ export type WorkflowOccurrenceId = string;
 
 export const MAX_WORKFLOW_TRANSACTION_RETRIES = 3;
 export const MAX_ORDINARY_TERMINAL_HISTORY_PER_WORKFLOW = 50;
+export const MAX_SCHEDULED_DEDUPE_ANCHORS_PER_WORKFLOW = 1;
 export const MAX_WORKFLOW_ID_REGENERATIONS = 3;
 
 export const WORKFLOW_TERMINAL_REASON = Object.freeze({

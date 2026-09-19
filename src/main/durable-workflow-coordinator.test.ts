@@ -115,6 +115,42 @@ describe('DurableWorkflowCoordinator', () => {
     assert.equal((await coordinator.listOccurrences(workflow.workflowId)).length, 1);
   });
 
+  it('keeps a compacted scheduled triggerKey idempotent after 51 newer manual terminals', async () => {
+    const clock = new Clock();
+    const { coordinator, store } = await createHarness({ clock });
+    const workflow = await coordinator.createWorkflow(sampleInput());
+    const scheduledFor = '2026-09-19T08:00:00.000Z';
+    const triggerKey = `${workflow.workflowId}:${scheduledFor}`;
+    const scheduled = await coordinator.enqueueOccurrence({
+      workflowId: workflow.workflowId,
+      triggerKey,
+      scheduledFor,
+      source: 'scheduled',
+    });
+    await completeRunning(coordinator, scheduled.occurrenceId);
+    clock.tick();
+    for (let index = 0; index < 51; index += 1) {
+      const queued = await enqueueQueued(coordinator, workflow.workflowId, `manual-${index}`);
+      await completeRunning(coordinator, queued.occurrenceId);
+      clock.tick();
+    }
+    const compacted = await coordinator.listOccurrences(workflow.workflowId);
+    assert.equal(compacted.some((item) => item.occurrenceId === scheduled.occurrenceId), true);
+    assert.equal(compacted.some((item) => item.triggerKey === triggerKey), true);
+    assert.equal(compacted.filter((item) => item.scheduledFor === null).length, 50);
+    assert.equal(compacted.length, 51);
+    const revision = (await store.load()).storeRevision;
+    const duplicate = await coordinator.enqueueOccurrence({
+      workflowId: workflow.workflowId,
+      triggerKey,
+      scheduledFor,
+      source: 'scheduled',
+    });
+    assert.equal(duplicate.occurrenceId, scheduled.occurrenceId);
+    assert.equal((await store.load()).storeRevision, revision);
+    assert.equal((await coordinator.listOccurrences(workflow.workflowId)).length, 51);
+  });
+
   it('lists queued occurrences in createdAt then occurrenceId FIFO order', async () => {
     const clock = new Clock();
     const ids = new IdFactory();
@@ -753,6 +789,18 @@ async function enqueueQueued(
     triggerKey: `manual:${key}`,
     scheduledFor: null,
     source: 'manual',
+  });
+}
+
+async function completeRunning(
+  coordinator: DurableWorkflowCoordinator,
+  occurrenceId: string,
+): Promise<WorkflowOccurrenceRecord> {
+  await coordinator.markOccurrenceRunning(occurrenceId);
+  return coordinator.terminalizeRunningOccurrence({
+    occurrenceId,
+    state: 'completed',
+    finalAnswer: 'done',
   });
 }
 

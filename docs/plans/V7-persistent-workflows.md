@@ -200,10 +200,11 @@ Include:
 - recover `running` + foreign `ownerRuntimeSessionId` → `interrupted` + review-required
 - acknowledge/mark-reviewed is not retry
 - delete/disable vs queued/running rules (Stop required if running — may be stubbed until Phase 5 live tasks exist)
+- bounded occurrence history: 50 newest ordinary terminals, plus the latest scheduled occurrence (`scheduledFor !== null`) retained as a durable `triggerKey` dedupe anchor
 
 Do **not** create tabs, navigate, or start V6 tasks.
 
-**Targeted verification:** revision freeze, duplicate triggerKey, interrupted recovery, unknown sets review-required, disabled/deleted workflow cannot enqueue, review does not replay.
+**Targeted verification:** revision freeze, duplicate triggerKey, interrupted recovery, unknown sets review-required, disabled/deleted workflow cannot enqueue, review does not replay, scheduled triggerKey remains idempotent after ordinary-history compaction.
 
 ---
 
@@ -221,6 +222,8 @@ Include:
 - no browser, no model
 
 Do **not** start occurrences.
+
+Scheduler duplicate suppression uses durable occurrence `triggerKey`s. After Phase 2 compaction, only the latest scheduled occurrence is guaranteed to remain as a prune-resistant dedupe anchor. Phase 3 must not assume every historical scheduled trigger key remains forever. One-time still cannot re-enqueue because its single scheduled occurrence is that latest anchor; a recurring slot cannot duplicate until a newer slot replaces the anchor.
 
 **Targeted verification:** fake clock — due/not due, coalesce five missed dailies to one, one-time not duplicated, DST cases, unknown timezone fails closed, ineligible (`reviewRequired` / disabled) enqueues nothing.
 

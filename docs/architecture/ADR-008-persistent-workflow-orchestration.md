@@ -822,7 +822,7 @@ History is a product requirement: persist **objective, bounded final answer, ter
 
 Recommended bound: final answer truncated to the existing conversation/answer budget used by V6 (implementation names the constant). Child subgoal prose, raw page content, and planner chain-of-thought must not become a durable transcript.
 
-Occurrence history retention: keep all nonterminal occurrences plus the most recent **50** terminal occurrences per workflow. Prune oldest terminal history only. Never prune `queued` / `running` / `interrupted` / `execution-state-unknown` awaiting review.
+Occurrence history retention: keep all nonterminal occurrences (`queued`, `running`); keep required review-sensitive evidence (`interrupted` / `execution-state-unknown` while `reviewRequired`); and keep the most recent **50** ordinary terminal occurrences per workflow (`finishedAt` descending, `occurrenceId` descending). Also preserve the latest scheduled occurrence per workflow (`scheduledFor !== null`, then `occurrenceId` descending) as the durable dedupe anchor when it would otherwise be pruned. That extra retain is at most one record and is not a second copy of an already-kept occurrence. Scheduled trigger idempotency must survive history compaction: the same `triggerKey` (`workflowId + ":" + scheduledForUtc`) must still find that occurrence after later manual terminals fill the 50-record window. Recurring workflows replace the anchor when a newer scheduled slot is enqueued; older scheduled history may then age out under the ordinary bound. Manual run-now rows (`scheduledFor = null`) are never anchors. Do not keep every scheduled occurrence forever.
 
 ---
 
