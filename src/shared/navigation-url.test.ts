@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import {
   isAllowedWebsiteNavigation,
+  isExplicitlyDeniedNavigationInput,
   normalizeNavigationUrl,
 } from './navigation-url';
 
@@ -82,6 +83,26 @@ describe('normalizeNavigationUrl', () => {
   it('rejects malformed URLs', () => {
     const result = normalizeNavigationUrl('https://');
     assert.equal(result.ok, false);
+  });
+});
+
+describe('isExplicitlyDeniedNavigationInput', () => {
+  it('detects forbidden schemes', () => {
+    for (const input of [
+      'file:///etc/passwd',
+      'javascript:alert(1)',
+      'data:text/html,hello',
+      'blob:https://example.com/uuid',
+      'chrome://settings',
+      'chrome-extension://abc/page.html',
+    ]) {
+      assert.equal(isExplicitlyDeniedNavigationInput(input), true, input);
+    }
+  });
+
+  it('does not treat ordinary search text as denied', () => {
+    assert.equal(isExplicitlyDeniedNavigationInput('cats'), false);
+    assert.equal(isExplicitlyDeniedNavigationInput('example search'), false);
   });
 });
 

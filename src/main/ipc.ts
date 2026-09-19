@@ -1,12 +1,16 @@
 import { ipcMain } from 'electron';
 
+import { routeBrowserIntent } from '../ai-native/browser-intent-router';
 import {
+  AI_NATIVE_IPC_CHANNELS,
   APPROVAL_IPC_CHANNELS,
   AI_IPC_CHANNELS,
   AUTONOMOUS_TASK_IPC_CHANNELS,
   BROWSER_IPC_CHANNELS,
   WORKFLOW_IPC_CHANNELS,
 } from '../shared/ipc-contract';
+import { parseRouteIntentRequest } from './ai-native-ipc-guards';
+import { buildTrustedSearchNavigationUrl } from './browser-search-provider';
 import { isAiSafeError, parseAskCurrentPageRequest, parseAskId, parsePanelOpen, parseTabId } from './ai-ipc-guards';
 import {
   beforeAutonomousTaskTrustedChromeNavigation,
@@ -98,6 +102,34 @@ export function registerBrowserShellIpc(): void {
     cancelAgentRunForTrustedChromeNavigation(trustedTabId);
     invalidateApprovalTab(trustedTabId);
     await getBrowserAdapter().navigate(trustedTabId, assertUrl(url));
+  });
+
+  ipcMain.handle(BROWSER_IPC_CHANNELS.search, async (event, tabId: unknown, query: unknown) => {
+    assertTrustedAppSender(event);
+    await whenBrowserReady();
+    const trustedTabId = assertTabId(tabId);
+    const built = buildTrustedSearchNavigationUrl(query);
+    if (!built.ok) {
+      throw new Error(built.error.message);
+    }
+    const browserState = getBrowserAdapter().getBrowserState();
+    if (!browserState.tabs.some((tab) => tab.id === trustedTabId)) {
+      throw new Error('Invalid tab id');
+    }
+    await beforeAutonomousTaskTrustedChromeNavigation(trustedTabId);
+    cancelAgentRunForTrustedChromeNavigation(trustedTabId);
+    invalidateApprovalTab(trustedTabId);
+    await getBrowserAdapter().navigate(trustedTabId, built.url);
+  });
+
+  ipcMain.handle(AI_NATIVE_IPC_CHANNELS.routeIntent, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    await whenBrowserReady();
+    const parsed = parseRouteIntentRequest(input);
+    if (!parsed.ok) {
+      return parsed;
+    }
+    return routeBrowserIntent(parsed.input, getBrowserAdapter().getBrowserState());
   });
 
   ipcMain.handle(BROWSER_IPC_CHANNELS.back, async (event, tabId: unknown) => {

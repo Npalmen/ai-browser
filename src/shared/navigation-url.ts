@@ -11,6 +11,22 @@ const DENIED_PROTOCOLS = new Set([
   'chrome-extension:',
 ]);
 
+export function isExplicitlyDeniedNavigationInput(input: string): boolean {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  const lower = trimmed.toLowerCase();
+  for (const protocol of DENIED_PROTOCOLS) {
+    if (lower.startsWith(protocol)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function isBareHostname(input: string): boolean {
   if (input.includes(' ')) {
     return false;

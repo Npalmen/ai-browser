@@ -21,6 +21,8 @@ import type {
   ApprovalDecideResult,
   ApprovalEvent,
 } from './approval-types';
+import type { BrowserIntentRouteInput, BrowserIntentRouteResult, AiNativeApi } from './ai-native-types';
+export type { AiNativeApi } from './ai-native-types';
 import type { BrowserState, TabId } from './browser-types';
 export type { WorkflowsApi } from './workflow-product-types';
 
@@ -30,11 +32,14 @@ export const BROWSER_IPC_CHANNELS = {
   closeTab: 'browser:close-tab',
   activateTab: 'browser:activate-tab',
   navigate: 'browser:navigate',
+  search: 'browser:search',
   back: 'browser:back',
   forward: 'browser:forward',
   reload: 'browser:reload',
   stateChanged: 'browser:state-changed',
 } as const;
+
+export { AI_NATIVE_IPC_CHANNELS } from './ai-native-types';
 
 export const AI_IPC_CHANNELS = {
   askCurrentPage: 'ai:ask-current-page',
@@ -67,6 +72,7 @@ export interface BrowserShellApi {
   activateTab(tabId: TabId): Promise<void>;
 
   navigate(tabId: TabId, url: string): Promise<void>;
+  search(tabId: TabId, query: string): Promise<void>;
   back(tabId: TabId): Promise<void>;
   forward(tabId: TabId): Promise<void>;
   reload(tabId: TabId): Promise<void>;
@@ -104,3 +110,4 @@ export interface AiAssistantApi {
   getAutonomousTaskState(): Promise<AutonomousTaskGetStateResult>;
   onAutonomousTaskEvent(listener: (event: AutonomousTaskEvent) => void): () => void;
 }
+

@@ -8,14 +8,17 @@ import type {
   AutonomousTaskReplyInput,
   AutonomousTaskStartInput,
 } from '../shared/autonomous-task-types';
+import type { BrowserIntentRouteInput } from '../shared/ai-native-types';
 import type { BrowserState, TabId } from '../shared/browser-types';
 import {
+  AI_NATIVE_IPC_CHANNELS,
   AI_IPC_CHANNELS,
   APPROVAL_IPC_CHANNELS,
   AUTONOMOUS_TASK_IPC_CHANNELS,
   BROWSER_IPC_CHANNELS,
   WORKFLOW_IPC_CHANNELS,
   type AiAssistantApi,
+  type AiNativeApi,
   type BrowserShellApi,
   type WorkflowsApi,
 } from '../shared/ipc-contract';
@@ -30,6 +33,8 @@ const browserShell: BrowserShellApi = {
   activateTab: (tabId) => ipcRenderer.invoke(BROWSER_IPC_CHANNELS.activateTab, tabId),
 
   navigate: (tabId, url) => ipcRenderer.invoke(BROWSER_IPC_CHANNELS.navigate, tabId, url),
+
+  search: (tabId, query) => ipcRenderer.invoke(BROWSER_IPC_CHANNELS.search, tabId, query),
 
   back: (tabId) => ipcRenderer.invoke(BROWSER_IPC_CHANNELS.back, tabId),
 
@@ -139,6 +144,12 @@ const workflows: WorkflowsApi = {
   },
 };
 
+const aiNative: AiNativeApi = {
+  routeIntent: (input: BrowserIntentRouteInput) =>
+    ipcRenderer.invoke(AI_NATIVE_IPC_CHANNELS.routeIntent, input),
+};
+
 contextBridge.exposeInMainWorld('browserShell', browserShell);
 contextBridge.exposeInMainWorld('aiAssistant', aiAssistant);
 contextBridge.exposeInMainWorld('workflows', workflows);
+contextBridge.exposeInMainWorld('aiNative', aiNative);

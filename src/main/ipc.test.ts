@@ -161,3 +161,63 @@ describe('autonomous task IPC wiring', () => {
     assert.match(runtime, /void autonomousTaskController\?\.handleRendererCrash/);
   });
 });
+
+describe('V8 AI-native IPC wiring', () => {
+  it('awaits V6 lifecycle before trusted chrome search navigation', () => {
+    const ipc = readSrc('src/main/ipc.ts');
+    const start = ipc.indexOf('BROWSER_IPC_CHANNELS.search');
+    assert.ok(start >= 0);
+    const block = ipc.slice(start, start + 900);
+    const taskIndex = block.indexOf('await beforeAutonomousTaskTrustedChromeNavigation(trustedTabId)');
+    const cancelIndex = block.indexOf('cancelAgentRunForTrustedChromeNavigation(trustedTabId)');
+    const navigateIndex = block.indexOf('getBrowserAdapter().navigate(trustedTabId, built.url)');
+    assert.ok(taskIndex >= 0);
+    assert.ok(cancelIndex > taskIndex);
+    assert.ok(navigateIndex > cancelIndex);
+    assert.match(block, /buildTrustedSearchNavigationUrl\(query\)/);
+    assert.equal(block.includes('getBrowserAdapter().getBrowserState'), true);
+  });
+
+  it('builds search URLs in main and rejects unknown tabs', () => {
+    const ipc = readSrc('src/main/ipc.ts');
+    const block = ipc.slice(ipc.indexOf('BROWSER_IPC_CHANNELS.search'), ipc.indexOf('AI_NATIVE_IPC_CHANNELS.routeIntent') + 500);
+    assert.equal(block.includes('buildTrustedSearchNavigationUrl'), true);
+    assert.equal(block.includes('browserState.tabs.some'), true);
+    assert.equal(block.includes('query, url'), false);
+  });
+
+  it('requires trusted sender before routeIntent and does not execute routes', () => {
+    const ipc = readSrc('src/main/ipc.ts');
+    const start = ipc.indexOf('AI_NATIVE_IPC_CHANNELS.routeIntent');
+    assert.ok(start >= 0);
+    const block = ipc.slice(start, start + 700);
+    const sender = block.indexOf('assertTrustedAppSender(event)');
+    const parse = block.indexOf('parseRouteIntentRequest(input)');
+    const route = block.indexOf('routeBrowserIntent(parsed.input');
+    const navigate = block.indexOf('getBrowserAdapter().navigate');
+    const startTask = block.indexOf('startAutonomousTask');
+    assert.ok(sender >= 0);
+    assert.ok(parse > sender);
+    assert.ok(route > parse);
+    assert.equal(navigate, -1);
+    assert.equal(startTask, -1);
+  });
+
+  it('exposes aiNative.routeIntent and browserShell.search from preload only', () => {
+    const preload = readSrc('src/preload/app-preload.ts');
+    assert.match(preload, /exposeInMainWorld\('aiNative'/);
+    assert.match(preload, /routeIntent:/);
+    assert.match(preload, /AI_NATIVE_IPC_CHANNELS\.routeIntent/);
+    assert.match(preload, /search: \(tabId, query\) => ipcRenderer\.invoke\(BROWSER_IPC_CHANNELS\.search/);
+    assert.equal(preload.includes('executeRoute'), false);
+    assert.equal(preload.includes('invoke(channel'), false);
+    assert.equal(preload.includes('ipcRenderer.send'), false);
+  });
+
+  it('keeps remote pages isolated from aiNative preload', () => {
+    const adapter = readSrc('src/browser/electron-adapter.ts');
+    const blockStart = adapter.indexOf('private createWebsiteView()');
+    const block = adapter.slice(blockStart, blockStart + 450);
+    assert.equal(block.includes('preload:'), false);
+  });
+});
