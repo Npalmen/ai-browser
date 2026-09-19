@@ -4,7 +4,7 @@ import {
   MAX_SEARCH_QUERY_CHARS,
   type BrowserContextScope,
   type BrowserIntentRoute,
-  type BrowserIntentRouteInput,
+  type BrowserIntentRouteRequest,
   type BrowserIntentRouteResult,
   type BrowserIntentRouterState,
 } from '../shared/ai-native-types';
@@ -40,10 +40,33 @@ function findTab(browserState: BrowserIntentRouterState, tabId: TabId): BrowserT
   return browserState.tabs.find((tab) => tab.id === tabId);
 }
 
+function enforceCapabilityContextContract(
+  input: BrowserIntentRouteRequest,
+): BrowserIntentRouteResult | null {
+  const hasContext = input.context !== undefined;
+
+  if (input.capability === 'ask' || input.capability === 'automate') {
+    if (!hasContext) {
+      return fail('AI_NATIVE_CONTEXT_INVALID');
+    }
+    return null;
+  }
+
+  if (hasContext) {
+    return fail('AI_NATIVE_INVALID_REQUEST');
+  }
+
+  return null;
+}
+
 function resolveNavigateOrSearch(text: string): BrowserIntentRouteResult {
   const trimmed = trimText(text);
   if (!trimmed) {
     return fail('AI_NATIVE_EMPTY_INPUT');
+  }
+
+  if (trimmed.length > MAX_BROWSER_INTENT_TEXT_CHARS) {
+    return fail('AI_NATIVE_INVALID_REQUEST');
   }
 
   if (isExplicitlyDeniedNavigationInput(trimmed)) {
@@ -80,6 +103,9 @@ function validateContext(
 ): BrowserContextScope | BrowserIntentRouteResult {
   if (context.kind === 'current-tab') {
     if (typeof context.tabId !== 'string' || context.tabId.length === 0) {
+      return fail('AI_NATIVE_CONTEXT_INVALID');
+    }
+    if (browserState.activeTabId !== context.tabId) {
       return fail('AI_NATIVE_CONTEXT_INVALID');
     }
     const tab = findTab(browserState, context.tabId);
@@ -122,7 +148,7 @@ function validateContext(
 }
 
 function routeAsk(
-  input: BrowserIntentRouteInput,
+  input: BrowserIntentRouteRequest,
   browserState: BrowserIntentRouterState,
 ): BrowserIntentRouteResult {
   const question = validateIntentText(input.text);
@@ -143,7 +169,7 @@ function routeAsk(
 }
 
 function routeAct(
-  input: BrowserIntentRouteInput,
+  input: BrowserIntentRouteRequest,
   browserState: BrowserIntentRouterState,
 ): BrowserIntentRouteResult {
   const instruction = validateIntentText(input.text);
@@ -168,7 +194,7 @@ function routeAct(
   return ok({ kind: 'act', instruction, tabId: activeTabId });
 }
 
-function routeDelegate(input: BrowserIntentRouteInput): BrowserIntentRouteResult {
+function routeDelegate(input: BrowserIntentRouteRequest): BrowserIntentRouteResult {
   const objective = validateIntentText(input.text);
   if (typeof objective !== 'string') {
     return objective;
@@ -178,7 +204,7 @@ function routeDelegate(input: BrowserIntentRouteInput): BrowserIntentRouteResult
 }
 
 function routeAutomate(
-  input: BrowserIntentRouteInput,
+  input: BrowserIntentRouteRequest,
   browserState: BrowserIntentRouterState,
 ): BrowserIntentRouteResult {
   const instruction = validateIntentText(input.text);
@@ -199,9 +225,14 @@ function routeAutomate(
 }
 
 export function routeBrowserIntent(
-  input: BrowserIntentRouteInput,
+  input: BrowserIntentRouteRequest,
   browserState: BrowserIntentRouterState,
 ): BrowserIntentRouteResult {
+  const contractViolation = enforceCapabilityContextContract(input);
+  if (contractViolation) {
+    return contractViolation;
+  }
+
   switch (input.capability) {
     case 'default':
     case 'search':

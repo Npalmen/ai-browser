@@ -37,6 +37,8 @@ const CAPABILITIES = new Set<BrowserIntentCapability>([
   'automate',
 ]);
 
+const CONTEXT_REQUIRED_CAPABILITIES = new Set<BrowserIntentCapability>(['ask', 'automate']);
+
 export function isAiNativeSafeError(value: unknown): value is AiNativeSafeError {
   return typeof value === 'object' && value !== null && 'code' in value && 'message' in value;
 }
@@ -149,18 +151,42 @@ export function parseRouteIntentRequest(
     return { ok: false, error: capability };
   }
 
-  let context: BrowserContextScope | undefined;
-  if ('context' in record) {
+  const hasContext = 'context' in record;
+
+  if (CONTEXT_REQUIRED_CAPABILITIES.has(capability)) {
+    if (!hasContext) {
+      return { ok: false, error: aiNativeSafeError('AI_NATIVE_CONTEXT_INVALID') };
+    }
     const parsedContext = parseContext(record.context);
     if (isAiNativeSafeError(parsedContext)) {
       return { ok: false, error: parsedContext };
     }
-    context = parsedContext;
+    if (capability === 'ask') {
+      return {
+        ok: true,
+        input: { text: record.text, capability: 'ask', context: parsedContext },
+      };
+    }
+    return {
+      ok: true,
+      input: { text: record.text, capability: 'automate', context: parsedContext },
+    };
   }
 
-  const routeInput: BrowserIntentRouteInput = context
-    ? { text: record.text, capability, context }
-    : { text: record.text, capability };
+  if (hasContext) {
+    return invalidRequest();
+  }
 
-  return { ok: true, input: routeInput };
+  switch (capability) {
+    case 'default':
+      return { ok: true, input: { text: record.text, capability: 'default' } };
+    case 'search':
+      return { ok: true, input: { text: record.text, capability: 'search' } };
+    case 'act':
+      return { ok: true, input: { text: record.text, capability: 'act' } };
+    case 'delegate':
+      return { ok: true, input: { text: record.text, capability: 'delegate' } };
+    default:
+      return invalidRequest();
+  }
 }

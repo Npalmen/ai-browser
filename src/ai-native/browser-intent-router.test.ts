@@ -113,6 +113,30 @@ describe('routeBrowserIntent default routing', () => {
     }
   });
 
+  it('rejects valid URLs longer than MAX_BROWSER_INTENT_TEXT_CHARS', () => {
+    const text = `https://example.com/${'a'.repeat(MAX_BROWSER_INTENT_TEXT_CHARS)}`;
+    const result = routeBrowserIntent({ text, capability: 'default' }, browser);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, 'AI_NATIVE_INVALID_REQUEST');
+    }
+  });
+
+  it('rejects context on default', () => {
+    const result = routeBrowserIntent(
+      {
+        text: 'cats',
+        capability: 'default',
+        context: { kind: 'current-tab', tabId: 'tab-1' },
+      },
+      browser,
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, 'AI_NATIVE_INVALID_REQUEST');
+    }
+  });
+
   it('never returns ask, act, delegate, or draft-workflow for default', () => {
     const samples = ['cats', 'https://example.com', 'about:blank', 'example.com'];
     for (const text of samples) {
@@ -158,6 +182,30 @@ describe('routeBrowserIntent explicit Search', () => {
       assert.equal(result.error.code, 'AI_NATIVE_SEARCH_INVALID');
     }
   });
+
+  it('rejects valid URLs longer than MAX_BROWSER_INTENT_TEXT_CHARS', () => {
+    const text = `https://example.com/${'a'.repeat(MAX_BROWSER_INTENT_TEXT_CHARS)}`;
+    const result = routeBrowserIntent({ text, capability: 'search' }, browser);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, 'AI_NATIVE_INVALID_REQUEST');
+    }
+  });
+
+  it('rejects context on search', () => {
+    const result = routeBrowserIntent(
+      {
+        text: 'cats',
+        capability: 'search',
+        context: { kind: 'current-tab', tabId: 'tab-1' },
+      },
+      browser,
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, 'AI_NATIVE_INVALID_REQUEST');
+    }
+  });
 });
 
 describe('routeBrowserIntent explicit Ask', () => {
@@ -199,7 +247,22 @@ describe('routeBrowserIntent explicit Ask', () => {
     }
   });
 
-  it('rejects unknown tab', () => {
+  it('rejects unknown tab in selected-tabs', () => {
+    const result = routeBrowserIntent(
+      {
+        text: 'Compare',
+        capability: 'ask',
+        context: { kind: 'selected-tabs', tabIds: ['tab-a', 'missing'] },
+      },
+      browser,
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, 'AI_NATIVE_TAB_UNAVAILABLE');
+    }
+  });
+
+  it('rejects current-tab that does not match the active tab', () => {
     const result = routeBrowserIntent(
       {
         text: 'Compare',
@@ -210,18 +273,19 @@ describe('routeBrowserIntent explicit Ask', () => {
     );
     assert.equal(result.ok, false);
     if (!result.ok) {
-      assert.equal(result.error.code, 'AI_NATIVE_TAB_UNAVAILABLE');
+      assert.equal(result.error.code, 'AI_NATIVE_CONTEXT_INVALID');
     }
   });
 
   it('rejects about:blank for Ask', () => {
+    const blankActive = state([{ id: 'tab-blank', url: 'about:blank' }], 'tab-blank');
     const result = routeBrowserIntent(
       {
         text: 'Summarize',
         capability: 'ask',
         context: { kind: 'current-tab', tabId: 'tab-blank' },
       },
-      browser,
+      blankActive,
     );
     assert.equal(result.ok, false);
     if (!result.ok) {
@@ -274,10 +338,62 @@ describe('routeBrowserIntent explicit Ask', () => {
       assert.equal(result.error.code, 'AI_NATIVE_CONTEXT_INVALID');
     }
   });
+
+  it('rejects current-tab that is not the active tab', () => {
+    const result = routeBrowserIntent(
+      {
+        text: 'Summarize',
+        capability: 'ask',
+        context: { kind: 'current-tab', tabId: 'tab-b' },
+      },
+      browser,
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, 'AI_NATIVE_CONTEXT_INVALID');
+    }
+  });
+
+  it('allows selected-tabs containing inactive valid http tabs', () => {
+    const result = routeBrowserIntent(
+      {
+        text: 'Compare these',
+        capability: 'ask',
+        context: { kind: 'selected-tabs', tabIds: ['tab-a', 'tab-b'] },
+      },
+      browser,
+    );
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.route.kind, 'ask');
+    }
+  });
 });
 
 describe('routeBrowserIntent explicit Act', () => {
-  it('uses current trusted active tab', () => {
+  it('uses current trusted active tab without context', () => {
+    const browser = state(
+      [
+        { id: 'tab-a', url: 'https://a.example/' },
+        { id: 'tab-b', url: 'https://b.example/' },
+      ],
+      'tab-b',
+    );
+    const result = routeBrowserIntent(
+      {
+        text: 'Click safe control',
+        capability: 'act',
+      },
+      browser,
+    );
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.route.kind, 'act');
+      assert.equal(result.route.tabId, 'tab-b');
+    }
+  });
+
+  it('rejects context on act', () => {
     const browser = state(
       [
         { id: 'tab-a', url: 'https://a.example/' },
@@ -293,10 +409,9 @@ describe('routeBrowserIntent explicit Act', () => {
       },
       browser,
     );
-    assert.equal(result.ok, true);
-    if (result.ok) {
-      assert.equal(result.route.kind, 'act');
-      assert.equal(result.route.tabId, 'tab-b');
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, 'AI_NATIVE_INVALID_REQUEST');
     }
   });
 
@@ -347,6 +462,22 @@ describe('routeBrowserIntent explicit Delegate', () => {
       assert.equal(result.route.kind, 'delegate');
     }
   });
+
+  it('rejects context on delegate', () => {
+    const browser = state([{ id: 'tab-a', url: 'https://a.example/' }], 'tab-a');
+    const result = routeBrowserIntent(
+      {
+        text: 'Research hotels',
+        capability: 'delegate',
+        context: { kind: 'current-tab', tabId: 'tab-a' },
+      },
+      browser,
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, 'AI_NATIVE_INVALID_REQUEST');
+    }
+  });
 });
 
 describe('routeBrowserIntent explicit Automate', () => {
@@ -379,6 +510,40 @@ describe('routeBrowserIntent explicit Automate', () => {
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.equal(result.error.code, 'AI_NATIVE_INVALID_REQUEST');
+    }
+  });
+
+  it('rejects current-tab that is not the active tab', () => {
+    const browser = state(
+      [
+        { id: 'tab-a', url: 'about:blank' },
+        { id: 'tab-b', url: 'https://b.example/' },
+      ],
+      'tab-b',
+    );
+    const result = routeBrowserIntent(
+      {
+        text: 'Every weekday at 08:00 check this page',
+        capability: 'automate',
+        context: { kind: 'current-tab', tabId: 'tab-a' },
+      },
+      browser,
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, 'AI_NATIVE_CONTEXT_INVALID');
+    }
+  });
+
+  it('requires context', () => {
+    const browser = state([{ id: 'tab-a', url: 'about:blank' }], 'tab-a');
+    const result = routeBrowserIntent(
+      { text: 'Every weekday at 08:00', capability: 'automate' },
+      browser,
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error.code, 'AI_NATIVE_CONTEXT_INVALID');
     }
   });
 });

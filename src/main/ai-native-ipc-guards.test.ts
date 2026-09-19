@@ -13,11 +13,11 @@ describe('parseRouteIntentRequest', () => {
     if (result.ok) {
       assert.equal(result.input.text, 'cats');
       assert.equal(result.input.capability, 'default');
-      assert.equal(result.input.context, undefined);
+      assert.equal('context' in result.input, false);
     }
   });
 
-  it('accepts current-tab and selected-tabs context shapes', () => {
+  it('accepts current-tab and selected-tabs context shapes for ask', () => {
     const current = parseRouteIntentRequest({
       text: 'Summarize',
       capability: 'ask',
@@ -85,5 +85,32 @@ describe('parseRouteIntentRequest', () => {
   it('rejects non-object input', () => {
     assert.equal(parseRouteIntentRequest(null).ok, false);
     assert.equal(parseRouteIntentRequest('cats').ok, false);
+  });
+
+  it('rejects context on default, search, act, and delegate', () => {
+    for (const capability of ['default', 'search', 'act', 'delegate'] as const) {
+      const result = parseRouteIntentRequest({
+        text: 'cats',
+        capability,
+        context: { kind: 'current-tab', tabId: 'tab-a' },
+      });
+      assert.equal(result.ok, false, capability);
+      if (!result.ok) {
+        assert.equal(result.error.code, 'AI_NATIVE_INVALID_REQUEST');
+      }
+    }
+  });
+
+  it('requires context for ask and automate', () => {
+    for (const capability of ['ask', 'automate'] as const) {
+      const result = parseRouteIntentRequest({
+        text: 'do something',
+        capability,
+      });
+      assert.equal(result.ok, false, capability);
+      if (!result.ok) {
+        assert.equal(result.error.code, 'AI_NATIVE_CONTEXT_INVALID');
+      }
+    }
   });
 });

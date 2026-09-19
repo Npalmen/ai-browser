@@ -102,11 +102,22 @@ export type BrowserIntentRouteResult =
       readonly error: AiNativeSafeError;
     };
 
-export interface BrowserIntentRouteInput {
+export type BrowserIntentRouteInput =
+  | {
+      readonly text: string;
+      readonly capability: 'default' | 'search' | 'act' | 'delegate';
+    }
+  | {
+      readonly text: string;
+      readonly capability: 'ask' | 'automate';
+      readonly context: BrowserContextScope;
+    };
+
+export type BrowserIntentRouteRequest = {
   readonly text: string;
   readonly capability: BrowserIntentCapability;
   readonly context?: BrowserContextScope;
-}
+};
 
 export const AI_NATIVE_IPC_CHANNELS = {
   routeIntent: 'ai-native:route-intent',
