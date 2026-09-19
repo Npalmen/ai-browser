@@ -92,6 +92,7 @@ describe('autonomous task IPC wiring', () => {
   it('no-ops V6 browser callbacks before AI runtime init', () => {
     const runtime = readSrc('src/main/ai-runtime.ts');
     assert.match(runtime, /void autonomousTaskController\?\.handleTabCreated/);
+    assert.match(runtime, /\?\.catch\(\(\) => \{/);
     assert.match(runtime, /autonomousTaskController\?\.handleGenericNavigation/);
     assert.match(runtime, /await autonomousTaskController\?\.beforeTrustedChromeNavigation/);
     assert.match(runtime, /await autonomousTaskController\?\.handleTabClosed/);

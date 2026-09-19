@@ -153,14 +153,17 @@ class ImmediateAgentRuns implements AutonomousTaskAgentRunExecutionPort {
 class HoldingAgentRuns implements AutonomousTaskAgentRunExecutionPort {
   starts = 0;
   lastRef: AgentRunRef | undefined;
+  lastInstruction: string | undefined;
   hold: Deferred<AutonomousTaskAgentRunCompletion> | undefined;
   started = new Deferred<void>();
+  resolveCompletedOnCancel = false;
 
   async start(
     tabId: TabId,
     instruction: string,
   ): Promise<AutonomousTaskAgentRunExecutionStartResult> {
     this.starts += 1;
+    this.lastInstruction = instruction;
     const ref: AgentRunRef = { runId: `run-${this.starts}`, tabId, generation: this.starts };
     this.lastRef = ref;
     this.hold = new Deferred();
@@ -179,10 +182,14 @@ class HoldingAgentRuns implements AutonomousTaskAgentRunExecutionPort {
   }
 
   async cancelAndWait(ref: AgentRunRef): Promise<void> {
-    this.hold?.resolve({
-      status: 'terminal',
-      run: snapshot(ref, 'child', 'cancelled'),
-    });
+    if (this.resolveCompletedOnCancel) {
+      this.hold?.resolve(completed(ref, this.lastInstruction ?? 'child', 'child-completed-during-cancel'));
+    } else {
+      this.hold?.resolve({
+        status: 'terminal',
+        run: snapshot(ref, 'child', 'cancelled'),
+      });
+    }
     await this.hold?.promise;
   }
 }
@@ -537,6 +544,193 @@ describe('AutonomousTaskController', () => {
     assert.equal(source.includes('AgentRunExecutor'), false);
     assert.equal(source.includes('ApprovalController'), false);
     assert.equal(source.includes('approval:decide'), false);
+    assert.match(source, /this\.quiesceLoop\(taskId\);\s*try \{\s*const result = await this\.lifecycle\.pause/s);
+    assert.match(source, /this\.quiesceLoop\(taskId\);\s*try \{\s*const result = await this\.lifecycle\.stop/s);
+  });
+
+  it('Pause vs completed child does not start the next planner', async () => {
+    const harness = createHarness({ holdingChild: true });
+    const agentRuns = harness.agentRuns as HoldingAgentRuns;
+    agentRuns.resolveCompletedOnCancel = true;
+    harness.plannerImpl.decisions = [delegate('Finish fares'), delegate('Must not start')];
+    harness.controller.start('Pause after child A');
+    await waitUntil(() => harness.childRuns.getActiveChild('task-1') !== undefined, 'child A');
+    const plannerCalls = harness.plannerImpl.inputs.length;
+    const paused = await harness.controller.pause('task-1');
+    assert.equal(paused.ok, true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(harness.coordinator.getTask('task-1')?.state, 'paused');
+    assert.equal(harness.plannerImpl.inputs.length, plannerCalls);
+    assert.equal(agentRuns.starts, 1);
+    assert.equal(harness.events.some((event) => event.type === 'autonomous-task-paused'), true);
+    assert.equal(harness.events.some((event) => event.type === 'autonomous-task-paused' && event.task.state !== 'paused'), false);
+  });
+
+  it('Stop vs completed child does not start the next planner', async () => {
+    const harness = createHarness({ holdingChild: true });
+    const agentRuns = harness.agentRuns as HoldingAgentRuns;
+    agentRuns.resolveCompletedOnCancel = true;
+    harness.plannerImpl.decisions = [delegate('Finish fares'), delegate('Must not start')];
+    harness.controller.start('Stop after child A');
+    await waitUntil(() => harness.childRuns.getActiveChild('task-1') !== undefined, 'child A');
+    const plannerCalls = harness.plannerImpl.inputs.length;
+    const stopped = await harness.controller.stop('task-1');
+    assert.equal(stopped.ok, true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(harness.coordinator.getTask('task-1')?.state, 'cancelled');
+    assert.equal(harness.plannerImpl.inputs.length, plannerCalls);
+    assert.equal(agentRuns.starts, 1);
+  });
+
+  it('Pause vs a valid planner decision cannot start a child', async () => {
+    const harness = createHarness({ holdingChild: true });
+    harness.plannerImpl.hold = new Deferred();
+    harness.controller.start('Pause vs planner');
+    await waitUntil(() => harness.plannerImpl.inputs.length === 1, 'planner');
+    harness.plannerImpl.hold.resolve({
+      status: 'decision',
+      decision: delegate('Must not start'),
+      alias: 'page-standard',
+    });
+    const paused = await harness.controller.pause('task-1');
+    assert.equal(paused.ok, true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(harness.coordinator.getTask('task-1')?.state, 'paused');
+    assert.equal((harness.agentRuns as HoldingAgentRuns).starts, 0);
+    assert.equal(harness.coordinator.getTask('task-1')?.childRunCount, 0);
+  });
+
+  it('Stop vs a valid planner decision cannot start a child', async () => {
+    const harness = createHarness({ holdingChild: true });
+    harness.plannerImpl.hold = new Deferred();
+    harness.controller.start('Stop vs planner');
+    await waitUntil(() => harness.plannerImpl.inputs.length === 1, 'planner');
+    harness.plannerImpl.hold.resolve({
+      status: 'decision',
+      decision: delegate('Must not start'),
+      alias: 'page-standard',
+    });
+    const stopped = await harness.controller.stop('task-1');
+    assert.equal(stopped.ok, true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(harness.coordinator.getTask('task-1')?.state, 'cancelled');
+    assert.equal((harness.agentRuns as HoldingAgentRuns).starts, 0);
+  });
+
+  it('trusted navigation quiesces before Pause and does not start the next planner', async () => {
+    const harness = createHarness({ holdingChild: true });
+    const agentRuns = harness.agentRuns as HoldingAgentRuns;
+    agentRuns.resolveCompletedOnCancel = true;
+    harness.plannerImpl.decisions = [delegate('Work on A'), delegate('Must not start')];
+    harness.controller.start('Navigate owned tab');
+    await waitUntil(() => harness.childRuns.getActiveChild('task-1') !== undefined, 'child');
+    const plannerCalls = harness.plannerImpl.inputs.length;
+    await harness.controller.beforeTrustedChromeNavigation('tab-a');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(harness.coordinator.getTask('task-1')?.state, 'paused');
+    assert.equal(harness.plannerImpl.inputs.length, plannerCalls);
+    assert.equal(agentRuns.starts, 1);
+  });
+
+  it('execution-tab close quiesces and does not start the next planner', async () => {
+    const harness = createHarness({ holdingChild: true });
+    const agentRuns = harness.agentRuns as HoldingAgentRuns;
+    agentRuns.resolveCompletedOnCancel = true;
+    harness.plannerImpl.decisions = [delegate('Work on A'), delegate('Must not start')];
+    harness.controller.start('Close execution tab');
+    await waitUntil(() => harness.childRuns.getActiveChild('task-1') !== undefined, 'child');
+    const plannerCalls = harness.plannerImpl.inputs.length;
+    await harness.controller.handleTabClosed('tab-a');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const task = harness.coordinator.getTask('task-1');
+    assert.ok(task);
+    assert.equal(['blocked', 'execution-state-unknown', 'failed', 'cancelled'].includes(task.state), true);
+    if (task.state === 'blocked') {
+      assert.equal(task.terminalReason, 'TAB_UNAVAILABLE');
+    }
+    assert.equal(harness.plannerImpl.inputs.length, plannerCalls);
+    assert.equal(agentRuns.starts, 1);
+  });
+
+  it('quiescence does not weaken post-dispatch unknown', async () => {
+    const harness = createHarness({ holdingChild: true });
+    harness.plannerImpl.decisions = [delegate('Click purchase')];
+    harness.controller.start('Unknown wins');
+    await waitUntil(() => harness.childRuns.getActiveChild('task-1') !== undefined, 'child');
+    const child = harness.childRuns.getActiveChild('task-1');
+    assert.ok(child);
+    harness.integration.onPresented(child.agentRunRef, 'appr-unknown');
+    harness.integration.notifyApprovalOutcome('appr-unknown', 'execution-state-unknown');
+    await waitUntil(
+      () => harness.coordinator.getTask('task-1')?.state === 'execution-state-unknown',
+      'unknown',
+    );
+    const paused = await harness.controller.pause('task-1');
+    assert.equal(harness.coordinator.getTask('task-1')?.state, 'execution-state-unknown');
+    assert.equal(paused.ok, true);
+    assert.equal(harness.plannerImpl.inputs.length, 1);
+    assert.equal((harness.agentRuns as HoldingAgentRuns).starts, 1);
+  });
+
+  it('keeps user clarification across a Pause that races the planner', async () => {
+    const harness = createHarness();
+    harness.plannerImpl.decisions = [{ kind: 'request-user-input', question: 'Which cabin?' }];
+    harness.controller.start('Need clarification');
+    await waitUntil(
+      () => harness.events.some((event) => event.type === 'autonomous-task-awaiting-user-input'),
+      'awaiting input',
+    );
+    harness.plannerImpl.hold = new Deferred();
+    harness.controller.reply('task-1', 'economy');
+    await waitUntil(() => harness.plannerImpl.inputs.length === 2, 'planner with clarification');
+    harness.plannerImpl.hold.resolve({
+      status: 'decision',
+      decision: delegate('Must not start'),
+      alias: 'page-standard',
+    });
+    const paused = await harness.controller.pause('task-1');
+    assert.equal(paused.ok, true);
+    assert.equal(harness.coordinator.getTask('task-1')?.state, 'paused');
+    harness.plannerImpl.hold = undefined;
+    harness.plannerImpl.decisions = [{ kind: 'complete', answer: 'Booked economy.' }];
+    harness.controller.resume('task-1');
+    await waitUntil(
+      () => harness.events.some((event) => event.type === 'autonomous-task-completed'),
+      'completed',
+    );
+    assert.equal(harness.plannerImpl.inputs.at(-1)?.userClarification, 'economy');
+    assert.equal((harness.agentRuns as ImmediateAgentRuns).starts, 0);
+  });
+
+  it('duplicate Pause and Pause-then-Stop do not restart work', async () => {
+    const harness = createHarness({ holdingChild: true });
+    harness.plannerImpl.decisions = [delegate('One child')];
+    harness.controller.start('Concurrent controls');
+    await waitUntil(() => harness.childRuns.getActiveChild('task-1') !== undefined, 'child');
+    const first = harness.controller.pause('task-1');
+    const second = harness.controller.pause('task-1');
+    await Promise.all([first, second]);
+    assert.equal(harness.coordinator.getTask('task-1')?.state, 'paused');
+    assert.equal((harness.agentRuns as HoldingAgentRuns).starts, 1);
+    assert.equal(harness.plannerImpl.inputs.length, 1);
+
+    const racing = createHarness({ holdingChild: true });
+    racing.plannerImpl.decisions = [delegate('One child')];
+    racing.controller.start('Pause then Stop');
+    await waitUntil(() => racing.childRuns.getActiveChild('task-1') !== undefined, 'child');
+    const pauseP = racing.controller.pause('task-1');
+    const stopP = racing.controller.stop('task-1');
+    await pauseP;
+    await stopP;
+    const state = racing.coordinator.getTask('task-1')?.state;
+    assert.ok(state === 'cancelled' || state === 'execution-state-unknown' || state === 'paused');
+    if (state === 'paused') {
+      const stopped = await racing.controller.stop('task-1');
+      assert.equal(stopped.ok, true);
+      assert.equal(racing.coordinator.getTask('task-1')?.state, 'cancelled');
+    }
+    assert.equal((racing.agentRuns as HoldingAgentRuns).starts, 1);
+    assert.equal(racing.plannerImpl.inputs.length, 1);
   });
 });
 

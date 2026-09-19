@@ -88,7 +88,9 @@ export function cancelAgentRunForTrustedChromeNavigation(tabId: TabId): void {
 }
 
 export function handleAutonomousTaskTabCreated(event: BrowserTabCreatedEvent): void {
-  void autonomousTaskController?.handleTabCreated(event);
+  void autonomousTaskController?.handleTabCreated(event)?.catch(() => {
+    // Lifecycle bookkeeping failure must not grant authority.
+  });
 }
 
 export function handleAutonomousTaskGenericNavigation(tabId: TabId): void {
@@ -104,7 +106,9 @@ export async function handleAutonomousTaskTabClosed(tabId: TabId): Promise<void>
 }
 
 export function handleAutonomousTaskRendererCrash(tabId: TabId): void {
-  void autonomousTaskController?.handleRendererCrash(tabId);
+  void autonomousTaskController?.handleRendererCrash(tabId)?.catch(() => {
+    // Lifecycle bookkeeping failure must not grant authority.
+  });
 }
 
 export function initializeAiRuntime(browserAdapter: ElectronBrowserAdapter): void {

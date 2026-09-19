@@ -14,6 +14,7 @@ import {
 } from '../autonomous-task/autonomous-task-planner-context';
 import { AutonomousTaskPlannerExecutor } from '../autonomous-task/autonomous-task-planner-executor';
 import {
+  isActiveAutonomousTaskState,
   isAutonomousTaskApplied,
   isTerminalAutonomousTaskState,
   toAutonomousTaskRef,
@@ -119,15 +120,11 @@ export class AutonomousTaskController {
     if (snapshot === undefined) {
       return { ok: false, error: aiSafeError('INVALID_REQUEST') };
     }
-    const product = this.products.get(taskId);
-    const loopGeneration = product?.loopGeneration;
+    this.quiesceLoop(taskId);
     try {
       const result = await this.lifecycle.pause(toAutonomousTaskRef(snapshot));
       if (this.disposed) {
         return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };
-      }
-      if (product !== undefined && loopGeneration !== undefined && product.loopGeneration === loopGeneration) {
-        product.loopGeneration += 1;
       }
       return this.finishControl(taskId, result, 'autonomous-task-paused');
     } catch (error) {
@@ -173,15 +170,11 @@ export class AutonomousTaskController {
     if (snapshot === undefined) {
       return { ok: false, error: aiSafeError('INVALID_REQUEST') };
     }
-    const product = this.products.get(taskId);
-    const loopGeneration = product?.loopGeneration;
+    this.quiesceLoop(taskId);
     try {
       const result = await this.lifecycle.stop(toAutonomousTaskRef(snapshot));
       if (this.disposed) {
         return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };
-      }
-      if (product !== undefined && loopGeneration !== undefined && product.loopGeneration === loopGeneration) {
-        product.loopGeneration += 1;
       }
       return this.finishControl(taskId, result);
     } catch (error) {
@@ -278,6 +271,9 @@ export class AutonomousTaskController {
     }
     const owner = this.coordinator.getTabOwner(tabId);
     const taskId = owner?.taskId;
+    if (taskId !== undefined && this.shouldQuiesceForTabClose(tabId, taskId)) {
+      this.quiesceLoop(taskId);
+    }
     await this.lifecycle.handleTabClosed(tabId);
     if (this.disposed || taskId === undefined) {
       return;
@@ -297,6 +293,12 @@ export class AutonomousTaskController {
       return;
     }
     const owner = this.coordinator.getTabOwner(tabId);
+    if (owner !== undefined) {
+      const task = this.coordinator.getTask(owner.taskId);
+      if (task !== undefined && isActiveAutonomousTaskState(task.state)) {
+        this.quiesceLoop(owner.taskId);
+      }
+    }
     await this.lifecycle.beforeTrustedChromeNavigation(tabId);
     if (this.disposed || owner === undefined) {
       return;
@@ -322,6 +324,27 @@ export class AutonomousTaskController {
     }
     this.products.clear();
     this.completedTurns.length = 0;
+  }
+
+  private quiesceLoop(taskId: string): number | undefined {
+    const product = this.products.get(taskId);
+    if (product === undefined) {
+      return undefined;
+    }
+    product.loopGeneration += 1;
+    return product.loopGeneration;
+  }
+
+  private shouldQuiesceForTabClose(tabId: TabId, taskId: string): boolean {
+    const task = this.coordinator.getTask(taskId);
+    if (task === undefined || !isActiveAutonomousTaskState(task.state)) {
+      return false;
+    }
+    const child = this.childRuns.getActiveChild(taskId);
+    if (child !== undefined && child.tabId === tabId) {
+      return true;
+    }
+    return task.ownedTabCount <= 1;
   }
 
   private startPlanningLoop(taskId: string, loopGeneration: number): void {
