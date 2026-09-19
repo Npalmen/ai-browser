@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import type { AiPanelMode } from '../shared/autonomous-task-types';
 import type { BrowserState, BrowserTab } from '../shared/browser-types';
 import { AiSidePanel } from './AiSidePanel';
+import { WorkflowsPanel } from './WorkflowsPanel';
 import {
   acknowledgeAsk,
   appendUserQuestion,
@@ -63,6 +64,7 @@ export function App() {
   const [isEditingAddress, setIsEditingAddress] = useState(false);
   const [navError, setNavError] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [rightPanelSurface, setRightPanelSurface] = useState<'assistant' | 'workflows'>('assistant');
   const [tabAiState, setTabAiState] = useState<AiUiState>({});
   const [tabApprovalState, setTabApprovalState] = useState<ApprovalUiState>({});
   const [taskUiState, setTaskUiState] = useState<AutonomousTaskUiState>(emptyAutonomousTaskUiState());
@@ -138,6 +140,7 @@ export function App() {
         event.type === 'approval-required' &&
         event.approval.tabId === activeTabIdRef.current
       ) {
+        setRightPanelSurface('assistant');
         void window.aiAssistant
           .setPanelOpen(true)
           .then((result) => {
@@ -145,6 +148,7 @@ export function App() {
               return;
             }
             setPanelOpen(true);
+            setRightPanelSurface('assistant');
           })
           .catch((error: unknown) => {
             console.error('[app-ui] failed to open AI panel for approval:', error);
@@ -257,16 +261,20 @@ export function App() {
       });
   };
 
-  const handleTogglePanel = () => {
-    const nextOpen = !panelOpen;
+  const openRightPanel = (surface: 'assistant' | 'workflows') => {
+    if (panelOpen) {
+      setRightPanelSurface(surface);
+      return;
+    }
     void window.aiAssistant
-      .setPanelOpen(nextOpen)
+      .setPanelOpen(true)
       .then((result) => {
         if (!result.ok) {
           console.error('[app-ui] failed to set AI panel open:', result.error.message);
           return;
         }
-        setPanelOpen(nextOpen);
+        setRightPanelSurface(surface);
+        setPanelOpen(true);
       })
       .catch((error: unknown) => {
         console.error('[app-ui] failed to set AI panel open:', error);
@@ -286,6 +294,22 @@ export function App() {
       .catch((error: unknown) => {
         console.error('[app-ui] failed to close AI panel:', error);
       });
+  };
+
+  const handleToggleAssistant = () => {
+    if (panelOpen && rightPanelSurface === 'assistant') {
+      handleClosePanel();
+      return;
+    }
+    openRightPanel('assistant');
+  };
+
+  const handleToggleWorkflows = () => {
+    if (panelOpen && rightPanelSurface === 'workflows') {
+      handleClosePanel();
+      return;
+    }
+    openRightPanel('workflows');
   };
 
   const updateActiveTabAi = (updater: (current: TabAiUiState) => TabAiUiState) => {
@@ -617,20 +641,29 @@ export function App() {
 
           <button
             type="button"
-            className={`nav-button ai-toggle ${panelOpen ? 'ai-toggle-open' : ''} ${
+            className={`nav-button ai-toggle ${panelOpen && rightPanelSurface === 'assistant' ? 'ai-toggle-open' : ''} ${
               taskAttention ? 'ai-toggle-attention' : ''
             }`}
-            onClick={handleTogglePanel}
-            aria-pressed={panelOpen}
+            onClick={handleToggleAssistant}
+            aria-pressed={panelOpen && rightPanelSurface === 'assistant'}
             aria-label={taskAttention ? 'AI assistant, attention required' : 'AI assistant'}
           >
             AI
             {taskAttention ? <span className="ai-toggle-badge" aria-hidden="true" /> : null}
           </button>
+          <button
+            type="button"
+            className={`nav-button workflow-toggle ${panelOpen && rightPanelSurface === 'workflows' ? 'workflow-toggle-open' : ''}`}
+            onClick={handleToggleWorkflows}
+            aria-pressed={panelOpen && rightPanelSurface === 'workflows'}
+            aria-label="Workflows"
+          >
+            Workflows
+          </button>
         </div>
       </div>
 
-      {panelOpen ? (
+      {panelOpen && rightPanelSurface === 'assistant' ? (
         <AiSidePanel
           hasActiveTab={Boolean(activeTab)}
           entries={activeAi.entries}
@@ -661,6 +694,7 @@ export function App() {
           onReplyTask={(taskId) => handleTaskReply(taskId)}
         />
       ) : null}
+      {panelOpen && rightPanelSurface === 'workflows' ? <WorkflowsPanel onClose={handleClosePanel} /> : null}
     </div>
   );
 }

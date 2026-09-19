@@ -22,6 +22,7 @@ import type {
   ApprovalEvent,
 } from './approval-types';
 import type { BrowserState, TabId } from './browser-types';
+export type { WorkflowsApi } from './workflow-product-types';
 
 export const BROWSER_IPC_CHANNELS = {
   getState: 'browser:get-state',
@@ -72,6 +73,20 @@ export interface BrowserShellApi {
 
   onStateChanged(listener: (state: BrowserState) => void): () => void;
 }
+
+export const WORKFLOW_IPC_CHANNELS = {
+  getState: 'workflow:get-state',
+  getDetail: 'workflow:get-detail',
+  create: 'workflow:create',
+  edit: 'workflow:edit',
+  setEnabled: 'workflow:set-enabled',
+  runNow: 'workflow:run-now',
+  acknowledgeReview: 'workflow:acknowledge-review',
+  stop: 'workflow:stop',
+  cancelQueued: 'workflow:cancel-queued',
+  delete: 'workflow:delete',
+  stateChanged: 'workflow:state-changed',
+} as const;
 
 export interface AiAssistantApi {
   askCurrentPage(input: AiAskCurrentPageInput): Promise<AiAskStartResult>;

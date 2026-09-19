@@ -14,8 +14,10 @@ import {
   APPROVAL_IPC_CHANNELS,
   AUTONOMOUS_TASK_IPC_CHANNELS,
   BROWSER_IPC_CHANNELS,
+  WORKFLOW_IPC_CHANNELS,
   type AiAssistantApi,
   type BrowserShellApi,
+  type WorkflowsApi,
 } from '../shared/ipc-contract';
 
 const browserShell: BrowserShellApi = {
@@ -115,5 +117,28 @@ const aiAssistant: AiAssistantApi = {
   },
 };
 
+const workflows: WorkflowsApi = {
+  getState: () => ipcRenderer.invoke(WORKFLOW_IPC_CHANNELS.getState),
+  getDetail: (input) => ipcRenderer.invoke(WORKFLOW_IPC_CHANNELS.getDetail, input),
+  create: (input) => ipcRenderer.invoke(WORKFLOW_IPC_CHANNELS.create, input),
+  edit: (input) => ipcRenderer.invoke(WORKFLOW_IPC_CHANNELS.edit, input),
+  setEnabled: (input) => ipcRenderer.invoke(WORKFLOW_IPC_CHANNELS.setEnabled, input),
+  runNow: (input) => ipcRenderer.invoke(WORKFLOW_IPC_CHANNELS.runNow, input),
+  acknowledgeReview: (input) => ipcRenderer.invoke(WORKFLOW_IPC_CHANNELS.acknowledgeReview, input),
+  stop: (input) => ipcRenderer.invoke(WORKFLOW_IPC_CHANNELS.stop, input),
+  cancelQueued: (input) => ipcRenderer.invoke(WORKFLOW_IPC_CHANNELS.cancelQueued, input),
+  delete: (input) => ipcRenderer.invoke(WORKFLOW_IPC_CHANNELS.delete, input),
+  onStateChanged: (listener) => {
+    const wrapped = () => {
+      listener();
+    };
+    ipcRenderer.on(WORKFLOW_IPC_CHANNELS.stateChanged, wrapped);
+    return () => {
+      ipcRenderer.removeListener(WORKFLOW_IPC_CHANNELS.stateChanged, wrapped);
+    };
+  },
+};
+
 contextBridge.exposeInMainWorld('browserShell', browserShell);
 contextBridge.exposeInMainWorld('aiAssistant', aiAssistant);
+contextBridge.exposeInMainWorld('workflows', workflows);

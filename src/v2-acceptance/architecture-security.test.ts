@@ -60,10 +60,11 @@ describe('V2 architecture and preload security', () => {
     assert.equal('@ai-sdk/anthropic' in (pkg.dependencies ?? {}), false);
   });
 
-  it('exposes only browserShell and aiAssistant from preload', () => {
+  it('exposes browserShell, aiAssistant, and workflows from preload', () => {
     const preload = readSrc('src/preload/app-preload.ts');
     assert.match(preload, /exposeInMainWorld\('browserShell'/);
     assert.match(preload, /exposeInMainWorld\('aiAssistant'/);
+    assert.match(preload, /exposeInMainWorld\('workflows'/);
     assert.equal(preload.includes("exposeInMainWorld('ipcRenderer'"), false);
     assert.match(preload, /askCurrentPage:/);
     assert.match(preload, /cancelAsk:/);
@@ -75,6 +76,10 @@ describe('V2 architecture and preload security', () => {
     assert.match(preload, /AI_IPC_CHANNELS\.clearConversation/);
     assert.match(preload, /AI_IPC_CHANNELS\.setPanelOpen/);
     assert.match(preload, /AI_IPC_CHANNELS\.answerEvent/);
+    assert.match(preload, /WORKFLOW_IPC_CHANNELS\.getState/);
+    assert.equal(preload.includes('invoke(channel'), false);
+    assert.equal(preload.includes('readFile'), false);
+    assert.equal(preload.includes('writeFile'), false);
     for (const forbidden of [
       'generate(',
       'callModel',

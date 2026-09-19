@@ -662,24 +662,10 @@ describe('V7 Phase 5 architecture', () => {
     assert.equal(main.includes('daemon'), false);
   });
 
-  it('does not add Workflows IPC channels or persist slot ownership', () => {
-    const ipc = readFileSync(path.join(__dirname, 'ipc.ts'), 'utf8');
+  it('does not persist slot ownership on occurrences or grants', () => {
     const storeTypes = readFileSync(path.join(__dirname, '../workflows/workflow-store-types.ts'), 'utf8');
     const grants = readFileSync(path.join(__dirname, '../shared/interaction-types.ts'), 'utf8');
     const approval = readFileSync(path.join(__dirname, '../shared/approval-types.ts'), 'utf8');
-    for (const channel of [
-      'workflow:create',
-      'workflow:edit',
-      'workflow:list',
-      'workflow:run-now',
-      'workflow:enable',
-      'workflow:disable',
-      'workflow:delete',
-      'workflow:review',
-      'workflow:history',
-    ]) {
-      assert.equal(ipc.includes(channel), false, channel);
-    }
     const occurrenceKeys = storeTypes.slice(
       storeTypes.indexOf('export const WORKFLOW_OCCURRENCE_KEYS'),
       storeTypes.indexOf('] as const', storeTypes.indexOf('export const WORKFLOW_OCCURRENCE_KEYS')),
@@ -703,6 +689,93 @@ describe('V7 Phase 5 architecture', () => {
     assert.ok(
       emit.indexOf('sendToTrustedAppRenderer') < emit.indexOf('autonomousTaskEventListeners'),
     );
+  });
+});
+
+describe('V7 Phase 6 product notifications', () => {
+  it('notifies subscribers after mutations and not after unsubscribe', async () => {
+    await withRuntime(async ({ runtime }) => {
+      let calls = 0;
+      const unsubscribe = runtime.subscribeStateChanged(() => {
+        calls += 1;
+      });
+      await runtime.createWorkflow(sampleInput({ name: 'Notify me' }));
+      assert.ok(calls >= 1);
+      const afterCreate = calls;
+      unsubscribe();
+      await runtime.createWorkflow(sampleInput({ name: 'After unsubscribe', url: 'https://example.test/other' }));
+      assert.equal(calls, afterCreate);
+    });
+  });
+
+  it('does not let a listener exception break durable mutation', async () => {
+    await withRuntime(async ({ runtime }) => {
+      runtime.subscribeStateChanged(() => {
+        throw new Error('listener boom');
+      });
+      const created = await runtime.createWorkflow(sampleInput({ name: 'Still saved' }));
+      assert.equal(created.name, 'Still saved');
+      assert.ok(await runtime.getCoordinator()?.getWorkflow(created.workflowId));
+    });
+  });
+
+  it('notifies after scheduler enqueue without calling the runner', async () => {
+    await withDirectory(async (directory) => {
+      const timer = new FakeTimer();
+      let nowMs = Date.parse('2026-09-19T07:00:00.000Z');
+      const runtime = await PersistentWorkflowRuntime.initialize({
+        directory,
+        runtimeSessionId: 'runtime-sched-notify',
+        now: () => new Date(nowMs),
+        timer,
+      });
+      let calls = 0;
+      runtime.subscribeStateChanged(() => {
+        calls += 1;
+      });
+      await runtime.createWorkflow({
+        name: 'Future',
+        objective: 'Later',
+        entryPoint: { kind: 'url', url: 'https://example.test/due' },
+        trigger: { kind: 'schedule', schedule: { kind: 'one-time', runAtUtc: '2026-09-19T08:00:00.000Z' } },
+      });
+      const afterCreate = calls;
+      assert.equal((await runtime.getCoordinator()?.listQueuedOccurrences())?.length, 0);
+      nowMs = Date.parse('2026-09-19T08:00:00.000Z');
+      await timer.only.callback();
+      await runtime.flush();
+      assert.ok(calls > afterCreate);
+      assert.equal((await runtime.getCoordinator()?.listQueuedOccurrences())?.length, 1);
+      assert.equal(runtime.getRunner(), undefined);
+      runtime.dispose();
+    });
+  });
+
+  it('notifies terminal state only after durable commit succeeds', async () => {
+    await withRuntime(async ({ runtime }) => {
+      const { occurrence } = await enqueue(runtime, { name: 'Terminal notify' });
+      const browser = new FakeBrowser();
+      const tasks = new FakeTasks((event) => runtime.handleAutonomousTaskEvent(event));
+      runtime.attachExecutionRuntime({ browser, autonomousTasks: tasks });
+      await runtime.flush();
+      const live = runtime.getRunner()?.inspectLiveExecution();
+      assert.ok(live);
+      let calls = 0;
+      runtime.subscribeStateChanged(() => {
+        calls += 1;
+      });
+      const gate = new Deferred<void>();
+      runtime.setTerminalizeGate(() => gate.promise);
+      tasks.complete(live.taskId, 'done');
+      await Promise.resolve();
+      await Promise.resolve();
+      assert.equal((await runtime.getCoordinator()?.getOccurrence(occurrence.occurrenceId))?.state, 'running');
+      const beforeCommit = calls;
+      gate.resolve();
+      await runtime.flush();
+      assert.equal((await runtime.getCoordinator()?.getOccurrence(occurrence.occurrenceId))?.state, 'completed');
+      assert.ok(calls > beforeCommit);
+    });
   });
 });
 

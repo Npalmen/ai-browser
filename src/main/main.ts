@@ -13,7 +13,7 @@ import {
   subscribeAutonomousTaskEvents,
 } from './ai-runtime';
 import { initializeBrowserRuntime, getMainBrowserWindow } from './browser-runtime';
-import { registerBrowserShellIpc } from './ipc';
+import { registerBrowserShellIpc, bindWorkflowProductNotifications } from './ipc';
 import {
   getPersistentWorkflowRuntime,
   initializePersistentWorkflowRuntime,
@@ -45,6 +45,7 @@ if (!isPrimaryInstance) {
       directory: productionWorkflowStoreDirectory(app.getPath('userData')),
       runtimeSessionId: randomUUID(),
     });
+    bindWorkflowProductNotifications();
     await startBrowserWindow();
 
     app.on('activate', async () => {

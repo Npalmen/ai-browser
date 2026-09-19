@@ -15,14 +15,20 @@ import {
 import { WorkflowOccurrenceRunner } from './workflow-occurrence-runner';
 import { WorkflowScheduler } from './workflow-scheduler';
 import { AtomicJsonWorkflowStore } from './workflow-store';
-import type { DurableWorkflowId, WorkflowOccurrenceId, WorkflowStorePort } from '../workflows/durable-workflow-types';
+import type {
+  CreateDurableWorkflowInput,
+  DurableWorkflowId,
+  EditDurableWorkflowInput,
+  WorkflowOccurrenceId,
+  WorkflowStorePort,
+} from '../workflows/durable-workflow-types';
+import type { DurableWorkflowDefinitionRecord, WorkflowOccurrenceRecord } from '../workflows/workflow-store-types';
 import type { SchedulerTimerPort } from '../workflows/workflow-scheduler-types';
 import type {
   WorkflowAutonomousTaskPort,
   WorkflowBrowserStartupPort,
   WorkflowOccurrenceDurablePort,
 } from '../workflows/workflow-occurrence-runner-types';
-import type { WorkflowOccurrenceRecord } from '../workflows/workflow-store-types';
 import { isWorkflowStoreError } from '../workflows/workflow-store-errors';
 import { aiSafeError } from './ai-safe-error';
 
@@ -85,6 +91,7 @@ export class PersistentWorkflowRuntime {
   private executionBindingGeneration = 0;
   private markRunningGate: (() => Promise<void>) | undefined;
   private terminalizeGate: (() => Promise<void>) | undefined;
+  private readonly productStateListeners = new Set<() => void>();
 
   private constructor(input: {
     status: PersistentWorkflowRuntimeStatus;
@@ -132,6 +139,7 @@ export class PersistentWorkflowRuntime {
       timer: options.timer,
       onQueueChanged: () => {
         runtime.requestDrain();
+        runtime.notifyProductStateChanged();
       },
       onBackgroundError: () => {
         runtime.executionDisabled = true;
@@ -307,6 +315,7 @@ export class PersistentWorkflowRuntime {
       await runner.reconcilePendingTerminal();
       this.releaseWorkflowSlotIfRunnerFree();
       this.requestDrain();
+      this.notifyProductStateChanged();
       return { ok: true };
     }
     const live = runner.inspectLiveExecution();
@@ -315,6 +324,7 @@ export class PersistentWorkflowRuntime {
       if (tasks === undefined) {
         await runner.handleExecutionRuntimeUnavailable();
         this.releaseWorkflowSlotIfRunnerFree();
+        this.notifyProductStateChanged();
         return { ok: true };
       }
       return tasks.stop(live.taskId);
@@ -323,31 +333,71 @@ export class PersistentWorkflowRuntime {
       await runner.reconcilePendingTerminal();
       this.releaseWorkflowSlotIfRunnerFree();
       this.requestDrain();
+      this.notifyProductStateChanged();
       return { ok: true };
     }
     return { ok: false, error: aiSafeError('INVALID_REQUEST') };
   }
 
   async cancelQueuedOccurrence(occurrenceId: WorkflowOccurrenceId): Promise<WorkflowOccurrenceRecord> {
-    if (this.coordinator === undefined) {
-      throw new Error('Workflow runtime is not ready.');
-    }
-    const cancelled = await this.coordinator.cancelQueuedOccurrence(occurrenceId);
+    const cancelled = await this.requireCoordinator().cancelQueuedOccurrence(occurrenceId);
     this.requestDrain();
+    this.notifyProductStateChanged();
     return cancelled;
   }
 
   async notifyWorkflowStoreChanged(): Promise<void> {
     await this.scheduler?.notifyStoreChanged();
     this.requestDrain();
+    this.notifyProductStateChanged();
+  }
+
+  async createWorkflow(input: CreateDurableWorkflowInput): Promise<DurableWorkflowDefinitionRecord> {
+    const created = await this.requireCoordinator().createWorkflow(input);
+    await this.notifyWorkflowStoreChanged();
+    return created;
+  }
+
+  async editWorkflow(
+    workflowId: DurableWorkflowId,
+    input: EditDurableWorkflowInput,
+  ): Promise<DurableWorkflowDefinitionRecord> {
+    const edited = await this.requireCoordinator().editWorkflow(workflowId, input);
+    await this.notifyWorkflowStoreChanged();
+    return edited;
+  }
+
+  async setWorkflowEnabled(
+    workflowId: DurableWorkflowId,
+    enabled: boolean,
+  ): Promise<DurableWorkflowDefinitionRecord> {
+    const updated = await this.requireCoordinator().setEnabled(workflowId, enabled);
+    await this.notifyWorkflowStoreChanged();
+    return updated;
+  }
+
+  async runWorkflowNow(workflowId: DurableWorkflowId): Promise<WorkflowOccurrenceRecord> {
+    const occurrence = await this.requireCoordinator().enqueueManualOccurrence(workflowId);
+    await this.notifyWorkflowStoreChanged();
+    return occurrence;
+  }
+
+  async acknowledgeWorkflowReview(workflowId: DurableWorkflowId): Promise<DurableWorkflowDefinitionRecord> {
+    const acknowledged = await this.requireCoordinator().acknowledgeReview(workflowId);
+    await this.notifyWorkflowStoreChanged();
+    return acknowledged;
   }
 
   async deleteWorkflow(workflowId: DurableWorkflowId): Promise<void> {
-    if (this.coordinator === undefined) {
-      throw new Error('Workflow runtime is not ready.');
-    }
-    await this.coordinator.deleteWorkflow(workflowId);
+    await this.requireCoordinator().deleteWorkflow(workflowId);
     await this.notifyWorkflowStoreChanged();
+  }
+
+  subscribeStateChanged(listener: () => void): () => void {
+    this.productStateListeners.add(listener);
+    return () => {
+      this.productStateListeners.delete(listener);
+    };
   }
 
   getCoordinator(): DurableWorkflowCoordinator | undefined {
@@ -444,8 +494,10 @@ export class PersistentWorkflowRuntime {
         if (live?.taskId) {
           this.slot.bindTaskId(reservation, live.taskId);
         }
+        this.notifyProductStateChanged();
         return;
       }
+      this.notifyProductStateChanged();
       if (runner.getActiveOccurrence()?.occurrenceId === occurrence.occurrenceId) {
         return;
       }
@@ -482,6 +534,7 @@ export class PersistentWorkflowRuntime {
     const active = runner?.getActiveOccurrence();
     if (runner !== undefined && live !== undefined && event.task.taskId === live.taskId) {
       await runner.handleAutonomousTaskEvent(event);
+      this.notifyProductStateChanged();
       if (!this.disposed) {
         this.releaseWorkflowSlotIfRunnerFree();
         if (this.workflowReservation === undefined) {
@@ -535,6 +588,23 @@ export class PersistentWorkflowRuntime {
     this.manualReservation = undefined;
   }
 
+  private requireCoordinator(): DurableWorkflowCoordinator {
+    if (this.coordinator === undefined) {
+      throw new Error('Workflow runtime is not ready.');
+    }
+    return this.coordinator;
+  }
+
+  private notifyProductStateChanged(): void {
+    for (const listener of [...this.productStateListeners]) {
+      try {
+        listener();
+      } catch {
+        // Listener failure must not affect workflow authority.
+      }
+    }
+  }
+
   private detachEventSubscription(): void {
     this.unsubscribeEvents?.();
     this.unsubscribeEvents = undefined;
@@ -542,6 +612,7 @@ export class PersistentWorkflowRuntime {
 
   private async finishDetach(detachedRunner: WorkflowOccurrenceRunner): Promise<void> {
     await detachedRunner.handleExecutionRuntimeUnavailable();
+    this.notifyProductStateChanged();
     if (detachedRunner.getActiveOccurrence() !== undefined) {
       this.executionDisabled = true;
       return;

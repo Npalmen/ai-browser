@@ -5,6 +5,7 @@ import {
   AI_IPC_CHANNELS,
   AUTONOMOUS_TASK_IPC_CHANNELS,
   BROWSER_IPC_CHANNELS,
+  WORKFLOW_IPC_CHANNELS,
 } from '../shared/ipc-contract';
 import { isAiSafeError, parseAskCurrentPageRequest, parseAskId, parsePanelOpen, parseTabId } from './ai-ipc-guards';
 import {
@@ -25,9 +26,18 @@ import {
 } from './autonomous-task-ipc-guards';
 import { approvalSafeError } from './approval-safe-error';
 import { aiSafeError, toAiSafeError } from './ai-safe-error';
-import { getBrowserAdapter, whenBrowserReady } from './browser-runtime';
+import { getBrowserAdapter, getMainBrowserWindow, whenBrowserReady } from './browser-runtime';
 import { getPersistentWorkflowRuntime } from './persistent-workflow-runtime';
 import { assertTrustedAppSender } from './ipc-security';
+import { WorkflowProductController } from './workflow-product-controller';
+import {
+  parseWorkflowCreateRequest,
+  parseWorkflowEditRequest,
+  parseWorkflowIdRequest,
+  parseWorkflowOccurrenceActionRequest,
+  parseWorkflowSetEnabledRequest,
+} from './workflow-ipc-guards';
+import { workflowProductError } from './workflow-product-safe-error';
 
 let handlersRegistered = false;
 
@@ -322,6 +332,159 @@ export function registerBrowserShellIpc(): void {
       return { ok: false, error: toAiSafeError(error) };
     }
   });
+
+  ipcMain.handle(WORKFLOW_IPC_CHANNELS.getState, async (event) => {
+    assertTrustedAppSender(event);
+    const controller = workflowProductController();
+    if (!controller) {
+      return { ok: true, status: 'not-initialized', workflows: [] };
+    }
+    return controller.getState();
+  });
+
+  ipcMain.handle(WORKFLOW_IPC_CHANNELS.getDetail, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    const parsed = parseWorkflowIdRequest(input);
+    if (!parsed.ok) {
+      return parsed;
+    }
+    const controller = workflowProductController();
+    if (!controller) {
+      return { ok: false, error: workflowProductError('WORKFLOW_NOT_AVAILABLE') };
+    }
+    return controller.getDetail(parsed.input.workflowId);
+  });
+
+  ipcMain.handle(WORKFLOW_IPC_CHANNELS.create, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    const parsed = parseWorkflowCreateRequest(input);
+    if (!parsed.ok) {
+      return parsed;
+    }
+    const controller = workflowProductController();
+    if (!controller) {
+      return { ok: false, error: workflowProductError('WORKFLOW_NOT_AVAILABLE') };
+    }
+    return controller.create(parsed.input);
+  });
+
+  ipcMain.handle(WORKFLOW_IPC_CHANNELS.edit, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    const parsed = parseWorkflowEditRequest(input);
+    if (!parsed.ok) {
+      return parsed;
+    }
+    const controller = workflowProductController();
+    if (!controller) {
+      return { ok: false, error: workflowProductError('WORKFLOW_NOT_AVAILABLE') };
+    }
+    return controller.edit(parsed.input);
+  });
+
+  ipcMain.handle(WORKFLOW_IPC_CHANNELS.setEnabled, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    const parsed = parseWorkflowSetEnabledRequest(input);
+    if (!parsed.ok) {
+      return parsed;
+    }
+    const controller = workflowProductController();
+    if (!controller) {
+      return { ok: false, error: workflowProductError('WORKFLOW_NOT_AVAILABLE') };
+    }
+    return controller.setEnabled(parsed.input.workflowId, parsed.input.enabled);
+  });
+
+  ipcMain.handle(WORKFLOW_IPC_CHANNELS.runNow, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    const parsed = parseWorkflowIdRequest(input);
+    if (!parsed.ok) {
+      return parsed;
+    }
+    const controller = workflowProductController();
+    if (!controller) {
+      return { ok: false, error: workflowProductError('WORKFLOW_NOT_AVAILABLE') };
+    }
+    return controller.runNow(parsed.input.workflowId);
+  });
+
+  ipcMain.handle(WORKFLOW_IPC_CHANNELS.acknowledgeReview, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    const parsed = parseWorkflowIdRequest(input);
+    if (!parsed.ok) {
+      return parsed;
+    }
+    const controller = workflowProductController();
+    if (!controller) {
+      return { ok: false, error: workflowProductError('WORKFLOW_NOT_AVAILABLE') };
+    }
+    return controller.acknowledgeReview(parsed.input.workflowId);
+  });
+
+  ipcMain.handle(WORKFLOW_IPC_CHANNELS.stop, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    const parsed = parseWorkflowIdRequest(input);
+    if (!parsed.ok) {
+      return parsed;
+    }
+    const controller = workflowProductController();
+    if (!controller) {
+      return { ok: false, error: workflowProductError('WORKFLOW_NOT_AVAILABLE') };
+    }
+    return controller.stop(parsed.input.workflowId);
+  });
+
+  ipcMain.handle(WORKFLOW_IPC_CHANNELS.cancelQueued, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    const parsed = parseWorkflowOccurrenceActionRequest(input);
+    if (!parsed.ok) {
+      return parsed;
+    }
+    const controller = workflowProductController();
+    if (!controller) {
+      return { ok: false, error: workflowProductError('WORKFLOW_NOT_AVAILABLE') };
+    }
+    return controller.cancelQueued(parsed.input.workflowId, parsed.input.occurrenceId);
+  });
+
+  ipcMain.handle(WORKFLOW_IPC_CHANNELS.delete, async (event, input: unknown) => {
+    assertTrustedAppSender(event);
+    const parsed = parseWorkflowIdRequest(input);
+    if (!parsed.ok) {
+      return parsed;
+    }
+    const controller = workflowProductController();
+    if (!controller) {
+      return { ok: false, error: workflowProductError('WORKFLOW_NOT_AVAILABLE') };
+    }
+    return controller.delete(parsed.input.workflowId);
+  });
+}
+
+export function bindWorkflowProductNotifications(): void {
+  const runtime = getPersistentWorkflowRuntime();
+  runtime?.subscribeStateChanged(() => {
+    sendWorkflowStateChanged();
+  });
+}
+
+function workflowProductController(): WorkflowProductController | undefined {
+  const runtime = getPersistentWorkflowRuntime();
+  if (!runtime) {
+    return undefined;
+  }
+  return new WorkflowProductController(runtime);
+}
+
+function sendWorkflowStateChanged(): void {
+  const window = getMainBrowserWindow();
+  if (!window || window.isDestroyed()) {
+    return;
+  }
+  const webContents = window.webContents;
+  if (webContents.isDestroyed()) {
+    return;
+  }
+  webContents.send(WORKFLOW_IPC_CHANNELS.stateChanged, { type: 'workflow-state-changed' });
 }
 
 function parseCancelAskInput(input: unknown):

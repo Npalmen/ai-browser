@@ -95,6 +95,62 @@ describe('autonomous task IPC wiring', () => {
     assert.match(callback, /getAiController\(\)\?\.handleTabClosed/);
   });
 
+  it('requires trusted sender before every workflow handler and does not wait for a website', () => {
+    const ipc = readSrc('src/main/ipc.ts');
+    for (const channel of [
+      'WORKFLOW_IPC_CHANNELS.getState',
+      'WORKFLOW_IPC_CHANNELS.getDetail',
+      'WORKFLOW_IPC_CHANNELS.create',
+      'WORKFLOW_IPC_CHANNELS.edit',
+      'WORKFLOW_IPC_CHANNELS.setEnabled',
+      'WORKFLOW_IPC_CHANNELS.runNow',
+      'WORKFLOW_IPC_CHANNELS.acknowledgeReview',
+      'WORKFLOW_IPC_CHANNELS.stop',
+      'WORKFLOW_IPC_CHANNELS.cancelQueued',
+      'WORKFLOW_IPC_CHANNELS.delete',
+    ]) {
+      const start = ipc.indexOf(channel);
+      assert.ok(start >= 0, channel);
+      const block = ipc.slice(start, start + 700);
+      const sender = block.indexOf('assertTrustedAppSender(event)');
+      const runtime = block.indexOf('workflowProductController');
+      const parse = Math.min(
+        ...['parseWorkflowIdRequest', 'parseWorkflowCreateRequest', 'parseWorkflowEditRequest', 'parseWorkflowSetEnabledRequest', 'parseWorkflowOccurrenceActionRequest']
+          .map((name) => {
+            const index = block.indexOf(name);
+            return index < 0 ? Number.POSITIVE_INFINITY : index;
+          }),
+      );
+      assert.ok(sender >= 0, `${channel} sender`);
+      assert.ok(sender < runtime || runtime < 0, channel);
+      if (Number.isFinite(parse)) {
+        assert.ok(sender < parse, `${channel} sender before parse`);
+      }
+      assert.equal(block.includes('whenBrowserReady'), false, channel);
+    }
+    assert.equal(ipc.includes('setWorkflowState'), false);
+    assert.equal(ipc.includes('setOccurrenceState'), false);
+    assert.equal(ipc.includes('setReviewRequired'), false);
+  });
+
+  it('keeps remote pages isolated from workflow lifecycle', () => {
+    const adapter = readSrc('src/browser/electron-adapter.ts');
+    const preload = readSrc('src/preload/app-preload.ts');
+    const aiRuntime = readSrc('src/main/ai-runtime.ts');
+    const blockStart = adapter.indexOf('private createWebsiteView()');
+    const block = adapter.slice(blockStart, blockStart + 450);
+    assert.equal(block.includes('preload:'), false);
+    assert.match(preload, /exposeInMainWorld\('workflows'/);
+    assert.equal(preload.includes('ipcRenderer.send'), false);
+    assert.equal(aiRuntime.includes('workflow:create'), false);
+    assert.equal(aiRuntime.includes('createWorkflow'), false);
+    const injection = readSrc('src/v6-acceptance/fixture-constants.ts');
+    assert.match(injection, /prompt-injection/);
+    const controller = readSrc('src/main/workflow-product-controller.ts');
+    assert.equal(controller.includes('prompt-injection'), false);
+    assert.equal(controller.includes('createTab'), false);
+  });
+
   it('no-ops V6 browser callbacks before AI runtime init', () => {
     const runtime = readSrc('src/main/ai-runtime.ts');
     assert.match(runtime, /void autonomousTaskController\?\.handleTabCreated/);
