@@ -25,6 +25,11 @@ export interface MultiTabObservationSource {
   observePage(tabId: TabId, options?: ObservePageOptions): Promise<PageObservation>;
 }
 
+export interface SelectedTabSnapshot {
+  readonly tabId: TabId;
+  readonly url: string;
+}
+
 function isHttpDocumentUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
@@ -65,9 +70,49 @@ function throwIfCancelled(signal?: AbortSignal): void {
   }
 }
 
+function captureSelectedTabSnapshot(
+  browserState: BrowserState,
+  tabIds: readonly TabId[],
+): readonly SelectedTabSnapshot[] {
+  validateSelectedTabsAgainstBrowserState(browserState, tabIds);
+  return tabIds.map((tabId) => {
+    const tab = browserState.tabs.find((candidate) => candidate.id === tabId);
+    if (!tab) {
+      throw new ObservationError('TAB_NOT_FOUND', 'Selected tab was not found.');
+    }
+    return { tabId, url: tab.url };
+  });
+}
+
+function assertSelectedTabMatchesSnapshot(
+  browserState: BrowserState,
+  snapshot: SelectedTabSnapshot,
+): void {
+  const tab = browserState.tabs.find((candidate) => candidate.id === snapshot.tabId);
+  if (!tab) {
+    throw new ObservationError('TAB_NOT_FOUND', 'Selected tab was not found.');
+  }
+  if (tab.url !== snapshot.url) {
+    throw new ObservationError('OBSERVATION_FAILED', 'Selected tab context is no longer available.');
+  }
+  if (tab.url === 'about:blank' || !isHttpDocumentUrl(tab.url)) {
+    throw new ObservationError('OBSERVATION_FAILED', 'Selected tab URL is not available.');
+  }
+}
+
+function assertSnapshotStillCurrent(
+  browserState: BrowserState,
+  snapshots: readonly SelectedTabSnapshot[],
+): void {
+  for (const snapshot of snapshots) {
+    assertSelectedTabMatchesSnapshot(browserState, snapshot);
+  }
+}
+
 async function observeSelectedTab(
   observationSource: MultiTabObservationSource,
-  tabId: TabId,
+  snapshot: SelectedTabSnapshot,
+  getBrowserState: () => BrowserState,
   signal?: AbortSignal,
 ): Promise<PageObservation> {
   const options: ObservePageOptions = { includeScreenshot: false };
@@ -75,21 +120,23 @@ async function observeSelectedTab(
 
   for (let attempt = 1; attempt <= MAX_OBSERVATION_ATTEMPTS; attempt += 1) {
     throwIfCancelled(signal);
+    assertSelectedTabMatchesSnapshot(getBrowserState(), snapshot);
     try {
-      const observation = await observationSource.observePage(tabId, options);
+      const observation = await observationSource.observePage(snapshot.tabId, options);
       throwIfCancelled(signal);
-      if (observation.tabId !== tabId) {
+      if (observation.tabId !== snapshot.tabId) {
         throw new ObservationError(
           'OBSERVATION_FAILED',
           'Observation tab correlation did not match the requested tab.',
         );
       }
-      if (!isHttpDocumentUrl(observation.document.url)) {
+      if (observation.document.url !== snapshot.url || !isHttpDocumentUrl(observation.document.url)) {
         throw new ObservationError(
           'OBSERVATION_FAILED',
-          'Observed document URL is not available.',
+          'Observed document does not match the selected tab.',
         );
       }
+      assertSelectedTabMatchesSnapshot(getBrowserState(), snapshot);
       return observation;
     } catch (error) {
       lastError = error;
@@ -108,25 +155,36 @@ async function observeSelectedTab(
 
 export async function buildBrowserContextBundle(input: {
   tabIds: readonly TabId[];
-  browserState: BrowserState;
+  getBrowserState: () => BrowserState;
   observationSource: MultiTabObservationSource;
   signal?: AbortSignal;
 }): Promise<BrowserContextBundle> {
-  validateSelectedTabsAgainstBrowserState(input.browserState, input.tabIds);
+  throwIfCancelled(input.signal);
+  const snapshot = captureSelectedTabSnapshot(input.getBrowserState(), input.tabIds);
 
   const pages: BrowserContextPage[] = [];
-  for (const tabId of input.tabIds) {
-    const observation = await observeSelectedTab(input.observationSource, tabId, input.signal);
+  for (const selected of snapshot) {
+    const observation = await observeSelectedTab(
+      input.observationSource,
+      selected,
+      input.getBrowserState,
+      input.signal,
+    );
     const built = buildModelPageContext(observation, {
       maxStructuredChars: MAX_CONTEXT_STRUCTURED_CHARS_PER_TAB,
     });
     pages.push({
-      tabId,
+      tabId: selected.tabId,
       observation,
       serializedContext: built.serialized,
       truncated: built.context.truncated,
     });
   }
+
+  throwIfCancelled(input.signal);
+  // Same-URL reloads are not visible on trusted BrowserState, which only exposes URL.
+  // This final check therefore detects navigation/substitution, not in-place revision change.
+  assertSnapshotStillCurrent(input.getBrowserState(), snapshot);
 
   const totalChars = pages.reduce((sum, page) => sum + page.serializedContext.length, 0);
   if (totalChars > MAX_CONTEXT_STRUCTURED_CHARS_TOTAL) {

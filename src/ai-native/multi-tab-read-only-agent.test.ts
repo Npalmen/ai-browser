@@ -124,7 +124,7 @@ async function bundleFor(tabIds: readonly TabId[]): Promise<BrowserContextBundle
   };
   return buildBrowserContextBundle({
     tabIds,
-    browserState: state,
+    getBrowserState: () => state,
     observationSource: source,
   });
 }
@@ -137,7 +137,6 @@ describe('MultiTabReadOnlyAgent', () => {
   it('answers from one or several pages without returning referenced targets', async () => {
     const runtime = new FakeRuntime();
     const agent = new MultiTabReadOnlyAgent({
-      observationSource: { observePage: async (tabId) => observation(tabId) },
       modelRuntime: runtime,
     });
     const bundle = await bundleFor(['tab-a', 'tab-b']);
@@ -162,27 +161,44 @@ describe('MultiTabReadOnlyAgent', () => {
       modelResponse({ text: 'Fallback answer.' }),
     ]);
     let observeCalls = 0;
-    const agent = new MultiTabReadOnlyAgent({
-      observationSource: {
-        observePage: async (tabId) => {
-          observeCalls += 1;
-          return observation(tabId);
-        },
+    const source = {
+      observePage: async (tabId: TabId) => {
+        observeCalls += 1;
+        return observation(tabId);
       },
+    };
+    const state: BrowserState = {
+      activeTabId: 'tab-a',
+      tabs: [
+        {
+          id: 'tab-a',
+          url: 'https://example.com/tab-a',
+          title: 'Page tab-a',
+          loading: false,
+          canGoBack: false,
+          canGoForward: false,
+        },
+      ],
+    };
+    const bundle = await buildBrowserContextBundle({
+      tabIds: ['tab-a'],
+      getBrowserState: () => state,
+      observationSource: source,
+    });
+    const observedBeforeAnswer = observeCalls;
+    const agent = new MultiTabReadOnlyAgent({
       modelRuntime: runtime,
     });
-    const bundle = await bundleFor(['tab-a']);
 
     const answer = await agent.answer({ bundle, question: 'What is this?' });
     assert.equal(answer.text, 'Fallback answer.');
     assert.equal(runtime.requests.length, 2);
-    assert.equal(observeCalls, 0);
+    assert.equal(observeCalls, observedBeforeAnswer);
   });
 
   it('fails export-denied structured content for local-only privacy', async () => {
     const runtime = new FakeRuntime();
     const agent = new MultiTabReadOnlyAgent({
-      observationSource: { observePage: async (tabId) => observation(tabId) },
       modelRuntime: runtime,
     });
     const bundle = await bundleFor(['tab-a']);
@@ -206,7 +222,6 @@ describe('MultiTabReadOnlyAgent', () => {
       return modelResponse({ text: 'Hello' });
     });
     const agent = new MultiTabReadOnlyAgent({
-      observationSource: { observePage: async (tabId) => observation(tabId) },
       modelRuntime: runtime,
     });
     const bundle = await bundleFor(['tab-a']);
@@ -225,7 +240,6 @@ describe('MultiTabReadOnlyAgent', () => {
   it('aborts when cancelled before model generation', async () => {
     const runtime = new FakeRuntime();
     const agent = new MultiTabReadOnlyAgent({
-      observationSource: { observePage: async (tabId) => observation(tabId) },
       modelRuntime: runtime,
     });
     const bundle = await bundleFor(['tab-a']);

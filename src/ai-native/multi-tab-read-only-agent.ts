@@ -1,8 +1,4 @@
-import {
-  aggregateTruncatedContext,
-  buildMultiTabModelMessages,
-  type MultiTabObservationSource,
-} from './browser-context-builder';
+import { aggregateTruncatedContext, buildMultiTabModelMessages } from './browser-context-builder';
 import type { BrowserContextBundle } from './browser-context-types';
 import {
   estimateModelInputTokens,
@@ -50,7 +46,6 @@ export interface MultiTabAgentAnswerOptions {
 }
 
 export interface MultiTabReadOnlyAgentDependencies {
-  observationSource: MultiTabObservationSource;
   modelRuntime: ModelRuntime;
   catalog?: ModelCatalog;
 }

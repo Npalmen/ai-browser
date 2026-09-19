@@ -226,7 +226,6 @@ export function initializeAiRuntime(browserAdapter: ElectronBrowserAdapter): voi
     emit: emitAiAnswerEvent,
   });
   const multiTabAgent = new MultiTabReadOnlyAgent({
-    observationSource,
     modelRuntime: gatewayRuntime,
   });
   contextController = new AiNativeContextController({

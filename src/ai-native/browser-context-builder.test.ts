@@ -106,6 +106,44 @@ class FakeObservationSource {
   }
 }
 
+function mutableState(entries: Array<{ id: TabId; url: string }>): {
+  getBrowserState: () => BrowserState;
+  setUrl: (tabId: TabId, url: string) => void;
+  close: (tabId: TabId) => void;
+} {
+  const tabs = entries.map((entry) => tab(entry.id, entry.url));
+  const state: BrowserState = {
+    activeTabId: entries[0]?.id ?? 'tab-a',
+    tabs,
+  };
+  return {
+    getBrowserState: () => state,
+    setUrl: (tabId, url) => {
+      const found = state.tabs.find((candidate) => candidate.id === tabId);
+      if (found) {
+        found.url = url;
+      }
+    },
+    close: (tabId) => {
+      state.tabs = state.tabs.filter((candidate) => candidate.id !== tabId);
+    },
+  };
+}
+
+function buildBundle(input: {
+  tabIds: readonly TabId[];
+  observationSource: FakeObservationSource;
+  getBrowserState?: () => BrowserState;
+  signal?: AbortSignal;
+}): Promise<Awaited<ReturnType<typeof buildBrowserContextBundle>>> {
+  return buildBrowserContextBundle({
+    tabIds: input.tabIds,
+    getBrowserState: input.getBrowserState ?? (() => browserState(input.tabIds)),
+    observationSource: input.observationSource,
+    signal: input.signal,
+  });
+}
+
 describe('validateSelectedTabsAgainstBrowserState', () => {
   it('accepts 1..5 unique http(s) tabs in order', () => {
     validateSelectedTabsAgainstBrowserState(browserState(['tab-b', 'tab-a', 'tab-c']), [
@@ -143,9 +181,9 @@ describe('buildBrowserContextBundle', () => {
       return observation(tabId);
     });
 
-    const bundle = await buildBrowserContextBundle({
+    const bundle = await buildBundle({
       tabIds: ['tab-b', 'tab-a'],
-      browserState: browserState(['tab-a', 'tab-b']),
+      getBrowserState: () => browserState(['tab-a', 'tab-b']),
       observationSource: source,
     });
 
@@ -168,9 +206,8 @@ describe('buildBrowserContextBundle', () => {
 
     await assert.rejects(
       () =>
-        buildBrowserContextBundle({
+        buildBundle({
           tabIds: ['tab-a', 'tab-b'],
-          browserState: browserState(['tab-a', 'tab-b']),
           observationSource: source,
         }),
       (error: unknown) => error instanceof ObservationError && error.code === 'TAB_NOT_FOUND',
@@ -190,9 +227,8 @@ describe('buildBrowserContextBundle', () => {
 
     await assert.rejects(
       () =>
-        buildBrowserContextBundle({
+        buildBundle({
           tabIds: ['tab-a'],
-          browserState: browserState(['tab-a']),
           observationSource: source,
         }),
       (error: unknown) => error instanceof ObservationError && error.code === 'OBSERVATION_FAILED',
@@ -214,9 +250,8 @@ describe('buildBrowserContextBundle', () => {
 
     await assert.rejects(
       () =>
-        buildBrowserContextBundle({
+        buildBundle({
           tabIds: ['tab-a'],
-          browserState: browserState(['tab-a']),
           observationSource: source,
         }),
       (error: unknown) => error instanceof ModelError && error.code === 'CONTEXT_TOO_LARGE',
@@ -239,9 +274,8 @@ describe('buildBrowserContextBundle', () => {
 
     await assert.rejects(
       () =>
-        buildBrowserContextBundle({
+        buildBundle({
           tabIds: ['tab-a', 'tab-b', 'tab-c', 'tab-d'],
-          browserState: browserState(['tab-a', 'tab-b', 'tab-c', 'tab-d']),
           observationSource: source,
         }),
       (error: unknown) => error instanceof ModelError && error.code === 'CONTEXT_TOO_LARGE',
@@ -263,9 +297,8 @@ describe('buildBrowserContextBundle', () => {
       }),
     );
 
-    const bundle = await buildBrowserContextBundle({
+    const bundle = await buildBundle({
       tabIds: ['tab-a', 'tab-b'],
-      browserState: browserState(['tab-a', 'tab-b']),
       observationSource: source,
     });
 
@@ -275,6 +308,176 @@ describe('buildBrowserContextBundle', () => {
       bundle.pages.every((page) => page.serializedContext.length <= MAX_CONTEXT_STRUCTURED_CHARS_PER_TAB),
     );
     assert.equal(typeof aggregateTruncatedContext(bundle.pages), 'boolean');
+  });
+
+  it('fails when a later selected tab navigates before its observation', async () => {
+    const live = mutableState([
+      { id: 'tab-a', url: 'https://example.test/a' },
+      { id: 'tab-b', url: 'https://example.test/b' },
+    ]);
+    const source = new FakeObservationSource(async (tabId) => {
+      if (tabId === 'tab-a') {
+        live.setUrl('tab-b', 'https://example.test/replaced');
+        return observation(tabId, {
+          document: { ...observation(tabId).document, url: 'https://example.test/a' },
+        });
+      }
+      return observation(tabId, {
+        document: { ...observation(tabId).document, url: 'https://example.test/replaced' },
+      });
+    });
+
+    await assert.rejects(
+      () =>
+        buildBundle({
+          tabIds: ['tab-a', 'tab-b'],
+          getBrowserState: live.getBrowserState,
+          observationSource: source,
+        }),
+      (error: unknown) => error instanceof ObservationError && error.code === 'OBSERVATION_FAILED',
+    );
+    assert.equal(source.calls.length, 1);
+    assert.equal(source.calls[0]?.tabId, 'tab-a');
+  });
+
+  it('fails when observation returns a different document URL', async () => {
+    const live = mutableState([{ id: 'tab-b', url: 'https://example.test/b' }]);
+    const source = new FakeObservationSource(async (tabId) =>
+      observation(tabId, {
+        document: { ...observation(tabId).document, url: 'https://example.test/other' },
+      }),
+    );
+
+    await assert.rejects(
+      () =>
+        buildBundle({
+          tabIds: ['tab-b'],
+          getBrowserState: live.getBrowserState,
+          observationSource: source,
+        }),
+      (error: unknown) => error instanceof ObservationError && error.code === 'OBSERVATION_FAILED',
+    );
+  });
+
+  it('fails when a previously observed tab navigates before the bundle is complete', async () => {
+    const live = mutableState([
+      { id: 'tab-a', url: 'https://example.test/a' },
+      { id: 'tab-b', url: 'https://example.test/b' },
+    ]);
+    const source = new FakeObservationSource(async (tabId) => {
+      if (tabId === 'tab-b') {
+        live.setUrl('tab-a', 'https://example.test/replaced');
+      }
+      return observation(tabId, {
+        document: {
+          ...observation(tabId).document,
+          url: tabId === 'tab-a' ? 'https://example.test/a' : 'https://example.test/b',
+        },
+      });
+    });
+
+    await assert.rejects(
+      () =>
+        buildBundle({
+          tabIds: ['tab-a', 'tab-b'],
+          getBrowserState: live.getBrowserState,
+          observationSource: source,
+        }),
+      (error: unknown) => error instanceof ObservationError && error.code === 'OBSERVATION_FAILED',
+    );
+  });
+
+  it('fails when a selected tab closes before its observation', async () => {
+    const live = mutableState([
+      { id: 'tab-a', url: 'https://example.test/a' },
+      { id: 'tab-b', url: 'https://example.test/b' },
+    ]);
+    const source = new FakeObservationSource(async (tabId) => {
+      if (tabId === 'tab-a') {
+        live.close('tab-b');
+        return observation(tabId, {
+          document: { ...observation(tabId).document, url: 'https://example.test/a' },
+        });
+      }
+      return observation(tabId);
+    });
+
+    await assert.rejects(
+      () =>
+        buildBundle({
+          tabIds: ['tab-a', 'tab-b'],
+          getBrowserState: live.getBrowserState,
+          observationSource: source,
+        }),
+      (error: unknown) => error instanceof ObservationError && error.code === 'TAB_NOT_FOUND',
+    );
+    assert.equal(source.calls.length, 1);
+  });
+
+  it('fails when a selected tab becomes about:blank before observation', async () => {
+    const live = mutableState([
+      { id: 'tab-a', url: 'https://example.test/a' },
+      { id: 'tab-b', url: 'https://example.test/b' },
+    ]);
+    const source = new FakeObservationSource(async (tabId) => {
+      if (tabId === 'tab-a') {
+        live.setUrl('tab-b', 'about:blank');
+        return observation(tabId, {
+          document: { ...observation(tabId).document, url: 'https://example.test/a' },
+        });
+      }
+      return observation(tabId);
+    });
+
+    await assert.rejects(
+      () =>
+        buildBundle({
+          tabIds: ['tab-a', 'tab-b'],
+          getBrowserState: live.getBrowserState,
+          observationSource: source,
+        }),
+      (error: unknown) => error instanceof ObservationError && error.code === 'OBSERVATION_FAILED',
+    );
+    assert.equal(source.calls.length, 1);
+  });
+
+  it('does not retry PAGE_CHANGED_DURING_OBSERVATION after the selected URL changes', async () => {
+    const live = mutableState([{ id: 'tab-a', url: 'https://example.test/a' }]);
+    let attempts = 0;
+    const source = new FakeObservationSource(async () => {
+      attempts += 1;
+      live.setUrl('tab-a', 'https://example.test/redirected');
+      throw new ObservationError('PAGE_CHANGED_DURING_OBSERVATION', 'stale');
+    });
+
+    await assert.rejects(
+      () =>
+        buildBundle({
+          tabIds: ['tab-a'],
+          getBrowserState: live.getBrowserState,
+          observationSource: source,
+        }),
+      (error: unknown) => error instanceof ObservationError && error.code === 'OBSERVATION_FAILED',
+    );
+    assert.equal(attempts, 1);
+  });
+
+  it('treats cancellation as REQUEST_CANCELLED rather than a stale context error', async () => {
+    const controller = new AbortController();
+    const source = new FakeObservationSource(async (tabId) => {
+      controller.abort();
+      return observation(tabId);
+    });
+
+    await assert.rejects(
+      () =>
+        buildBundle({
+          tabIds: ['tab-a', 'tab-b'],
+          observationSource: source,
+          signal: controller.signal,
+        }),
+      (error: unknown) => error instanceof ModelError && error.code === 'REQUEST_CANCELLED',
+    );
   });
 });
 

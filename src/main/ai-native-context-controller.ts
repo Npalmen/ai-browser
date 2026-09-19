@@ -1,7 +1,4 @@
-import {
-  buildBrowserContextBundle,
-  validateSelectedTabsAgainstBrowserState,
-} from '../ai-native/browser-context-builder';
+import { buildBrowserContextBundle } from '../ai-native/browser-context-builder';
 import { MultiTabReadOnlyAgent } from '../ai-native/multi-tab-read-only-agent';
 import type { MultiTabObservationSource } from '../ai-native/browser-context-builder';
 import { aiNativeSafeError } from '../shared/ai-native-safe-error';
@@ -102,12 +99,9 @@ export class AiNativeContextController {
     let terminal: 'finished' | 'cancelled' | 'error' | null = null;
 
     try {
-      const browserState = this.getBrowserState();
-      validateSelectedTabsAgainstBrowserState(browserState, input.context.tabIds);
-
       const bundle = await buildBrowserContextBundle({
         tabIds: input.context.tabIds,
-        browserState,
+        getBrowserState: this.getBrowserState,
         observationSource: this.observationSource,
         signal: controller.signal,
       });

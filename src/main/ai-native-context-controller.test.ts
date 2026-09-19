@@ -127,7 +127,6 @@ function controllerOf(input: {
   const controller = new AiNativeContextController({
     observationSource,
     multiTabAgent: new MultiTabReadOnlyAgent({
-      observationSource,
       modelRuntime: runtime,
     }),
     getBrowserState: input.getBrowserState ?? (() => browserState(['tab-a', 'tab-b'])),
@@ -316,6 +315,97 @@ describe('AiNativeContextController', () => {
 
     await waitFor(events, 'context-answer-error', started.askId);
     assert.equal(runtime.requests.length, 0);
+  });
+
+  it('fails without a model call when a later selected tab navigates during context build', async () => {
+    const state = browserState(['tab-a', 'tab-b']);
+    const { controller, events, runtime } = controllerOf({
+      getBrowserState: () => state,
+      observe: async (tabId) => {
+        if (tabId === 'tab-a') {
+          const later = state.tabs.find((tab) => tab.id === 'tab-b');
+          if (later) {
+            later.url = 'https://example.test/replaced';
+          }
+        }
+        return observation(tabId);
+      },
+    });
+
+    const started = controller.startAsk({
+      question: 'Compare',
+      context: { kind: 'selected-tabs', tabIds: ['tab-a', 'tab-b'] },
+    });
+    assert.equal(started.ok, true);
+    if (!started.ok) {
+      return;
+    }
+
+    await waitFor(events, 'context-answer-error', started.askId);
+    const errorEvent = events.find((event) => event.type === 'context-answer-error');
+    assert.equal((errorEvent as { error?: { code?: string } } | undefined)?.error?.code, 'AI_NATIVE_CONTEXT_UNAVAILABLE');
+    assert.equal(runtime.requests.length, 0);
+    assert.equal(
+      events.some((event) => event.type === 'context-answer-finished' && event.askId === started.askId),
+      false,
+    );
+  });
+
+  it('fails without a model call when a previously observed tab navigates before model export', async () => {
+    const state = browserState(['tab-a', 'tab-b']);
+    const { controller, events, runtime } = controllerOf({
+      getBrowserState: () => state,
+      observe: async (tabId) => {
+        if (tabId === 'tab-b') {
+          const earlier = state.tabs.find((tab) => tab.id === 'tab-a');
+          if (earlier) {
+            earlier.url = 'https://example.test/replaced';
+          }
+        }
+        return observation(tabId);
+      },
+    });
+
+    const started = controller.startAsk({
+      question: 'Compare',
+      context: { kind: 'selected-tabs', tabIds: ['tab-a', 'tab-b'] },
+    });
+    assert.equal(started.ok, true);
+    if (!started.ok) {
+      return;
+    }
+
+    await waitFor(events, 'context-answer-error', started.askId);
+    assert.equal(runtime.requests.length, 0);
+  });
+
+  it('cancels during context build without turning abort into a context error', async () => {
+    const gate = new Deferred<void>();
+    const { controller, events, runtime } = controllerOf({
+      observe: async (tabId) => {
+        await gate.promise;
+        return observation(tabId);
+      },
+    });
+
+    const started = controller.startAsk({
+      question: 'Cancel during observe',
+      context: { kind: 'selected-tabs', tabIds: ['tab-a'] },
+    });
+    assert.equal(started.ok, true);
+    if (!started.ok) {
+      return;
+    }
+
+    await waitFor(events, 'context-answer-started', started.askId);
+    controller.cancelContextAsk(started.askId);
+    gate.resolve();
+    await waitFor(events, 'context-answer-cancelled', started.askId);
+    assert.equal(runtime.requests.length, 0);
+    assert.equal(
+      events.some((event) => event.type === 'context-answer-error' && event.askId === started.askId),
+      false,
+    );
   });
 });
 
