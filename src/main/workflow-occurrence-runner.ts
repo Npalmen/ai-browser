@@ -2,7 +2,10 @@ import type { AutonomousTaskEvent, AutonomousTaskView } from '../shared/autonomo
 import type { TabId } from '../shared/browser-types';
 import { isDurableWorkflowError } from '../workflows/durable-workflow-errors';
 import type { RunningOccurrenceTerminalState } from '../workflows/durable-workflow-types';
-import { MAX_WORKFLOW_FINAL_ANSWER_CHARS } from '../workflows/workflow-store-types';
+import {
+  MAX_WORKFLOW_FINAL_ANSWER_CHARS,
+  TERMINAL_WORKFLOW_OCCURRENCE_STATES,
+} from '../workflows/workflow-store-types';
 import {
   WORKFLOW_START_REASON,
   isTrustedWorkflowExecutionUrl,
@@ -39,19 +42,27 @@ const FAILED_REASONS = new Set(['PLANNER_FAILED', 'CHILD_RUN_FAILED', 'TASK_INTE
 
 const CANCELLED_REASONS = new Set(['USER_CANCELLED', 'RUNTIME_DISPOSED']);
 
-interface LiveWorkflowExecution {
-  readonly occurrenceId: string;
-  readonly workflowId: string;
-  readonly taskId: string;
-  readonly tabId: TabId;
-  pendingTerminal?: MappedTerminal;
-}
-
 interface MappedTerminal {
   readonly state: RunningOccurrenceTerminalState;
   readonly terminalReason: string;
   readonly finalAnswer?: string;
 }
+
+type WorkflowRunnerOwnedState =
+  | {
+      kind: 'live';
+      occurrenceId: string;
+      workflowId: string;
+      taskId: string;
+      tabId: TabId;
+      pendingTerminal?: MappedTerminal;
+    }
+  | {
+      kind: 'startup-terminal-pending';
+      occurrenceId: string;
+      workflowId: string;
+      pendingTerminal: MappedTerminal;
+    };
 
 /**
  * Phase 4 runner: queued occurrence → durable running claim → fresh background
@@ -59,6 +70,10 @@ interface MappedTerminal {
  *
  * Does not acquire browser interaction authority. Page actions remain
  * V6 → V5 → V3 INTERACT → V4 PREPARE/APPROVAL/EXECUTE.
+ *
+ * Once queued → running has durably succeeded, a later startup failure keeps
+ * the trusted terminal fact process-locally if durable bookkeeping fails.
+ * Reconciliation retries that same terminal fact only — never browser/V6.
  *
  * Phase 5 owns scheduler drain, process wiring, and full Delegate/workflow
  * slot arbitration. A theoretical race remains: V6 can become busy after this
@@ -69,7 +84,7 @@ export class WorkflowOccurrenceRunner {
   private readonly durable: WorkflowOccurrenceDurablePort;
   private readonly browser: WorkflowBrowserStartupPort;
   private readonly autonomousTasks: WorkflowAutonomousTaskPort;
-  private live: LiveWorkflowExecution | undefined;
+  private owned: WorkflowRunnerOwnedState | undefined;
   private terminalizing: Promise<void> | undefined;
 
   constructor(deps: WorkflowOccurrenceRunnerDependencies) {
@@ -79,29 +94,29 @@ export class WorkflowOccurrenceRunner {
   }
 
   getActiveOccurrence(): WorkflowActiveOccurrence | undefined {
-    if (this.live === undefined) {
+    if (this.owned === undefined) {
       return undefined;
     }
     return {
-      occurrenceId: this.live.occurrenceId,
-      workflowId: this.live.workflowId,
+      occurrenceId: this.owned.occurrenceId,
+      workflowId: this.owned.workflowId,
     };
   }
 
   inspectLiveExecution(): WorkflowLiveExecutionInspection | undefined {
-    if (this.live === undefined) {
+    if (this.owned === undefined || this.owned.kind !== 'live') {
       return undefined;
     }
     return {
-      occurrenceId: this.live.occurrenceId,
-      workflowId: this.live.workflowId,
-      taskId: this.live.taskId,
-      tabId: this.live.tabId,
+      occurrenceId: this.owned.occurrenceId,
+      workflowId: this.owned.workflowId,
+      taskId: this.owned.taskId,
+      tabId: this.owned.tabId,
     };
   }
 
   async startOccurrence(occurrenceId: string): Promise<WorkflowOccurrenceStartResult> {
-    if (this.live !== undefined) {
+    if (this.owned !== undefined) {
       return { status: 'busy' };
     }
     if (this.autonomousTasks.hasActiveTask()) {
@@ -128,10 +143,14 @@ export class WorkflowOccurrenceRunner {
       return { status: 'failed', occurrenceId };
     }
 
+    const identity = {
+      occurrenceId: running.occurrenceId,
+      workflowId: running.workflowId,
+    };
     const frozenUrl = running.frozenDefinition.entryPoint.url;
     const objective = running.frozenDefinition.objective;
     if (!isTrustedWorkflowExecutionUrl(frozenUrl)) {
-      await this.failStartup(occurrenceId, WORKFLOW_START_REASON.TAB);
+      await this.failStartup(identity, WORKFLOW_START_REASON.TAB);
       return { status: 'failed', occurrenceId };
     }
 
@@ -139,11 +158,11 @@ export class WorkflowOccurrenceRunner {
     try {
       tabId = await this.browser.createTab({ url: frozenUrl, activate: false });
     } catch {
-      await this.failStartup(occurrenceId, WORKFLOW_START_REASON.TAB);
+      await this.failStartup(identity, WORKFLOW_START_REASON.TAB);
       return { status: 'failed', occurrenceId };
     }
     if (typeof tabId !== 'string' || tabId.trim().length === 0) {
-      await this.failStartup(occurrenceId, WORKFLOW_START_REASON.TAB);
+      await this.failStartup(identity, WORKFLOW_START_REASON.TAB);
       return { status: 'failed', occurrenceId };
     }
 
@@ -152,16 +171,17 @@ export class WorkflowOccurrenceRunner {
       started = this.autonomousTasks.startOnTrustedTab(tabId, objective);
     } catch {
       await this.closeUnusedTab(tabId);
-      await this.failStartup(occurrenceId, WORKFLOW_START_REASON.V6);
+      await this.failStartup(identity, WORKFLOW_START_REASON.V6);
       return { status: 'failed', occurrenceId };
     }
     if (!started.ok || started.task.taskId.trim().length === 0) {
       await this.closeUnusedTab(tabId);
-      await this.failStartup(occurrenceId, WORKFLOW_START_REASON.V6);
+      await this.failStartup(identity, WORKFLOW_START_REASON.V6);
       return { status: 'failed', occurrenceId };
     }
 
-    this.live = {
+    this.owned = {
+      kind: 'live',
       occurrenceId: running.occurrenceId,
       workflowId: running.workflowId,
       taskId: started.task.taskId,
@@ -180,12 +200,16 @@ export class WorkflowOccurrenceRunner {
   }
 
   async reconcilePendingTerminal(): Promise<void> {
-    await this.commitPendingTerminal();
+    try {
+      await this.commitPendingTerminal();
+    } catch {
+      // Retain the exact pending terminal fact. Caller may retry bookkeeping.
+    }
   }
 
   private async dispatchTaskEvent(event: AutonomousTaskEvent): Promise<void> {
-    const live = this.live;
-    if (live === undefined || event.task.taskId !== live.taskId) {
+    const owned = this.owned;
+    if (owned === undefined || owned.kind !== 'live' || event.task.taskId !== owned.taskId) {
       return;
     }
     if (NONTERMINAL_TASK_EVENTS.has(event.type)) {
@@ -195,7 +219,7 @@ export class WorkflowOccurrenceRunner {
     if (mapped === undefined) {
       return;
     }
-    live.pendingTerminal = mapped;
+    owned.pendingTerminal = mapped;
     if (this.terminalizing !== undefined) {
       await this.terminalizing;
       return;
@@ -210,14 +234,14 @@ export class WorkflowOccurrenceRunner {
   }
 
   private async commitPendingTerminal(): Promise<void> {
-    const live = this.live;
-    const pending = live?.pendingTerminal;
-    if (live === undefined || pending === undefined) {
+    const owned = this.owned;
+    const pending = owned?.pendingTerminal;
+    if (owned === undefined || pending === undefined) {
       return;
     }
     try {
       await this.durable.terminalizeRunningOccurrence({
-        occurrenceId: live.occurrenceId,
+        occurrenceId: owned.occurrenceId,
         state: pending.state,
         terminalReason: pending.terminalReason,
         ...(pending.finalAnswer !== undefined ? { finalAnswer: pending.finalAnswer } : {}),
@@ -227,24 +251,43 @@ export class WorkflowOccurrenceRunner {
         isDurableWorkflowError(error) &&
         error.code === 'WORKFLOW_OCCURRENCE_INVALID_STATE'
       ) {
-        this.live = undefined;
-        return;
+        if (await this.canReleaseAfterInvalidTerminalState(owned.occurrenceId)) {
+          this.owned = undefined;
+          return;
+        }
       }
       throw error;
     }
-    this.live = undefined;
+    this.owned = undefined;
   }
 
-  private async failStartup(occurrenceId: string, reason: string): Promise<void> {
+  private async canReleaseAfterInvalidTerminalState(occurrenceId: string): Promise<boolean> {
     try {
-      await this.durable.terminalizeRunningOccurrence({
-        occurrenceId,
+      const current = await this.durable.getOccurrence(occurrenceId);
+      return current !== undefined && isTerminalOccurrenceState(current.state);
+    } catch {
+      return false;
+    }
+  }
+
+  private async failStartup(
+    identity: { occurrenceId: string; workflowId: string },
+    reason: string,
+  ): Promise<void> {
+    this.owned = {
+      kind: 'startup-terminal-pending',
+      occurrenceId: identity.occurrenceId,
+      workflowId: identity.workflowId,
+      pendingTerminal: {
         state: 'failed',
         terminalReason: reason,
-      });
+      },
+    };
+    try {
+      await this.commitPendingTerminal();
     } catch {
-      // Durable truth stays running if the terminal commit fails. Do not
-      // create another tab or V6 task.
+      // Durable truth stays running. Keep the trusted startup terminal fact
+      // for bookkeeping reconciliation. Do not retry browser/V6 startup.
     }
   }
 
@@ -256,6 +299,10 @@ export class WorkflowOccurrenceRunner {
       // durable occurrence terminal truth.
     }
   }
+}
+
+function isTerminalOccurrenceState(state: string): boolean {
+  return (TERMINAL_WORKFLOW_OCCURRENCE_STATES as readonly string[]).includes(state);
 }
 
 function mapTerminalEvent(event: AutonomousTaskEvent): MappedTerminal | undefined {

@@ -170,6 +170,166 @@ describe('WorkflowOccurrenceRunner', () => {
     assert.equal((await harness.coordinator.getOccurrence(occurrence.occurrenceId))?.terminalReason, WORKFLOW_START_REASON.TAB);
   });
 
+  it('keeps a createTab startup terminal pending when durable fail cannot be persisted', async () => {
+    const harness = await createHarness();
+    harness.browser.failCreate = new Error('secret URL https://evil.test/leak');
+    harness.durable.failTerminal = true;
+    const { occurrence } = await enqueue(harness);
+    const result = await harness.runner.startOccurrence(occurrence.occurrenceId);
+    assert.equal(result.status, 'failed');
+    assert.equal((await harness.coordinator.getOccurrence(occurrence.occurrenceId))?.state, 'running');
+    assert.equal(harness.runner.getActiveOccurrence()?.occurrenceId, occurrence.occurrenceId);
+    assert.equal(harness.runner.inspectLiveExecution(), undefined);
+    assert.equal(harness.tasks.starts.length, 0);
+    assert.equal(harness.browser.created.length, 1);
+    harness.durable.failTerminal = false;
+    await harness.runner.reconcilePendingTerminal();
+    const terminal = await harness.coordinator.getOccurrence(occurrence.occurrenceId);
+    assert.equal(terminal?.state, 'failed');
+    assert.equal(terminal?.terminalReason, WORKFLOW_START_REASON.TAB);
+    assert.equal(terminal?.terminalReason?.includes('secret'), false);
+    assert.equal(harness.runner.getActiveOccurrence(), undefined);
+    assert.equal(harness.browser.created.length, 1);
+    assert.equal(harness.tasks.starts.length, 0);
+  });
+
+  it('keeps an invalid frozen URL startup terminal pending when persist fails', async () => {
+    const harness = await createHarness();
+    harness.durable.overrideFrozenUrl = 'javascript:alert(1)';
+    harness.durable.failTerminal = true;
+    const { occurrence } = await enqueue(harness);
+    const result = await harness.runner.startOccurrence(occurrence.occurrenceId);
+    assert.equal(result.status, 'failed');
+    assert.equal((await harness.coordinator.getOccurrence(occurrence.occurrenceId))?.state, 'running');
+    assert.equal(harness.runner.getActiveOccurrence()?.occurrenceId, occurrence.occurrenceId);
+    assert.equal(harness.runner.inspectLiveExecution(), undefined);
+    assert.deepEqual(harness.browser.created, []);
+    assert.deepEqual(harness.tasks.starts, []);
+    harness.durable.failTerminal = false;
+    await harness.runner.reconcilePendingTerminal();
+    const terminal = await harness.coordinator.getOccurrence(occurrence.occurrenceId);
+    assert.equal(terminal?.state, 'failed');
+    assert.equal(terminal?.terminalReason, WORKFLOW_START_REASON.TAB);
+    assert.equal(harness.runner.getActiveOccurrence(), undefined);
+    assert.equal(harness.browser.created.length, 0);
+    assert.equal(harness.tasks.starts.length, 0);
+  });
+
+  it('keeps a V6 start failure terminal pending without retrying the tab or task', async () => {
+    const harness = await createHarness();
+    harness.tasks.fail = true;
+    harness.durable.failTerminal = true;
+    const { occurrence } = await enqueue(harness);
+    const result = await harness.runner.startOccurrence(occurrence.occurrenceId);
+    assert.equal(result.status, 'failed');
+    assert.equal((await harness.coordinator.getOccurrence(occurrence.occurrenceId))?.state, 'running');
+    assert.equal(harness.runner.getActiveOccurrence()?.occurrenceId, occurrence.occurrenceId);
+    assert.equal(harness.runner.inspectLiveExecution(), undefined);
+    assert.deepEqual(harness.browser.closed, ['tab-workflow']);
+    assert.equal(harness.browser.created.length, 1);
+    assert.equal(harness.tasks.starts.length, 1);
+    harness.durable.failTerminal = false;
+    await harness.runner.reconcilePendingTerminal();
+    const terminal = await harness.coordinator.getOccurrence(occurrence.occurrenceId);
+    assert.equal(terminal?.state, 'failed');
+    assert.equal(terminal?.terminalReason, WORKFLOW_START_REASON.V6);
+    assert.equal(harness.runner.getActiveOccurrence(), undefined);
+    assert.equal(harness.browser.created.length, 1);
+    assert.equal(harness.tasks.starts.length, 1);
+  });
+
+  it('does not let unused-tab close failure erase a pending V6 startup terminal', async () => {
+    const harness = await createHarness();
+    harness.tasks.fail = true;
+    harness.browser.failClose = new Error('close leaked');
+    harness.durable.failTerminal = true;
+    const { occurrence } = await enqueue(harness);
+    const result = await harness.runner.startOccurrence(occurrence.occurrenceId);
+    assert.equal(result.status, 'failed');
+    assert.equal((await harness.coordinator.getOccurrence(occurrence.occurrenceId))?.state, 'running');
+    assert.equal(harness.runner.getActiveOccurrence()?.occurrenceId, occurrence.occurrenceId);
+    assert.equal(harness.runner.inspectLiveExecution(), undefined);
+    harness.durable.failTerminal = false;
+    await harness.runner.reconcilePendingTerminal();
+    const terminal = await harness.coordinator.getOccurrence(occurrence.occurrenceId);
+    assert.equal(terminal?.state, 'failed');
+    assert.equal(terminal?.terminalReason, WORKFLOW_START_REASON.V6);
+    assert.equal(harness.browser.created.length, 1);
+    assert.equal(harness.tasks.starts.length, 1);
+  });
+
+  it('returns busy for a second occurrence while startup terminal bookkeeping is pending', async () => {
+    const harness = await createHarness();
+    harness.browser.failCreate = new Error('tab start failed');
+    harness.durable.failTerminal = true;
+    const first = await enqueue(harness, { name: 'First' });
+    const second = await enqueue(harness, { name: 'Second', objective: 'Later' });
+    const failed = await harness.runner.startOccurrence(first.occurrence.occurrenceId);
+    assert.equal(failed.status, 'failed');
+    const busy = await harness.runner.startOccurrence(second.occurrence.occurrenceId);
+    assert.equal(busy.status, 'busy');
+    assert.equal((await harness.coordinator.getOccurrence(second.occurrence.occurrenceId))?.state, 'queued');
+    assert.equal(harness.browser.created.length, 1);
+    assert.equal(harness.tasks.starts.length, 0);
+    harness.durable.failTerminal = false;
+    harness.browser.failCreate = undefined;
+    await harness.runner.reconcilePendingTerminal();
+    assert.equal(harness.runner.getActiveOccurrence(), undefined);
+    const started = await harness.runner.startOccurrence(second.occurrence.occurrenceId);
+    assert.equal(started.status, 'started');
+    assert.equal((await harness.coordinator.getOccurrence(first.occurrence.occurrenceId))?.state, 'failed');
+    assert.equal(harness.browser.created.length, 2);
+    assert.equal(harness.tasks.starts.length, 1);
+  });
+
+  it('retries the same startup terminal fact across repeated reconciliation failures', async () => {
+    const harness = await createHarness();
+    harness.browser.failCreate = new Error('tab start failed');
+    harness.durable.failTerminal = true;
+    const { occurrence } = await enqueue(harness);
+    await harness.runner.startOccurrence(occurrence.occurrenceId);
+    await harness.runner.reconcilePendingTerminal();
+    await harness.runner.reconcilePendingTerminal();
+    assert.equal((await harness.coordinator.getOccurrence(occurrence.occurrenceId))?.state, 'running');
+    assert.equal(harness.runner.getActiveOccurrence()?.occurrenceId, occurrence.occurrenceId);
+    assert.equal(harness.durable.terminalCalls >= 3, true);
+    harness.durable.failTerminal = false;
+    await harness.runner.reconcilePendingTerminal();
+    const terminal = await harness.coordinator.getOccurrence(occurrence.occurrenceId);
+    assert.equal(terminal?.state, 'failed');
+    assert.equal(terminal?.terminalReason, WORKFLOW_START_REASON.TAB);
+    assert.equal(harness.runner.getActiveOccurrence(), undefined);
+    assert.equal(harness.browser.created.length, 1);
+    assert.equal(harness.tasks.starts.length, 0);
+  });
+
+  it('ignores unrelated V6 events while a startup terminal is pending reconciliation', async () => {
+    const harness = await createHarness();
+    harness.browser.failCreate = new Error('tab start failed');
+    harness.durable.failTerminal = true;
+    const { occurrence } = await enqueue(harness);
+    await harness.runner.startOccurrence(occurrence.occurrenceId);
+    const afterStart = await harness.store.load();
+    await harness.runner.handleAutonomousTaskEvent(
+      taskEvent('autonomous-task-started', { taskId: 'task-manual', state: 'planning' }),
+    );
+    await harness.runner.handleAutonomousTaskEvent(
+      taskEvent('autonomous-task-completed', {
+        taskId: 'task-workflow',
+        state: 'completed',
+        terminalReason: 'COMPLETED',
+        completedAnswer: 'Must not bind.',
+      }),
+    );
+    const afterEvents = await harness.store.load();
+    assert.equal(afterEvents.storeRevision, afterStart.storeRevision);
+    assert.equal((await harness.coordinator.getOccurrence(occurrence.occurrenceId))?.state, 'running');
+    assert.equal(harness.runner.getActiveOccurrence()?.occurrenceId, occurrence.occurrenceId);
+    assert.equal(harness.runner.inspectLiveExecution(), undefined);
+    assert.equal(harness.browser.created.length, 1);
+    assert.equal(harness.tasks.starts.length, 0);
+  });
+
   it('maps V6 completed to a durable completed occurrence with the bounded answer', async () => {
     const harness = await createHarness();
     const { occurrence } = await enqueue(harness);
