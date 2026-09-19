@@ -6,15 +6,25 @@ import { AiSidePanel } from './AiSidePanel';
 import { Omnibox } from './Omnibox';
 import { WorkflowsPanel } from './WorkflowsPanel';
 import {
+  acknowledgeContextAsk,
+  applyContextAnswerEvent,
+  applyContextAskStartFailure,
+  beginContextAsk,
+  clearContextAnswerState,
+  emptyContextAnswerUiState,
+  type ContextAnswerUiState,
+} from './context-answer-ui-state';
+import {
   beginSubmit,
   buildRouteIntentInput,
   closeContextPicker,
   emptyOmniboxState,
   finishSubmit,
-  isExecutableCapability,
+  mapAiStartErrorMessage,
   mapRouteErrorMessage,
   OMNIBOX_NAV_ERROR,
   reconcileWithBrowser,
+  resetAfterSuccessfulAiSubmit,
   setPhaseUnavailable,
   setSubmitError,
   syncDraftFromUrl,
@@ -76,6 +86,9 @@ export function App() {
   const [tabAiState, setTabAiState] = useState<AiUiState>({});
   const [tabApprovalState, setTabApprovalState] = useState<ApprovalUiState>({});
   const [taskUiState, setTaskUiState] = useState<AutonomousTaskUiState>(emptyAutonomousTaskUiState());
+  const [contextAnswerState, setContextAnswerState] = useState<ContextAnswerUiState>(
+    emptyContextAnswerUiState(),
+  );
   const [panelMode, setPanelMode] = useState<AiPanelMode>('read');
   const lastSyncedUrlRef = useRef('');
   const activeTabIdRef = useRef<string | null>(null);
@@ -140,6 +153,13 @@ export function App() {
       .catch((error: unknown) => {
         console.error('[app-ui] failed to load autonomous task state:', error);
       });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = window.aiNative.onContextAnswerEvent((event) => {
+      setContextAnswerState((current) => applyContextAnswerEvent(current, event));
+    });
     return unsubscribe;
   }, []);
 
@@ -279,17 +299,123 @@ export function App() {
     void runBrowserAction(() => window.browserShell.reload(activeTab.id));
   };
 
+  const openAssistantPanel = useCallback(() => {
+    if (panelOpen && rightPanelSurface === 'assistant') {
+      return;
+    }
+    void window.aiAssistant
+      .setPanelOpen(true)
+      .then((result) => {
+        if (!result.ok) {
+          console.error('[app-ui] failed to set AI panel open:', result.error.message);
+          return;
+        }
+        setRightPanelSurface('assistant');
+        setPanelOpen(true);
+      })
+      .catch((error: unknown) => {
+        console.error('[app-ui] failed to set AI panel open:', error);
+      });
+  }, [panelOpen, rightPanelSurface]);
+
+  const startCurrentPageRequest = useCallback(
+    async ({
+      tabId,
+      text,
+      mode,
+    }: {
+      tabId: string;
+      text: string;
+      mode: 'read' | 'interact';
+    }): Promise<boolean> => {
+      const rendererRequestId = crypto.randomUUID();
+      setPanelMode(mode);
+      setTabAiState((current) => appendUserQuestion(current, tabId, text, rendererRequestId));
+      openAssistantPanel();
+
+      try {
+        const result = await window.aiAssistant.askCurrentPage({ tabId, question: text, mode });
+        if (!result.ok) {
+          setTabAiState((current) =>
+            applyAskStartFailure(current, tabId, result.error, rendererRequestId),
+          );
+          return false;
+        }
+        setTabAiState((current) =>
+          acknowledgeAsk(current, tabId, result.askId, rendererRequestId),
+        );
+        return true;
+      } catch (error: unknown) {
+        console.error('[app-ui] failed to start AI ask:', error);
+        return false;
+      }
+    },
+    [openAssistantPanel],
+  );
+
+  const startContextAsk = useCallback(
+    async (question: string, tabIds: readonly string[]): Promise<boolean> => {
+      const rendererRequestId = crypto.randomUUID();
+      setContextAnswerState((current) => beginContextAsk(current, question, rendererRequestId));
+      openAssistantPanel();
+
+      try {
+        const result = await window.aiNative.askContext({
+          question,
+          context: { kind: 'selected-tabs', tabIds },
+        });
+        if (!result.ok) {
+          setContextAnswerState((current) =>
+            applyContextAskStartFailure(current, result.error, rendererRequestId),
+          );
+          return false;
+        }
+        setContextAnswerState((current) =>
+          acknowledgeContextAsk(current, result.askId, rendererRequestId),
+        );
+        return true;
+      } catch (error: unknown) {
+        console.error('[app-ui] failed to start context ask:', error);
+        return false;
+      }
+    },
+    [openAssistantPanel],
+  );
+
+  const startDelegateTask = useCallback(
+    async (objective: string): Promise<boolean> => {
+      setPanelMode('delegate');
+      openAssistantPanel();
+
+      try {
+        const result = await window.aiAssistant.startAutonomousTask({ objective });
+        if (!result.ok) {
+          setTaskUiState((current) =>
+            applyAutonomousTaskStartFailure(current, result.error.message),
+          );
+          return false;
+        }
+        setTaskUiState((current) =>
+          applyAutonomousTaskEvent(current, {
+            type: 'autonomous-task-started',
+            task: result.task,
+          }),
+        );
+        return true;
+      } catch (error: unknown) {
+        console.error('[app-ui] failed to start autonomous task:', error);
+        return false;
+      }
+    },
+    [openAssistantPanel],
+  );
+
   const handleOmniboxSubmit = () => {
     if (!activeTab) {
       return;
     }
 
     const tabId = activeTab.id;
-    if (!isExecutableCapability(omniboxState.capability)) {
-      setOmniboxState((current) => setPhaseUnavailable(beginSubmit(current)));
-      return;
-    }
-
     const routeInput = buildRouteIntentInput(omniboxState);
     if (!routeInput) {
       setOmniboxState((current) => setSubmitError(beginSubmit(current), OMNIBOX_NAV_ERROR));
@@ -325,6 +451,71 @@ export function App() {
           } catch {
             setOmniboxState((current) => setSubmitError(current, OMNIBOX_NAV_ERROR));
           }
+          return;
+        }
+
+        if (route.kind === 'ask') {
+          if (route.context.kind === 'current-tab') {
+            const started = await startCurrentPageRequest({
+              tabId: route.context.tabId,
+              text: route.question,
+              mode: 'read',
+            });
+            setOmniboxState((current) =>
+              started
+                ? resetAfterSuccessfulAiSubmit(finishSubmit(current))
+                : setSubmitError(
+                    finishSubmit(current),
+                    mapAiStartErrorMessage('Unable to start Ask.'),
+                  ),
+            );
+            return;
+          }
+
+          const started = await startContextAsk(route.question, route.context.tabIds);
+          setOmniboxState((current) =>
+            started
+              ? resetAfterSuccessfulAiSubmit(finishSubmit(current))
+              : setSubmitError(
+                  finishSubmit(current),
+                  mapAiStartErrorMessage('Unable to start Ask.'),
+                ),
+          );
+          return;
+        }
+
+        if (route.kind === 'act') {
+          const started = await startCurrentPageRequest({
+            tabId: route.tabId,
+            text: route.instruction,
+            mode: 'interact',
+          });
+          setOmniboxState((current) =>
+            started
+              ? resetAfterSuccessfulAiSubmit(finishSubmit(current))
+              : setSubmitError(
+                  finishSubmit(current),
+                  mapAiStartErrorMessage('Unable to start Act.'),
+                ),
+          );
+          return;
+        }
+
+        if (route.kind === 'delegate') {
+          const started = await startDelegateTask(route.objective);
+          setOmniboxState((current) =>
+            started
+              ? resetAfterSuccessfulAiSubmit(finishSubmit(current))
+              : setSubmitError(
+                  finishSubmit(current),
+                  mapAiStartErrorMessage('Unable to start Delegate.'),
+                ),
+          );
+          return;
+        }
+
+        if (route.kind === 'draft-workflow') {
+          setOmniboxState((current) => setPhaseUnavailable(finishSubmit(current)));
           return;
         }
 
@@ -401,32 +592,15 @@ export function App() {
     if (!activeTab || panelMode === 'delegate') {
       return;
     }
-    const tabId = activeTab.id;
     const question = activeAi.draft.trim();
     if (!question || activeAi.activeAskId || approvalBusy) {
       return;
     }
-
-    const rendererRequestId = crypto.randomUUID();
-    setTabAiState((current) => appendUserQuestion(current, tabId, question, rendererRequestId));
-
-    const mode = activeAi.mode;
-    void window.aiAssistant
-      .askCurrentPage({ tabId, question, mode })
-      .then((result) => {
-        if (!result.ok) {
-          setTabAiState((current) =>
-            applyAskStartFailure(current, tabId, result.error, rendererRequestId),
-          );
-          return;
-        }
-        setTabAiState((current) =>
-          acknowledgeAsk(current, tabId, result.askId, rendererRequestId),
-        );
-      })
-      .catch((error: unknown) => {
-        console.error('[app-ui] failed to start AI ask:', error);
-      });
+    void startCurrentPageRequest({
+      tabId: activeTab.id,
+      text: question,
+      mode: activeAi.mode,
+    });
   };
 
   const handleStop = () => {
@@ -437,6 +611,17 @@ export function App() {
       .cancelAsk({ tabId: activeTab.id, askId: activeAi.activeAskId })
       .catch((error: unknown) => {
         console.error('[app-ui] failed to cancel AI ask:', error);
+      });
+  };
+
+  const handleContextStop = () => {
+    if (!contextAnswerState.activeAskId) {
+      return;
+    }
+    void window.aiNative
+      .cancelContextAsk({ askId: contextAnswerState.activeAskId })
+      .catch((error: unknown) => {
+        console.error('[app-ui] failed to cancel context ask:', error);
       });
   };
 
@@ -481,6 +666,7 @@ export function App() {
             reason: 'user',
           }),
         );
+        setContextAnswerState(clearContextAnswerState());
       })
       .catch((error: unknown) => {
         console.error('[app-ui] failed to clear conversation:', error);
@@ -496,25 +682,7 @@ export function App() {
       return;
     }
     updateActiveTabAi((current) => ({ ...current, draft: '' }));
-    void window.aiAssistant
-      .startAutonomousTask({ objective })
-      .then((result) => {
-        if (!result.ok) {
-          setTaskUiState((current) =>
-            applyAutonomousTaskStartFailure(current, result.error.message),
-          );
-          return;
-        }
-        setTaskUiState((current) =>
-          applyAutonomousTaskEvent(current, {
-            type: 'autonomous-task-started',
-            task: result.task,
-          }),
-        );
-      })
-      .catch((error: unknown) => {
-        console.error('[app-ui] failed to start autonomous task:', error);
-      });
+    void startDelegateTask(objective);
   };
 
   const handleTaskReply = (taskId?: string) => {
@@ -735,6 +903,8 @@ export function App() {
           hasActiveTab={Boolean(activeTab)}
           entries={activeAi.entries}
           isAsking={activeAi.activeAskId !== null}
+          contextAnswerEntries={contextAnswerState.entries}
+          isContextAsking={contextAnswerState.activeAskId !== null}
           approvalBusy={approvalBusy}
           mode={panelMode}
           draft={activeAi.draft}
@@ -744,6 +914,7 @@ export function App() {
           onDelegate={handleDelegate}
           onTaskReply={() => handleTaskReply()}
           onStop={handleStop}
+          onContextStop={handleContextStop}
           onClear={handleClear}
           onClose={handleClosePanel}
           approval={activeApproval}

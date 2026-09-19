@@ -306,8 +306,8 @@ export function contextSummary(state: OmniboxUiState): string | null {
   return `${count} tabs`;
 }
 
-export function isExecutableCapability(capability: OmniboxCapability): boolean {
-  return capability === 'default' || capability === 'search';
+export function isPhase5Capability(capability: OmniboxCapability): boolean {
+  return capability === 'automate';
 }
 
 export function buildRouteIntentInput(
@@ -346,6 +346,20 @@ export function finishSubmit(state: OmniboxUiState): OmniboxUiState {
   return { ...state, submitting: false, isEditing: false };
 }
 
+export function resetAfterSuccessfulAiSubmit(state: OmniboxUiState): OmniboxUiState {
+  return {
+    ...state,
+    draft: '',
+    capability: 'default',
+    context: null,
+    contextPickerOpen: false,
+    submitting: false,
+    error: null,
+    phaseUnavailableMessage: null,
+    isEditing: false,
+  };
+}
+
 export function setSubmitError(state: OmniboxUiState, error: string): OmniboxUiState {
   return { ...state, submitting: false, error, phaseUnavailableMessage: null };
 }
@@ -363,7 +377,14 @@ export function mapRouteErrorMessage(code: string): string {
   if (code === 'AI_NATIVE_EMPTY_INPUT') {
     return 'Enter a URL, search, or command.';
   }
+  if (code === 'AI_NATIVE_TAB_UNAVAILABLE' || code === 'AI_NATIVE_CONTEXT_INVALID') {
+    return 'This command is unavailable for the current tab or context.';
+  }
   return OMNIBOX_NAV_ERROR;
+}
+
+export function mapAiStartErrorMessage(message: string): string {
+  return message;
 }
 
 export const OMNIBOX_CAPABILITIES: readonly {

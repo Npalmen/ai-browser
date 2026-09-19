@@ -11,9 +11,10 @@ import {
   emptyOmniboxState,
   handleEscape,
   isAskAvailableForTab,
-  isExecutableCapability,
+  isPhase5Capability,
   OMNIBOX_PHASE_UNAVAILABLE,
   reconcileWithBrowser,
+  resetAfterSuccessfulAiSubmit,
   selectCapability,
   setContextMode,
   setPhaseUnavailable,
@@ -149,13 +150,19 @@ describe('omnibox-ui-state', () => {
     assert.equal(state.contextPickerOpen, false);
   });
 
-  it('marks AI capabilities as non-executable in Phase 3', () => {
-    assert.equal(isExecutableCapability('default'), true);
-    assert.equal(isExecutableCapability('search'), true);
-    assert.equal(isExecutableCapability('ask'), false);
-    assert.equal(isExecutableCapability('act'), false);
-    const state = setPhaseUnavailable(emptyOmniboxState());
-    assert.equal(state.phaseUnavailableMessage, OMNIBOX_PHASE_UNAVAILABLE);
+  it('keeps automate as Phase 5 only and resets omnibox after successful AI submit', () => {
+    const httpTab = tab('tab-a', 'https://example.com/a');
+    let state = selectCapability(emptyOmniboxState(), 'ask', httpTab);
+    state = { ...state, draft: 'summarize', submitting: true };
+    state = resetAfterSuccessfulAiSubmit(state);
+    assert.equal(state.capability, 'default');
+    assert.equal(state.draft, '');
+    assert.equal(state.context, null);
+    assert.equal(state.submitting, false);
+    assert.equal(isPhase5Capability('automate'), true);
+    assert.equal(isPhase5Capability('ask'), false);
+    const unavailable = setPhaseUnavailable(emptyOmniboxState());
+    assert.equal(unavailable.phaseUnavailableMessage, OMNIBOX_PHASE_UNAVAILABLE);
   });
 
   it('defaults automate to current-tab including about:blank', () => {

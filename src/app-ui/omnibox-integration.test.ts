@@ -9,6 +9,12 @@ function readSrc(relative: string): string {
   return readFileSync(path.join(ROOT, relative), 'utf8');
 }
 
+function submitBlock(app: string): string {
+  const start = app.indexOf('handleOmniboxSubmit');
+  const end = app.indexOf('const openRightPanel', start);
+  return app.slice(start, end >= 0 ? end : start + 6000);
+}
+
 describe('V8 omnibox integration', () => {
   it('routes default/search through aiNative.routeIntent and trusted browser shell execution', () => {
     const app = readSrc('src/app-ui/App.tsx');
@@ -21,21 +27,91 @@ describe('V8 omnibox integration', () => {
     assert.equal(app.includes('browserShell.navigate(activeTab.id, omniboxState.draft)'), false);
   });
 
-  it('does not execute Ask/Act/Delegate/Automate from omnibox submit', () => {
+  it('wires Ask current-tab through shared startCurrentPageRequest with mode read', () => {
     const app = readSrc('src/app-ui/App.tsx');
-    const submitBlock = app.slice(app.indexOf('handleOmniboxSubmit'), app.indexOf('openRightPanel'));
-    assert.equal(submitBlock.includes('askContext('), false);
-    assert.equal(submitBlock.includes('askCurrentPage('), false);
-    assert.equal(submitBlock.includes('startAutonomousTask('), false);
-    assert.match(submitBlock, /isExecutableCapability/);
-    assert.match(submitBlock, /setPhaseUnavailable/);
+    const submit = submitBlock(app);
+    assert.match(submit, /route\.kind === 'ask'/);
+    assert.match(submit, /route\.context\.kind === 'current-tab'/);
+    assert.match(submit, /startCurrentPageRequest\(\{[\s\S]*mode: 'read'/);
+    assert.match(app, /askCurrentPage\(\{ tabId, question: text, mode \}\)/);
+    assert.match(app, /void startCurrentPageRequest/);
+  });
 
+  it('wires Ask selected-tabs through askContext, not askCurrentPage', () => {
+    const app = readSrc('src/app-ui/App.tsx');
+    const submit = submitBlock(app);
+    assert.match(submit, /startContextAsk\(route\.question, route\.context\.tabIds\)/);
+    assert.match(app, /window\.aiNative\.askContext/);
+    assert.match(app, /kind: 'selected-tabs'/);
+    const askBlock = app.slice(app.indexOf('const startContextAsk'), app.indexOf('const startDelegateTask'));
+    assert.equal(askBlock.includes('askCurrentPage'), false);
+  });
+
+  it('wires Act through shared startCurrentPageRequest with mode interact', () => {
+    const app = readSrc('src/app-ui/App.tsx');
+    const submit = submitBlock(app);
+    assert.match(submit, /route\.kind === 'act'/);
+    assert.match(submit, /mode: 'interact'/);
+    assert.match(submit, /route\.instruction/);
+  });
+
+  it('wires Delegate through shared startDelegateTask', () => {
+    const app = readSrc('src/app-ui/App.tsx');
+    const submit = submitBlock(app);
+    assert.match(submit, /route\.kind === 'delegate'/);
+    assert.match(submit, /startDelegateTask\(route\.objective\)/);
+    assert.match(app, /startAutonomousTask\(\{ objective \}\)/);
+    assert.match(app, /void startDelegateTask/);
+  });
+
+  it('keeps Automate as draft-workflow placeholder without workflow execution', () => {
+    const app = readSrc('src/app-ui/App.tsx');
+    const submit = submitBlock(app);
+    assert.match(submit, /route\.kind === 'draft-workflow'/);
+    assert.match(submit, /setPhaseUnavailable/);
+    assert.equal(submit.includes('workflows.create'), false);
+    assert.equal(submit.includes('askContext'), false);
+  });
+
+  it('resets omnibox after successful AI capability start', () => {
+    const app = readSrc('src/app-ui/App.tsx');
+    const submit = submitBlock(app);
+    assert.match(submit, /resetAfterSuccessfulAiSubmit/);
+  });
+
+  it('subscribes to context answer events and cancels through aiNative', () => {
+    const app = readSrc('src/app-ui/App.tsx');
+    assert.match(app, /window\.aiNative\.onContextAnswerEvent/);
+    assert.match(app, /applyContextAnswerEvent/);
+    assert.match(app, /window\.aiNative[\s\S]*cancelContextAsk/);
+    assert.match(app, /handleContextStop/);
+    assert.equal(app.includes('cancelAsk'), true);
+    const contextStop = app.slice(app.indexOf('handleContextStop'), app.indexOf('handleApprovalDecision'));
+    assert.equal(contextStop.includes('cancelAsk'), false);
+  });
+
+  it('clears context answer UI state with Assistant Clear', () => {
+    const app = readSrc('src/app-ui/App.tsx');
+    const clearBlock = app.slice(app.indexOf('handleClear'), app.indexOf('handleDelegate'));
+    assert.match(clearBlock, /clearContextAnswerState/);
+    assert.match(clearBlock, /clearConversation/);
+  });
+
+  it('renders selected-tabs answers in AiSidePanel', () => {
+    const panel = readSrc('src/app-ui/AiSidePanel.tsx');
+    assert.match(panel, /contextAnswerEntries/);
+    assert.match(panel, /Selected tabs/);
+    assert.match(panel, /onContextStop/);
+    assert.equal(panel.includes('decideApproval'), false);
+  });
+
+  it('omnibox components contain no approval controls', () => {
     const omnibox = readSrc('src/app-ui/Omnibox.tsx');
-    assert.equal(omnibox.includes('askContext('), false);
-    assert.equal(omnibox.includes('askCurrentPage('), false);
-    assert.equal(omnibox.includes('startAutonomousTask('), false);
-    assert.equal(omnibox.includes('workflows.create('), false);
-    assert.equal(omnibox.includes('decideApproval('), false);
+    const picker = readSrc('src/app-ui/OmniboxContextPicker.tsx');
+    assert.equal(omnibox.includes('decideApproval'), false);
+    assert.equal(omnibox.includes('onApprove'), false);
+    assert.equal(picker.includes('decideApproval'), false);
+    assert.equal(picker.includes('onApprove'), false);
   });
 
   it('implements Ctrl/Cmd+L focus and new-tab omnibox focus', () => {

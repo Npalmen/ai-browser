@@ -39,7 +39,7 @@ describe('V5 AgentRun UI constraints', () => {
 
     const app = readSrc('src/app-ui/App.tsx');
     assert.match(app, /startAutonomousTask\(\{ objective \}\)/);
-    assert.match(app, /askCurrentPage\(\{ tabId, question, mode \}\)/);
+    assert.match(app, /askCurrentPage\(\{ tabId, question/);
     assert.match(app, /replyToAutonomousTask/);
     assert.match(app, /pauseAutonomousTask/);
     assert.match(app, /resumeAutonomousTask/);

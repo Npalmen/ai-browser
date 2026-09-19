@@ -4,6 +4,7 @@ import { AI_SIDE_PANEL_WIDTH_PX } from '../shared/ai-types';
 import type { AiPanelMode, AutonomousTaskView } from '../shared/autonomous-task-types';
 
 import type { AiTranscriptEntry } from './ai-ui-state';
+import type { ContextAnswerEntry } from './context-answer-ui-state';
 import { ApprovalCard } from './ApprovalCard';
 import type { TabApprovalUiState } from './approval-ui-state';
 import { AutonomousTaskCard } from './AutonomousTaskCard';
@@ -12,6 +13,8 @@ export function AiSidePanel(props: {
   hasActiveTab: boolean;
   entries: AiTranscriptEntry[];
   isAsking: boolean;
+  contextAnswerEntries: readonly ContextAnswerEntry[];
+  isContextAsking: boolean;
   approvalBusy: boolean;
   mode: AiPanelMode;
   draft: string;
@@ -21,6 +24,7 @@ export function AiSidePanel(props: {
   onDelegate: () => void;
   onTaskReply: () => void;
   onStop: () => void;
+  onContextStop: () => void;
   onClear: () => void;
   onClose: () => void;
   approval?: TabApprovalUiState;
@@ -203,7 +207,51 @@ export function AiSidePanel(props: {
           />
         ))}
         {props.startError ? <p className="autonomous-task-start-error">{props.startError}</p> : null}
+        {props.contextAnswerEntries.length > 0 ? (
+          <section className="context-answer-section" aria-label="Selected tabs">
+            <div className="context-answer-header">
+              <h2 className="context-answer-title">Selected tabs</h2>
+              {props.isContextAsking ? (
+                <button
+                  type="button"
+                  className="ai-panel-button ai-panel-button-primary context-answer-stop"
+                  onClick={props.onContextStop}
+                >
+                  Stop
+                </button>
+              ) : null}
+            </div>
+            {props.contextAnswerEntries.map((entry) => (
+              <article
+                key={entry.id}
+                className={`ai-message ai-message-${entry.role} context-answer-message${
+                  entry.status === 'error' ? ' ai-message-error' : ''
+                }${entry.status === 'cancelled' ? ' ai-message-cancelled' : ''}`}
+              >
+                <div className="ai-message-label">
+                  {entry.role === 'user' ? 'You' : 'Assistant'}
+                </div>
+                {entry.role === 'assistant' && entry.status === 'error' ? (
+                  <div className="ai-message-text">
+                    {entry.text}
+                    {entry.errorMessage ? (
+                      <div className="ai-message-error-detail">{entry.errorMessage}</div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="ai-message-text">{entry.text}</div>
+                )}
+                {entry.role === 'assistant' && entry.status === 'complete' && entry.truncatedContext ? (
+                  <p className="ai-truncated-note">
+                    Some page content was omitted to fit the AI context.
+                  </p>
+                ) : null}
+              </article>
+            ))}
+          </section>
+        ) : null}
         {props.entries.length === 0 &&
+        props.contextAnswerEntries.length === 0 &&
         props.tasks.length === 0 &&
         !props.startError &&
         !(props.approval && props.approval.status !== 'idle' && props.approval.approval) ? (

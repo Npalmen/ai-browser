@@ -556,6 +556,41 @@ body {
   color: #6b7280;
 }
 
+.context-answer-section {
+  margin-bottom: 16px;
+  padding: 10px;
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+  background: #eef2ff;
+}
+
+.context-answer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.context-answer-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #4338ca;
+}
+
+.context-answer-stop {
+  flex-shrink: 0;
+}
+
+.context-answer-message {
+  margin-bottom: 8px;
+}
+
+.context-answer-message:last-child {
+  margin-bottom: 0;
+}
+
 .ai-panel-footer {
   display: flex;
   flex-direction: column;
