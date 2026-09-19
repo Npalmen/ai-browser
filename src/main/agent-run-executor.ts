@@ -1,6 +1,7 @@
 import type { AgentRunCoordinator } from '../agent-run/agent-run-coordinator';
 import type { SafeAgentLoop, SafeAgentLoopOptions, SafeAgentLoopResult } from '../agent-run/safe-agent-loop';
 import {
+  isTerminalAgentRunState,
   toAgentRunRef,
   type AgentRunCancelledReason,
   type AgentRunRef,
@@ -198,6 +199,11 @@ export class AgentRunExecutor implements AgentRunExecutorPort {
   }
 
   private stopExact(active: ActiveExecution, reason: AgentRunCancelledReason): void {
+    const snapshot = this.coordinator.getRun(active.ref.runId);
+    if (snapshot === undefined || isTerminalAgentRunState(snapshot.state)) {
+      active.controller.abort();
+      return;
+    }
     if (this.isPostDispatch(active)) {
       this.coordinator.requestCancellationAfterDispatch(active.ref, reason);
       return;

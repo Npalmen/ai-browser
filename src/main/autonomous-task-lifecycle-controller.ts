@@ -427,4 +427,8 @@ export class AutonomousTaskLifecycleController {
       this.tabState.releaseTask(ref.taskId);
     }
   }
+
+  releaseWorkspace(taskId: string): void {
+    this.tabState.releaseTask(taskId);
+  }
 }

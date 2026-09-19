@@ -106,6 +106,11 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
 
     const view = this.views.get(tabId)!;
     this.views.delete(tabId);
+    try {
+      this.mainWindow.contentView.removeChildView(view);
+    } catch {
+      // View may already be detached.
+    }
 
     const webContents = view.webContents;
     if (!webContents.isDestroyed()) {
@@ -208,6 +213,7 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
         request.target.tabId,
         this.getWebContents(request.target.tabId),
         (cdp) => executeAdapterClick(cdp, bound.request),
+        { allowFocus: this.activeAttachedTabId === request.target.tabId },
       );
     } finally {
       bound.finish();
@@ -216,8 +222,11 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
 
   async type(request: AdapterTypeRequest): Promise<AdapterInteractionResult> {
     this.assertNotDisposed();
-    return this.interactionSessions.withSession(request.target.tabId, this.getWebContents(request.target.tabId), (cdp) =>
-      executeAdapterType(cdp, request),
+    return this.interactionSessions.withSession(
+      request.target.tabId,
+      this.getWebContents(request.target.tabId),
+      (cdp) => executeAdapterType(cdp, request),
+      { allowFocus: this.activeAttachedTabId === request.target.tabId },
     );
   }
 
@@ -227,20 +236,27 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
       request.selectTarget.tabId,
       this.getWebContents(request.selectTarget.tabId),
       (cdp) => executeAdapterSelect(cdp, request),
+      { allowFocus: this.activeAttachedTabId === request.selectTarget.tabId },
     );
   }
 
   async scroll(request: AdapterViewportScrollRequest): Promise<AdapterInteractionResult> {
     this.assertNotDisposed();
-    return this.interactionSessions.withSession(request.tabId, this.getWebContents(request.tabId), (cdp) =>
-      executeAdapterViewportScroll(cdp, request),
+    return this.interactionSessions.withSession(
+      request.tabId,
+      this.getWebContents(request.tabId),
+      (cdp) => executeAdapterViewportScroll(cdp, request),
+      { allowFocus: this.activeAttachedTabId === request.tabId },
     );
   }
 
   async scrollIntoView(request: AdapterScrollIntoViewRequest): Promise<AdapterInteractionResult> {
     this.assertNotDisposed();
-    return this.interactionSessions.withSession(request.target.tabId, this.getWebContents(request.target.tabId), (cdp) =>
-      executeAdapterScrollIntoView(cdp, request),
+    return this.interactionSessions.withSession(
+      request.target.tabId,
+      this.getWebContents(request.target.tabId),
+      (cdp) => executeAdapterScrollIntoView(cdp, request),
+      { allowFocus: this.activeAttachedTabId === request.target.tabId },
     );
   }
 
@@ -304,12 +320,29 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
   }
 
   private attachView(tabId: TabId): void {
-    const view = this.getView(tabId);
     const bounds = getWebsiteViewBounds(this.mainWindow, this.websiteRightInsetPx);
+    const activeView = this.getView(tabId);
 
-    this.mainWindow.contentView.addChildView(view);
-    view.setBounds(bounds);
-    view.webContents.focus();
+    for (const view of this.views.values()) {
+      try {
+        this.mainWindow.contentView.removeChildView(view);
+      } catch {
+        // View may not currently be attached.
+      }
+    }
+
+    this.mainWindow.contentView.addChildView(activeView);
+    this.showWebsiteView(activeView, bounds);
+    activeView.webContents.focus();
+
+    for (const [id, view] of this.views) {
+      if (id === tabId) {
+        continue;
+      }
+      this.mainWindow.contentView.addChildView(view);
+      this.hideWebsiteView(view, bounds);
+    }
+
     this.activeAttachedTabId = tabId;
   }
 
@@ -320,18 +353,15 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
 
     const view = this.views.get(this.activeAttachedTabId);
     if (view) {
-      try {
-        this.mainWindow.contentView.removeChildView(view);
-      } catch {
-        // View may already be detached.
-      }
+      const bounds = getWebsiteViewBounds(this.mainWindow, this.websiteRightInsetPx);
+      this.hideWebsiteView(view, bounds);
     }
 
     this.activeAttachedTabId = null;
   }
 
   private createWebsiteView(): WebContentsView {
-    return new WebContentsView({
+    const view = new WebContentsView({
       webPreferences: {
         session: this.websiteSession,
         nodeIntegration: false,
@@ -340,6 +370,31 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
         webSecurity: true,
         webviewTag: false,
       },
+    });
+    view.webContents.setBackgroundThrottling(false);
+    return view;
+  }
+
+  private showWebsiteView(
+    view: WebContentsView,
+    bounds: { x: number; y: number; width: number; height: number },
+  ): void {
+    view.webContents.setBackgroundThrottling(false);
+    setWebContentsViewVisible(view, true);
+    view.setBounds(bounds);
+  }
+
+  private hideWebsiteView(
+    view: WebContentsView,
+    bounds: { x: number; y: number; width: number; height: number },
+  ): void {
+    view.webContents.setBackgroundThrottling(false);
+    setWebContentsViewVisible(view, false);
+    view.setBounds({
+      x: -20000,
+      y: 0,
+      width: Math.max(bounds.width, 1),
+      height: Math.max(bounds.height, 1),
     });
   }
 
@@ -607,6 +662,10 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     this.attachWebContentsHandlers(tabId, view);
     if (this.registry.getActiveTabId() === tabId) {
       await this.activateTab(tabId);
+    } else {
+      const bounds = getWebsiteViewBounds(this.mainWindow, this.websiteRightInsetPx);
+      this.mainWindow.contentView.addChildView(view);
+      this.hideWebsiteView(view, bounds);
     }
 
     this.emitTabCreated(
@@ -643,4 +702,9 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
       throw new Error('Browser adapter has been disposed');
     }
   }
+}
+
+function setWebContentsViewVisible(view: WebContentsView, visible: boolean): void {
+  const candidate = view as WebContentsView & { setVisible?: (shown: boolean) => void };
+  candidate.setVisible?.(visible);
 }

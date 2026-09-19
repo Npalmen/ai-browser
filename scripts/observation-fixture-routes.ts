@@ -4,6 +4,7 @@ export const OBSERVATION_FIXTURE_DIR = path.resolve(process.cwd(), 'fixtures', '
 export const INTERACTION_FIXTURE_DIR = path.resolve(process.cwd(), 'fixtures', 'interaction');
 export const APPROVAL_FIXTURE_DIR = path.resolve(process.cwd(), 'fixtures', 'approval');
 export const AGENT_RUN_FIXTURE_DIR = path.resolve(process.cwd(), 'fixtures', 'agent-run');
+export const AUTONOMOUS_TASK_FIXTURE_DIR = path.resolve(process.cwd(), 'fixtures', 'autonomous-task');
 
 const OBSERVATION_ROUTE_MAP: Record<string, { fileName: string; contentType: string }> = {
   '/': { fileName: 'index.html', contentType: 'text/html; charset=utf-8' },
@@ -152,11 +153,35 @@ export function resolveAgentRunFixtureRoute(requestPath: string): ResolvedFixtur
   return resolveMappedFixtureRoute(requestPath, AGENT_RUN_FIXTURE_DIR, AGENT_RUN_ROUTE_MAP);
 }
 
+const AUTONOMOUS_TASK_ROUTE_MAP: Record<string, { fileName: string; contentType: string }> = {
+  '/autonomous-task/popup-click.html': {
+    fileName: 'popup-click.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/autonomous-task/popup-child.html': {
+    fileName: 'popup-child.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/autonomous-task/delayed-popup.html': {
+    fileName: 'delayed-popup.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/autonomous-task/background.html': {
+    fileName: 'background.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+};
+
+export function resolveAutonomousTaskFixtureRoute(requestPath: string): ResolvedFixtureFile | null {
+  return resolveMappedFixtureRoute(requestPath, AUTONOMOUS_TASK_FIXTURE_DIR, AUTONOMOUS_TASK_ROUTE_MAP);
+}
+
 export function resolveFixtureRoute(requestPath: string): ResolvedFixtureFile | null {
   return (
     resolveObservationFixtureRoute(requestPath) ??
     resolveInteractionFixtureRoute(requestPath) ??
     resolveApprovalFixtureRoute(requestPath) ??
-    resolveAgentRunFixtureRoute(requestPath)
+    resolveAgentRunFixtureRoute(requestPath) ??
+    resolveAutonomousTaskFixtureRoute(requestPath)
   );
 }

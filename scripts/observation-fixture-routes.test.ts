@@ -7,8 +7,10 @@ import {
   APPROVAL_FIXTURE_DIR,
   INTERACTION_FIXTURE_DIR,
   OBSERVATION_FIXTURE_DIR,
+  AUTONOMOUS_TASK_FIXTURE_DIR,
   resolveAgentRunFixtureRoute,
   resolveApprovalFixtureRoute,
+  resolveAutonomousTaskFixtureRoute,
   resolveFixtureRoute,
   resolveInteractionFixtureRoute,
   resolveObservationFixtureRoute,
@@ -127,12 +129,26 @@ describe('resolveAgentRunFixtureRoute', () => {
   });
 });
 
+describe('resolveAutonomousTaskFixtureRoute', () => {
+  it('maps known autonomous-task fixture routes to files under the fixture directory', () => {
+    const popup = resolveAutonomousTaskFixtureRoute('/autonomous-task/popup-click.html');
+    assert.ok(popup);
+    assert.equal(popup.absolutePath, path.join(AUTONOMOUS_TASK_FIXTURE_DIR, 'popup-click.html'));
+  });
+
+  it('rejects unknown and traversal paths for autonomous-task routes', () => {
+    assert.equal(resolveAutonomousTaskFixtureRoute('/autonomous-task/unknown.html'), null);
+    assert.equal(resolveAutonomousTaskFixtureRoute('/autonomous-task/../../package.json'), null);
+  });
+});
+
 describe('resolveFixtureRoute', () => {
   it('resolves observation, interaction, approval, and agent-run routes', () => {
     assert.ok(resolveFixtureRoute('/'));
     assert.ok(resolveFixtureRoute('/interaction/safe-interact.html'));
     assert.ok(resolveFixtureRoute('/approval/consequential.html'));
     assert.ok(resolveFixtureRoute('/agent-run/two-safe.html'));
+    assert.ok(resolveFixtureRoute('/autonomous-task/popup-click.html'));
     assert.equal(resolveFixtureRoute('/not-a-fixture'), null);
   });
 });

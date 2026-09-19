@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>V6 Popup Click Fixture</title>
+  </head>
+  <body>
+    <h1>V6 Popup Click</h1>
+    <button type="button" id="open-popup">Open related</button>
+    <p id="popup-count">0</p>
+    <script>
+      window.__v6Markers = { popupClick: 0 };
+      document.getElementById('open-popup').addEventListener('click', function () {
+        window.__v6Markers.popupClick += 1;
+        document.getElementById('popup-count').textContent = String(window.__v6Markers.popupClick);
+        window.open('/autonomous-task/popup-child.html', 'v6-popup');
+      });
+    </script>
+  </body>
+</html>

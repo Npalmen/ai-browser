@@ -237,6 +237,9 @@ export class AutonomousTaskChildRunExecutor {
     completion: AutonomousTaskAgentRunCompletion,
   ): AutonomousTaskChildRunResult {
     if (completion.status === 'ignored') {
+      if (this.activeByTask.get(request.ref.taskId)?.lifecycleCancellationRequested === true) {
+        return this.lifecycleCancelledIfLive(request.ref, agentRunRef);
+      }
       return this.failCurrentChild(request.ref, agentRunRef);
     }
 

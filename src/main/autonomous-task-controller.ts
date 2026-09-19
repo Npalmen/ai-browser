@@ -422,6 +422,7 @@ export class AutonomousTaskController {
       if (!isAutonomousTaskApplied(completed)) {
         return;
       }
+      this.lifecycle.releaseWorkspace(taskId);
       const answer = clip(decision.answer, MAX_AUTONOMOUS_TASK_ANSWER_CHARS);
       product.finalAnswer = answer;
       this.completedTurns.push({
@@ -453,6 +454,7 @@ export class AutonomousTaskController {
       return;
     }
     if (childResult.status === 'terminal') {
+      this.lifecycle.releaseWorkspace(taskId);
       this.emitFromSnapshot(taskId, eventTypeForState(childResult.snapshot.state));
     }
   }
@@ -483,12 +485,14 @@ export class AutonomousTaskController {
     if (!(error instanceof ModelError)) {
       const failed = this.coordinator.markFailed(toAutonomousTaskRef(snapshot), 'TASK_INTERNAL_ERROR');
       if (isAutonomousTaskApplied(failed)) {
+        this.lifecycle.releaseWorkspace(taskId);
         this.emitFromSnapshot(taskId, 'autonomous-task-failed');
       }
       return;
     }
     const failed = this.coordinator.markFailed(toAutonomousTaskRef(snapshot), 'PLANNER_FAILED');
     if (isAutonomousTaskApplied(failed)) {
+      this.lifecycle.releaseWorkspace(taskId);
       this.emitFromSnapshot(taskId, 'autonomous-task-failed');
     }
   }
@@ -506,6 +510,9 @@ export class AutonomousTaskController {
     const type =
       snapshot.state === 'paused' ? pausedType : eventTypeForState(snapshot.state);
     this.emitFromSnapshot(taskId, type);
+    if (isTerminalAutonomousTaskState(snapshot.state)) {
+      this.lifecycle.releaseWorkspace(taskId);
+    }
     const view = this.toView(snapshot);
     if (view === undefined) {
       return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };

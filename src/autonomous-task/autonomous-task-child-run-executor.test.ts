@@ -652,6 +652,42 @@ describe('AutonomousTaskChildRunExecutor', () => {
     }
   });
 
+  it('maps ignored AgentRun completion during lifecycle cancel without CHILD_RUN_FAILED', async () => {
+    const harness = createHarness();
+    const task = startTask(harness);
+    const hold = new Deferred<AutonomousTaskAgentRunCompletion>();
+    const startedGate = new Deferred<void>();
+    const port = new FakeAgentRunPort(async (tabId, instruction) => {
+      const ref: AgentRunRef = { runId: 'run-ignored', tabId, generation: 1 };
+      startedGate.resolve();
+      return {
+        status: 'started',
+        run: completedSnapshot(ref, instruction),
+        ref,
+        completion: hold.promise,
+      };
+    });
+    port.cancelAndWait = async () => {
+      hold.resolve({ status: 'ignored' });
+    };
+    const executor = new AutonomousTaskChildRunExecutor({
+      coordinator: harness.coordinator,
+      agentRuns: port,
+      tabState: harness.tabState,
+    });
+    const pending = executor.execute(childRequest(task));
+    await startedGate.promise;
+    for (let attempt = 0; attempt < 20 && executor.getActiveChild(task.taskId) === undefined; attempt += 1) {
+      await Promise.resolve();
+    }
+    const cancelled = await executor.cancelActiveChildForLifecycle(refOf(task), 'USER_CANCELLED', 'pause');
+    const executed = await pending;
+    assert.equal(cancelled.status, 'lifecycle-cancelled');
+    assert.equal(executed.status, 'lifecycle-cancelled');
+    assert.equal(harness.coordinator.getTask(task.taskId)?.state, 'running-subgoal');
+    assert.notEqual(harness.coordinator.getTask(task.taskId)?.terminalReason, 'CHILD_RUN_FAILED');
+  });
+
   it('finds the active child only by exact AgentRunRef', async () => {
     const harness = createHarness();
     const task = startTask(harness);

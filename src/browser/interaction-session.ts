@@ -30,6 +30,7 @@ export class InteractionSessionManager {
     tabId: TabId,
     webContents: WebContents,
     action: (cdp: InteractionCdpClient) => Promise<T>,
+    sessionOptions?: { allowFocus?: boolean },
   ): Promise<T> {
     if (this.inFlightTabs.has(tabId)) {
       throw new InteractionError('INTERACTION_IN_PROGRESS', 'An interaction is already in progress for this tab');
@@ -46,7 +47,7 @@ export class InteractionSessionManager {
 
     try {
       session = await this.beginSession(webContents);
-      if (!webContents.isDestroyed()) {
+      if (sessionOptions?.allowFocus !== false && !webContents.isDestroyed()) {
         BrowserWindow?.fromWebContents?.(webContents)?.focus();
         webContents.focus?.();
       }
