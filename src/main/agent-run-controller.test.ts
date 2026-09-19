@@ -141,6 +141,46 @@ function controllerOf(loop: FakeLoop, extras: { manager?: FakeManager; lifecycle
   return { controller, events, coordinator, conversationStore, manager, lifecycle, loop, executor };
 }
 
+function wrappingController(loop: FakeLoop, extras: { manager?: FakeManager; lifecycle?: FakeLifecycle } = {}) {
+  const inner = controllerOf(loop, extras);
+  const cancelRefs: AgentRunRef[] = [];
+  const cancelAndWaitRefs: AgentRunRef[] = [];
+  let invalidateCount = 0;
+  const controller = new AgentRunController({
+    conversationStore: inner.conversationStore,
+    emit: (event) => {
+      inner.events.push(event);
+    },
+    executor: {
+      start: (tabId, instruction, options) => inner.executor.start(tabId, instruction, options),
+      cancel: (ref, reason) => {
+        cancelRefs.push(ref);
+        return inner.executor.cancel(ref, reason);
+      },
+      cancelAndWait: async (ref, reason) => {
+        cancelAndWaitRefs.push(ref);
+        await inner.executor.cancelAndWait(ref, reason);
+      },
+      invalidatePendingStarts: (tabId) => {
+        invalidateCount += 1;
+        inner.executor.invalidatePendingStarts(tabId);
+      },
+      getActiveRef: (tabId) => inner.executor.getActiveRef(tabId),
+      isActive: (tabId) => inner.executor.isActive(tabId),
+      dispose: () => inner.executor.dispose(),
+    },
+  });
+  return {
+    inner,
+    controller,
+    cancelRefs,
+    cancelAndWaitRefs,
+    get invalidateCount() {
+      return invalidateCount;
+    },
+  };
+}
+
 describe('AgentRunController', () => {
   it('starts an Act run and commits exactly one conversation turn on completion', async () => {
     const harness = controllerOf(new FakeLoop());
@@ -565,6 +605,167 @@ describe('AgentRunController', () => {
     assert.equal(harness.conversationStore.get(TAB)?.turns[0]?.question, 'Do the task');
   });
 
+  it('installs exact product ownership in onStarted before start returns', async () => {
+    const hold = new Deferred<SafeAgentLoopResult>();
+    const loop = new FakeLoop(async () => hold.promise);
+    const harness = controllerOf(loop);
+    const started = await harness.controller.start(TAB, 'Do the task', { askId: 'ask-1' });
+    assert.equal(started.status, 'started');
+    if (started.status !== 'started') {
+      throw new Error('expected start');
+    }
+    assert.equal(harness.controller.isActive(TAB), true);
+    assert.equal(started.run.runId, harness.executor.getActiveRef(TAB)?.runId);
+    assert.equal(harness.controller.cancel(TAB, 'USER_CANCELLED'), true);
+    assert.equal(loop.aborted, true);
+    hold.resolve({ status: 'ignored' });
+    await started.completion;
+  });
+
+  it('does not cancel an unowned executor run via cancel', async () => {
+    const hold = new Deferred<SafeAgentLoopResult>();
+    const loop = new FakeLoop(async () => hold.promise);
+    const harness = wrappingController(loop);
+    const child = await harness.inner.executor.start(TAB, 'Child subgoal');
+    assert.equal(child.status, 'started');
+    if (child.status !== 'started') {
+      throw new Error('expected child');
+    }
+    assert.equal(harness.controller.isActive(TAB), false);
+    assert.equal(harness.controller.cancel(TAB, 'USER_CANCELLED'), false);
+    assert.equal(harness.cancelRefs.length, 0);
+    assert.equal(harness.invalidateCount, 1);
+    assert.equal(loop.aborted, false);
+    assert.equal(harness.inner.executor.getActiveRef(TAB)?.runId, child.ref.runId);
+    hold.resolve({ status: 'ignored' });
+    await child.completion;
+  });
+
+  it('does not cancel an unowned executor run via cancelActive', async () => {
+    const hold = new Deferred<SafeAgentLoopResult>();
+    const loop = new FakeLoop(async () => hold.promise);
+    const harness = wrappingController(loop);
+    const child = await harness.inner.executor.start(TAB, 'Child subgoal');
+    assert.equal(child.status, 'started');
+    if (child.status !== 'started') {
+      throw new Error('expected child');
+    }
+    await harness.controller.cancelActive(TAB, 'SUPERSEDED');
+    assert.equal(harness.cancelAndWaitRefs.length, 0);
+    assert.equal(harness.cancelRefs.length, 0);
+    assert.equal(harness.invalidateCount, 1);
+    assert.equal(loop.aborted, false);
+    assert.equal(harness.inner.executor.getActiveRef(TAB)?.runId, child.ref.runId);
+    hold.resolve({ status: 'ignored' });
+    await child.completion;
+  });
+
+  it('lifecycle methods do not seize an unowned executor run', async () => {
+    for (const action of ['clear', 'tab-close', 'crash', 'chrome'] as const) {
+      const hold = new Deferred<SafeAgentLoopResult>();
+      const loop = new FakeLoop(async () => hold.promise);
+      const harness = wrappingController(loop);
+      harness.inner.conversationStore.commitTurn(TAB, 'rev-old', { question: 'old', answer: 'old' });
+      const child = await harness.inner.executor.start(TAB, 'Child subgoal');
+      assert.equal(child.status, 'started');
+      if (child.status !== 'started') {
+        throw new Error('expected child');
+      }
+      if (action === 'clear') {
+        harness.controller.clearConversation(TAB);
+        assert.equal(harness.inner.conversationStore.get(TAB), undefined);
+      } else if (action === 'tab-close') {
+        harness.controller.handleTabClosed(TAB);
+        assert.equal(harness.inner.conversationStore.get(TAB), undefined);
+      } else if (action === 'crash') {
+        harness.controller.handleRendererCrash(TAB);
+        assert.equal(harness.inner.conversationStore.get(TAB), undefined);
+      } else {
+        harness.controller.cancelForTrustedChromeNavigation(TAB);
+        assert.equal(harness.inner.conversationStore.get(TAB)?.turns.length, 1);
+      }
+      assert.equal(harness.cancelRefs.length, 0, action);
+      assert.equal(harness.cancelAndWaitRefs.length, 0, action);
+      assert.equal(loop.aborted, false, action);
+      assert.equal(harness.inner.executor.getActiveRef(TAB)?.runId, child.ref.runId, action);
+      hold.resolve({ status: 'ignored' });
+      await child.completion;
+    }
+  });
+
+  it('invalidates a pending manual start without cancelling via unowned active-ref lookup', async () => {
+    const firstHold = new Deferred<SafeAgentLoopResult>();
+    const loop = new FakeLoop(async () => firstHold.promise);
+    const manager = new FakeManager();
+    const harness = wrappingController(loop, { manager });
+    const child = await harness.inner.executor.start(TAB, 'Child subgoal');
+    assert.equal(child.status, 'started');
+    if (child.status !== 'started') {
+      throw new Error('expected child');
+    }
+    harness.inner.coordinator.presentApproval(child.ref, 'appr-1');
+    manager.snapshot = executingSnapshot(true);
+
+    let startResolved = false;
+    const pending = harness.controller.start(TAB, 'Manual', { askId: 'ask-1' }).then((result) => {
+      startResolved = true;
+      return result;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(startResolved, false);
+    assert.equal(harness.controller.isActive(TAB), false);
+    assert.equal(harness.controller.cancel(TAB, 'USER_CANCELLED'), false);
+    assert.equal(harness.cancelRefs.length, 0);
+
+    const notified = harness.inner.coordinator.notifyApprovalOutcome('appr-1', 'executed');
+    if (notified.status === 'applied') {
+      firstHold.resolve({ status: 'terminal', run: notified.snapshot });
+    }
+    const result = await pending;
+    assert.equal(result.status, 'ignored');
+    assert.equal(harness.controller.isActive(TAB), false);
+  });
+
+  it('cancels an owned manual run through every product lifecycle path', async () => {
+    for (const action of ['cancel', 'cancelActive', 'clear', 'tab-close', 'crash', 'chrome'] as const) {
+      const hold = new Deferred<SafeAgentLoopResult>();
+      const loop = new FakeLoop(async () => hold.promise);
+      const harness = wrappingController(loop);
+      const started = await harness.controller.start(TAB, 'Do', { askId: 'ask-1' });
+      assert.equal(started.status, 'started');
+      if (started.status !== 'started') {
+        throw new Error('expected start');
+      }
+      if (action === 'cancel') {
+        assert.equal(harness.controller.cancel(TAB, 'USER_CANCELLED'), true);
+        assert.equal(harness.cancelRefs[0]?.runId, started.run.runId);
+      } else if (action === 'cancelActive') {
+        const draining = harness.controller.cancelActive(TAB, 'SUPERSEDED');
+        assert.equal(harness.cancelAndWaitRefs[0]?.runId, started.run.runId);
+        assert.equal(loop.aborted, true, action);
+        hold.resolve({ status: 'ignored' });
+        await draining;
+        await started.completion;
+        continue;
+      } else if (action === 'clear') {
+        harness.controller.clearConversation(TAB);
+        assert.equal(harness.cancelRefs[0]?.runId, started.run.runId);
+      } else if (action === 'tab-close') {
+        harness.controller.handleTabClosed(TAB);
+        assert.equal(harness.cancelRefs[0]?.runId, started.run.runId);
+      } else if (action === 'crash') {
+        harness.controller.handleRendererCrash(TAB);
+        assert.equal(harness.cancelRefs[0]?.runId, started.run.runId);
+      } else {
+        harness.controller.cancelForTrustedChromeNavigation(TAB);
+        assert.equal(harness.cancelRefs[0]?.runId, started.run.runId);
+      }
+      assert.equal(loop.aborted, true, action);
+      hold.resolve({ status: 'ignored' });
+      await started.completion;
+    }
+  });
+
   it('emits renderer-safe events without authority fields', async () => {
     const harness = controllerOf(new FakeLoop());
     const started = await harness.controller.start(TAB, 'Do the task', { askId: 'ask-1' });
@@ -605,6 +806,7 @@ describe('AgentRunController source isolation', () => {
       'AgentRunCoordinator',
       'ApprovalManager',
       'ApprovalLifecycle',
+      'getActiveRef',
     ]) {
       assert.equal(source.includes(token), false, token);
     }

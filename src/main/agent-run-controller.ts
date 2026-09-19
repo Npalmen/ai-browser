@@ -178,7 +178,7 @@ export class AgentRunController {
   }
 
   private exactRefForTab(tabId: TabId): AgentRunRef | undefined {
-    return this.productByTab.get(tabId)?.ref ?? this.executor.getActiveRef(tabId);
+    return this.productByTab.get(tabId)?.ref;
   }
 
   private finishRun(product: ProductAgentRun, result: SafeAgentLoopResult): void {
