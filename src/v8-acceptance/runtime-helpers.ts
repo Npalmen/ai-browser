@@ -1,7 +1,7 @@
 export async function waitUntil(
   predicate: () => boolean | Promise<boolean>,
   timeoutMs = 15000,
-  message = 'Timed out waiting for acceptance condition',
+  message: string | (() => string) = 'Timed out waiting for acceptance condition',
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let last: unknown;
@@ -16,7 +16,8 @@ export async function waitUntil(
     await new Promise((resolve) => setTimeout(resolve, 40));
   }
   const extra = last instanceof Error ? ` (${last.message})` : '';
-  throw new Error(`${message}${extra}`);
+  const text = typeof message === 'function' ? message() : message;
+  throw new Error(`${text}${extra}`);
 }
 
 export class Deferred<T> {

@@ -351,10 +351,35 @@ async function run(): Promise<void> {
 
     const safeUrl = fixtureUrl(V3_SAFE_INTERACT_PATH);
     await focusFirstTab(appWindow);
+    await waitUntil(() => {
+      const state = adapter.getBrowserState();
+      const active = state.tabs.find((tab) => tab.id === state.activeTabId);
+      return Boolean(active && !active.loading);
+    }, 8000, 'first tab was still loading before safe Act navigation');
     await submitOmnibox(appWindow, safeUrl, 'default');
-    await waitUntil(() => (activeUrl(adapter) ?? '').includes(V3_SAFE_INTERACT_PATH), 15000, 'safe interact fixture missing');
+    await waitUntil(() => {
+      const state = adapter.getBrowserState();
+      const active = state.tabs.find((tab) => tab.id === state.activeTabId);
+      return Boolean(
+        active && active.url.includes(V3_SAFE_INTERACT_PATH) && !active.loading,
+      );
+    }, 15000, `safe interact fixture missing (url=${activeUrl(adapter)})`);
+    await waitUntil(async () => {
+      try {
+        return (
+          (await readActiveWebsite(
+            appWindow,
+            'document.body.innerText.includes("Expand details")',
+          )) === true
+        );
+      } catch {
+        return false;
+      }
+    }, 15000, 'safe interact page did not expose Expand details');
+    let expandProposed = false;
     runtime.interactionScript = (context, instruction) => {
-      if (instruction.toLowerCase().includes('expand')) {
+      if (!expandProposed && instruction.toLowerCase().includes('expand')) {
+        expandProposed = true;
         return {
           kind: 'interaction',
           proposal: { kind: 'click', targetId: findNodeByName(context, 'Expand details').targetId },
@@ -367,15 +392,31 @@ async function run(): Promise<void> {
     await selectCapability(appWindow, 'Act');
     await submitOmnibox(appWindow, 'Click Expand details');
     await waitUntil(
-      () => primitiveCounts.click === clicksBeforeSafe + 1,
+      async () => {
+        if (primitiveCounts.click < clicksBeforeSafe + 1) {
+          return false;
+        }
+        try {
+          return (
+            (await readActiveWebsite(
+              appWindow,
+              `document.getElementById('detail-panel')?.classList.contains('visible') === true || document.body.innerText.includes(${JSON.stringify(V3_EXPANDED_DETAIL_MARKER)})`,
+            )) === true
+          );
+        } catch {
+          return false;
+        }
+      },
       25000,
-      `safe Act click did not run (clicks=${primitiveCounts.click} interactions=${runtime.interactionCount})`,
+      () =>
+        `safe Act click did not run (clicks=${primitiveCounts.click} interactions=${runtime.interactionCount} generate=${runtime.generateCount} url=${activeUrl(adapter)})`,
     );
     const expanded = await readActiveWebsite(
       appWindow,
       `document.getElementById('detail-panel')?.classList.contains('visible') === true || document.body.innerText.includes(${JSON.stringify(V3_EXPANDED_DETAIL_MARKER)})`,
     );
     assert.equal(expanded, true);
+    assert.equal(primitiveCounts.click, clicksBeforeSafe + 1);
     assert.equal(runtime.plannerCount, 0);
     assert.equal(runtime.draftCount, 0);
 
@@ -918,25 +959,56 @@ async function submitOmnibox(
       'default omnibox capability did not clear',
     );
   }
-  await evalInApp(appWindow, async (value: string) => {
-    const input = document.querySelector('.omnibox-input') as HTMLInputElement | null;
-    if (!input) {
-      throw new Error('missing omnibox');
-    }
-    input.focus();
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-    setter?.call(input, value);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    await new Promise<void>((resolve) => {
-      window.setTimeout(resolve, 250);
-    });
+  await waitUntil(
+    async () =>
+      (await evalInApp(appWindow, () => {
+        const input = document.querySelector('.omnibox-input') as HTMLInputElement | null;
+        const submit = document.querySelector('.omnibox-submit') as HTMLButtonElement | null;
+        return Boolean(input && submit && !input.disabled && !submit.disabled);
+      })) === true,
+    8000,
+    'omnibox was not ready to submit',
+  );
+  let draftConfirmed = false;
+  await waitUntil(
+    async () => {
+      const matches = await evalInApp(appWindow, (value: string) => {
+        const input = document.querySelector('.omnibox-input') as HTMLInputElement | null;
+        if (!input || input.disabled) {
+          return false;
+        }
+        input.focus();
+        if (input.value !== value) {
+          const tracker = (input as unknown as { _valueTracker?: { setValue: (next: string) => void } })
+            ._valueTracker;
+          tracker?.setValue('');
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+          setter?.call(input, value);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          return false;
+        }
+        return true;
+      }, text);
+      if (matches && draftConfirmed) {
+        return true;
+      }
+      draftConfirmed = matches;
+      return false;
+    },
+    8000,
+    'omnibox draft did not settle',
+  );
+  await evalInApp(appWindow, () => {
     const submit = document.querySelector('.omnibox-submit') as HTMLButtonElement | null;
     if (!submit) {
       throw new Error('missing omnibox submit');
     }
+    if (submit.disabled) {
+      throw new Error('omnibox submit is disabled');
+    }
     submit.click();
-  }, text);
+  });
 }
 
 async function activateAppTab(appWindow: BrowserWindow, tabId: string): Promise<void> {

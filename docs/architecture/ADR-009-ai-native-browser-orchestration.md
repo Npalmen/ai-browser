@@ -72,7 +72,7 @@ That is an **AI-enabled browser**. V8 makes it an **AI-native browser**: the pri
 
 Chromium fork / CEF, OS automation, voice, connectors, MCP, cloud browser, webhooks, multi-agent, parallel workflows, semantic long-term memory, history embeddings, sync, password manager, extensions, ad blocker, network interception, full bookmark/history platform, download-as-AI-execute, expanding V4 EXECUTE beyond click.
 
-This ADR does **not** start implementation.
+This ADR does **not** start implementation. V8 implementation later completed and is frozen; evidence: `docs/acceptance/V8-acceptance.md`.
 
 ---
 
@@ -779,12 +779,12 @@ No unanswered TODOs on routing, context, draft, or authority semantics.
 
 ## Consequences
 
-- Implementation is specified in `docs/plans/V8-ai-native-browser.md`. This ADR does **not** start implementation.
+- Implementation is specified in `docs/plans/V8-ai-native-browser.md`. Evidence: `docs/acceptance/V8-acceptance.md`.
 - V0–V7 remain COMPLETE / CLOSED / FROZEN.
 - ADR-008 durable-workflow decisions are unchanged. ADR-008’s connector/cloud/OS list is **not** V8 scope.
 
 ```text
 ADR-009 Status: Accepted
-V8 implementation: NOT STARTED
+V8 implementation: COMPLETE / CLOSED / FROZEN
 V7 remains COMPLETE / CLOSED / FROZEN
 ```

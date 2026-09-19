@@ -1,7 +1,7 @@
 # Plan: V8 — AI-native browser
 
-**Status:** locked  
-**Implementation:** NOT STARTED  
+**Status:** V8 COMPLETE / CLOSED  
+**Implementation:** complete  
 **Explicit reference:** Implementation tasks must cite `docs/plans/V8-ai-native-browser.md` to treat this file as authoritative.
 
 Authoritative architecture:
@@ -23,14 +23,15 @@ AGENTS.md
 ```
 
 ```text
-V8 architecture: LOCKED
-V8 implementation: NOT STARTED
+V8 COMPLETE / CLOSED / FROZEN
 V7 remains COMPLETE / CLOSED / FROZEN
 ```
 
+Phases 1–7 are complete. The locked architecture in this document and ADR-009 is unchanged.
+
 V0 (shell), V1 (observation), V2 (read-only agent), V3 (INTERACT), V4 (PREPARE / APPROVAL / EXECUTE), V5 (agent loop), V6 (autonomous tasks), and V7 (persistent workflows) are **complete and frozen**. V8 must not reopen already-green V0–V7 authority.
 
-This plan implements ADR-009. It does not start V8 production code in the architecture-lock task.
+This plan implements ADR-009. The architecture-lock task that created this file did not start production code. Implementation phases 1–7 later completed that work. Evidence: `docs/acceptance/V8-acceptance.md`.
 
 ---
 
@@ -50,6 +51,7 @@ trusted omnibox (Navigate / Search / Ask / Act / Delegate / Automate)
 Intent routing is not authority.
 Context selection is not authority.
 AI-generated drafts are not authority.
+Activity is not authority.
 ```
 
 V8 may discover, compose, and invoke existing V2–V7 paths. It must not create a path around V3, V4, V5, V6, or V7.
@@ -78,7 +80,7 @@ V6 auto-owning extra context tabs
 proactive suggestion execution
 ```
 
-Do not mark V8 implementation complete in this architecture-lock task. No implementation phase in this file is complete until an implementation task finishes it.
+Historical architecture-lock constraint: that first task was not allowed to mark implementation complete. All implementation phases in this file are now complete.
 
 ## Model policy
 
@@ -120,7 +122,7 @@ verification:
 
 Per implementation phase: **targeted tests only**.
 
-Full V0–V8 / V2–V8 acceptance matrix **only in Phase 7 closure**.
+Full V0–V8 / V2–V8 acceptance matrix was required in Phase 7 and final V8 closure. That matrix is now green. Evidence: `docs/acceptance/V8-acceptance.md`.
 
 No live or paid model calls in acceptance. Recording / fake model runtimes only. No external network. Do not run `test:v2-catalog-live` or `smoke:v2-gateway`.
 
@@ -151,17 +153,17 @@ This plan does **not** authorize production V8 code, dependency installation, IP
 
 ## Phase overview
 
-Seven implementation phases. Do not implement them in the architecture-lock task.
+Seven implementation phases. The architecture-lock task did not implement them. All seven are now complete.
 
 | Phase | Deliverable | Verification | Status |
 |-------|-------------|--------------|--------|
-| 1 | Intent contracts + deterministic routing + typed IPC shapes; no observation, no UI chrome rewrite | targeted router/guard tests | not started |
-| 2 | Multi-tab read-only context builder + MultiTabReadOnlyAgent; no mutation | targeted context/provenance tests | not started |
-| 3 | Omnibox + Search/Navigate + context picker UI | targeted UI + search URL tests | not started |
-| 4 | Omnibox Ask/Act/Delegate wired to existing V2/V3/V6 APIs | targeted orchestration tests | not started |
-| 5 | WorkflowDraft agent + validator + confirmation UI + existing V7 create | targeted draft/save tests | not started |
-| 6 | Activity/attention projection + approval dominance + product polish | targeted activity/attention tests | not started |
-| 7 | V8 acceptance + real Electron closure + V2–V8 matrix | full acceptance matrix | not started |
+| 1 | Intent contracts + deterministic routing + typed IPC shapes; no observation, no UI chrome rewrite | targeted router/guard tests | complete |
+| 2 | Multi-tab read-only context builder + MultiTabReadOnlyAgent; no mutation | targeted context/provenance tests | complete |
+| 3 | Omnibox + Search/Navigate + context picker UI | targeted UI + search URL tests | complete |
+| 4 | Omnibox Ask/Act/Delegate wired to existing V2/V3/V6 APIs | targeted orchestration tests | complete |
+| 5 | WorkflowDraft agent + validator + confirmation UI + existing V7 create | targeted draft/save tests | complete |
+| 6 | Activity/attention projection + approval dominance + product polish | targeted activity/attention tests | complete |
+| 7 | V8 acceptance + real Electron closure + V2–V8 matrix | full acceptance matrix | complete |
 
 Each phase must remain independently reviewable. Do not collapse later phases into earlier ones.
 
@@ -353,17 +355,27 @@ V8 Electron runner must be **single-attempt** (same invariant as corrected V7: o
 
 ## Completion criteria
 
-Architecture-lock task is complete when:
+V8 is **COMPLETE / CLOSED / FROZEN**. Phases 1–7 are complete. Acceptance evidence: `docs/acceptance/V8-acceptance.md`.
+
+Final closure gates green:
 
 ```text
-ADR-009 Accepted
-this plan Status: locked
-browser-architecture.md records V8 architecture locked / implementation not started
-no production V8 code landed
-V7 remains COMPLETE / CLOSED / FROZEN
+npm run typecheck
+npm run test:v2-acceptance
+npm run test:v3-acceptance
+npm run test:v4-acceptance
+npm run test:v5-acceptance
+npm run test:v6-acceptance
+npm run test:v7-acceptance
+npm run test:v8-acceptance
 ```
 
-V8 implementation is complete only after Phase 7 acceptance is green and a later closure task says so. This file must not be marked implementation-complete by the architecture-lock commit.
+Future work must not casually modify V8 authority semantics. Changes that alter routing authority, context authority, approval semantics, the WorkflowDraft persistence boundary, or Activity authority are new architecture work.
+
+```text
+V8 COMPLETE / CLOSED / FROZEN
+V7 remains COMPLETE / CLOSED / FROZEN
+```
 
 ---
 
@@ -372,5 +384,5 @@ V8 implementation is complete only after Phase 7 acceptance is green and a later
 This plan implements ADR-009. It does not reopen ADR-002–ADR-008.
 
 ```text
-V8 implementation: NOT STARTED
+V8 COMPLETE / CLOSED / FROZEN
 ```
