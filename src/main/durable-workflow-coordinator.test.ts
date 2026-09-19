@@ -545,7 +545,195 @@ describe('DurableWorkflowCoordinator', () => {
       assert.equal(enqueueBlock.includes(field), false, field);
     }
   });
+
+  it('leaves the coordinator uninitialized when store load fails', async () => {
+    const coordinator = new DurableWorkflowCoordinator({
+      store: {
+        async load(): Promise<WorkflowStoreSnapshot> {
+          throw new WorkflowStoreError('WORKFLOW_STORE_IO_FAILED', 'Workflow store I/O failed.');
+        },
+        async commit(): Promise<WorkflowStoreSnapshot> {
+          throw new Error('commit should not run');
+        },
+      },
+    });
+    await assert.rejects(
+      () => coordinator.initialize('runtime-A'),
+      (error: unknown) =>
+        error instanceof WorkflowStoreError && error.code === 'WORKFLOW_STORE_IO_FAILED',
+    );
+    await assertUninitialized(coordinator);
+  });
+
+  it('leaves the coordinator uninitialized when recovery commit exhausts revision conflicts', async () => {
+    const coordinator = new DurableWorkflowCoordinator({
+      store: {
+        async load(): Promise<WorkflowStoreSnapshot> {
+          return structuredClone(snapshotWithRunning('runtime-A'));
+        },
+        async commit(): Promise<WorkflowStoreSnapshot> {
+          throw new WorkflowStoreError(
+            'WORKFLOW_STORE_REVISION_CONFLICT',
+            'Workflow store revision conflict.',
+          );
+        },
+      },
+    });
+    await assert.rejects(
+      () => coordinator.initialize('runtime-B'),
+      (error: unknown) =>
+        error instanceof DurableWorkflowError && error.code === 'WORKFLOW_CONCURRENT_MODIFICATION',
+    );
+    await assertUninitialized(coordinator);
+  });
+
+  it('leaves the coordinator uninitialized when same-session running state is invalid', async () => {
+    const coordinator = new DurableWorkflowCoordinator({
+      store: {
+        async load(): Promise<WorkflowStoreSnapshot> {
+          return structuredClone(snapshotWithTwoRunning('runtime-A'));
+        },
+        async commit(): Promise<WorkflowStoreSnapshot> {
+          throw new Error('commit should not run');
+        },
+      },
+    });
+    await assert.rejects(
+      () => coordinator.initialize('runtime-A'),
+      (error: unknown) =>
+        error instanceof DurableWorkflowError && error.code === 'WORKFLOW_OCCURRENCE_INVALID_STATE',
+    );
+    await assertUninitialized(coordinator);
+  });
+
+  it('installs the runtime session only after successful initialization', async () => {
+    const { coordinator } = await createHarness({ runtimeSessionId: 'runtime-A' });
+    const workflow = await coordinator.createWorkflow(sampleInput());
+    const queued = await enqueueQueued(coordinator, workflow.workflowId, 'one');
+    const running = await coordinator.markOccurrenceRunning(queued.occurrenceId);
+    assert.equal(running.ownerRuntimeSessionId, 'runtime-A');
+  });
+
+  it('rejects a different runtimeSessionId without replacing the established session', async () => {
+    const { coordinator } = await createHarness({ runtimeSessionId: 'runtime-A' });
+    const workflow = await coordinator.createWorkflow(sampleInput());
+    const queued = await enqueueQueued(coordinator, workflow.workflowId, 'one');
+    await coordinator.markOccurrenceRunning(queued.occurrenceId);
+
+    await assert.rejects(
+      () => coordinator.initialize('runtime-B'),
+      (error: unknown) =>
+        error instanceof DurableWorkflowError && error.code === 'WORKFLOW_ALREADY_INITIALIZED',
+    );
+    const stillRunning = await coordinator.getRunningOccurrence();
+    assert.equal(stillRunning?.ownerRuntimeSessionId, 'runtime-A');
+    assert.equal(stillRunning?.state, 'running');
+    const started = await coordinator.terminalizeRunningOccurrence({
+      occurrenceId: queued.occurrenceId,
+      state: 'completed',
+      finalAnswer: 'still-a',
+    });
+    assert.equal(started.ownerRuntimeSessionId, null);
+    const next = await enqueueQueued(coordinator, workflow.workflowId, 'two');
+    const runningAgain = await coordinator.markOccurrenceRunning(next.occurrenceId);
+    assert.equal(runningAgain.ownerRuntimeSessionId, 'runtime-A');
+  });
+
+  it('treats repeated initialize with the same runtimeSessionId as idempotent', async () => {
+    const { coordinator, store } = await createHarness({ runtimeSessionId: 'runtime-A' });
+    const workflow = await coordinator.createWorkflow(sampleInput());
+    const queued = await enqueueQueued(coordinator, workflow.workflowId, 'one');
+    await coordinator.markOccurrenceRunning(queued.occurrenceId);
+    const revision = (await store.load()).storeRevision;
+    const snapshot = await coordinator.initialize('runtime-A');
+    assert.equal(snapshot.storeRevision, revision);
+    assert.equal((await coordinator.getOccurrence(queued.occurrenceId))?.state, 'running');
+    assert.equal((await coordinator.getRunningOccurrence())?.ownerRuntimeSessionId, 'runtime-A');
+    assert.equal((await store.load()).storeRevision, revision);
+  });
 });
+
+async function assertUninitialized(coordinator: DurableWorkflowCoordinator): Promise<void> {
+  await assert.rejects(
+    () => coordinator.listWorkflows(),
+    (error: unknown) =>
+      error instanceof DurableWorkflowError && error.code === 'WORKFLOW_NOT_INITIALIZED',
+  );
+  await assert.rejects(
+    () => coordinator.createWorkflow(sampleInput()),
+    (error: unknown) =>
+      error instanceof DurableWorkflowError && error.code === 'WORKFLOW_NOT_INITIALIZED',
+  );
+  await assert.rejects(
+    () =>
+      coordinator.enqueueOccurrence({
+        workflowId: 'wf-1',
+        triggerKey: 'manual:one',
+        scheduledFor: null,
+        source: 'manual',
+      }),
+    (error: unknown) =>
+      error instanceof DurableWorkflowError && error.code === 'WORKFLOW_NOT_INITIALIZED',
+  );
+}
+
+function snapshotWithRunning(ownerRuntimeSessionId: string): WorkflowStoreSnapshot {
+  return {
+    schemaVersion: WORKFLOW_STORE_SCHEMA_VERSION,
+    storeRevision: 1,
+    workflows: [seedWorkflow()],
+    occurrences: [seedOccurrence('occ-1', ownerRuntimeSessionId)],
+  };
+}
+
+function snapshotWithTwoRunning(ownerRuntimeSessionId: string): WorkflowStoreSnapshot {
+  return {
+    schemaVersion: WORKFLOW_STORE_SCHEMA_VERSION,
+    storeRevision: 1,
+    workflows: [seedWorkflow()],
+    occurrences: [
+      seedOccurrence('occ-1', ownerRuntimeSessionId),
+      seedOccurrence('occ-2', ownerRuntimeSessionId),
+    ],
+  };
+}
+
+function seedWorkflow(): DurableWorkflowDefinitionRecord {
+  return {
+    workflowId: 'wf-1',
+    definitionRevision: 1,
+    name: 'Invoice check',
+    objective: 'Open the invoice page and summarize totals.',
+    entryPoint: { kind: 'url', url: 'https://example.com/path?resource=123' },
+    trigger: { kind: 'manual' },
+    enabled: true,
+    reviewRequired: false,
+    createdAt: '2026-09-19T10:00:00.000Z',
+    updatedAt: '2026-09-19T10:00:00.000Z',
+  };
+}
+
+function seedOccurrence(occurrenceId: string, ownerRuntimeSessionId: string): WorkflowOccurrenceRecord {
+  return {
+    occurrenceId,
+    workflowId: 'wf-1',
+    definitionRevision: 1,
+    triggerKey: `manual:${occurrenceId}`,
+    scheduledFor: null,
+    frozenDefinition: {
+      objective: 'Open the invoice page and summarize totals.',
+      entryPoint: { kind: 'url', url: 'https://example.com/path?resource=123' },
+      trigger: { kind: 'manual' },
+    },
+    state: 'running',
+    createdAt: '2026-09-19T10:00:00.000Z',
+    startedAt: '2026-09-19T10:00:00.000Z',
+    finishedAt: null,
+    ownerRuntimeSessionId,
+    terminalReason: null,
+    finalAnswer: null,
+  };
+}
 
 async function assertInvalidState(run: () => Promise<unknown>): Promise<void> {
   await assert.rejects(

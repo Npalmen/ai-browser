@@ -67,11 +67,27 @@ export class DurableWorkflowCoordinator {
   }
 
   async initialize(runtimeSessionId: string): Promise<WorkflowStoreSnapshot> {
-    this.runtimeSessionId = requireRuntimeSessionId(runtimeSessionId);
+    const candidate = requireRuntimeSessionId(runtimeSessionId);
+    if (this.runtimeSessionId !== undefined) {
+      if (this.runtimeSessionId !== candidate) {
+        throw new DurableWorkflowError(
+          'WORKFLOW_ALREADY_INITIALIZED',
+          'Workflow coordinator is already initialized.',
+        );
+      }
+      return this.initializeForSession(candidate);
+    }
+
+    const snapshot = await this.initializeForSession(candidate);
+    this.runtimeSessionId = candidate;
+    return snapshot;
+  }
+
+  private async initializeForSession(candidate: string): Promise<WorkflowStoreSnapshot> {
     return this.transact((snapshot) => {
       const currentSessionRuns = snapshot.occurrences.filter(
         (occurrence) =>
-          occurrence.state === 'running' && occurrence.ownerRuntimeSessionId === this.runtimeSessionId,
+          occurrence.state === 'running' && occurrence.ownerRuntimeSessionId === candidate,
       );
       if (currentSessionRuns.length > 1) {
         throw new DurableWorkflowError(
@@ -82,7 +98,7 @@ export class DurableWorkflowCoordinator {
 
       const stale = snapshot.occurrences.filter(
         (occurrence) =>
-          occurrence.state === 'running' && occurrence.ownerRuntimeSessionId !== this.runtimeSessionId,
+          occurrence.state === 'running' && occurrence.ownerRuntimeSessionId !== candidate,
       );
       if (stale.length === 0) {
         return { kind: 'return', value: snapshot };

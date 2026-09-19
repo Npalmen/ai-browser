@@ -8,7 +8,8 @@ export type DurableWorkflowErrorCode =
   | 'WORKFLOW_BUSY'
   | 'WORKFLOW_CONCURRENT_MODIFICATION'
   | 'WORKFLOW_INVALID_REQUEST'
-  | 'WORKFLOW_NOT_INITIALIZED';
+  | 'WORKFLOW_NOT_INITIALIZED'
+  | 'WORKFLOW_ALREADY_INITIALIZED';
 
 export class DurableWorkflowError extends Error {
   readonly code: DurableWorkflowErrorCode;
