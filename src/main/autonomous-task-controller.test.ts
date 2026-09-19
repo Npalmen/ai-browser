@@ -55,9 +55,20 @@ class Deferred<T> {
 
 class FakeBrowser {
   activeTabId: TabId = 'tab-a';
+  extraTabIds: TabId[] = [];
 
-  getBrowserState(): { activeTabId: TabId } {
-    return { activeTabId: this.activeTabId };
+  getBrowserState(): { activeTabId: TabId; tabs: { id: TabId }[] } {
+    const ids = new Set<TabId>();
+    if (this.activeTabId) {
+      ids.add(this.activeTabId);
+    }
+    for (const id of this.extraTabIds) {
+      ids.add(id);
+    }
+    return {
+      activeTabId: this.activeTabId,
+      tabs: [...ids].map((id) => ({ id })),
+    };
   }
 }
 
@@ -535,6 +546,48 @@ describe('AutonomousTaskController', () => {
     assert.equal(coordinator.getActiveTask()?.taskId, second.task.taskId);
   });
 
+  it('starts on a trusted exact tab without changing the foreground tab', () => {
+    const harness = createHarness();
+    harness.plannerImpl.hold = new Deferred();
+    harness.browser.extraTabIds = ['tab-workflow'];
+    const started = harness.controller.startOnTrustedTab('tab-workflow', 'Research in the background');
+    assert.equal(started.ok, true);
+    if (!started.ok) {
+      throw new Error('expected trusted-tab start');
+    }
+    assert.equal(started.task.ownedTabIds[0], 'tab-workflow');
+    assert.equal(harness.coordinator.getActiveTask()?.startingTabId, 'tab-workflow');
+    assert.equal(harness.browser.activeTabId, 'tab-a');
+    assert.equal(harness.controller.hasActiveTask(), true);
+    harness.plannerImpl.hold.resolve({
+      status: 'decision',
+      decision: { kind: 'complete', answer: 'Done in the background.' },
+      alias: 'page-standard',
+    });
+  });
+
+  it('reports no active task before start and after terminal completion', async () => {
+    const harness = createHarness();
+    assert.equal(harness.controller.hasActiveTask(), false);
+    harness.plannerImpl.decisions = [{ kind: 'complete', answer: 'Done.' }];
+    const started = harness.controller.start('Finish quickly');
+    assert.equal(started.ok, true);
+    assert.equal(harness.controller.hasActiveTask(), true);
+    await waitUntil(
+      () => harness.events.some((event) => event.type === 'autonomous-task-completed'),
+      'completed',
+    );
+    assert.equal(harness.controller.hasActiveTask(), false);
+  });
+
+  it('rejects trusted exact-tab start for an unknown tab without IPC input', () => {
+    const harness = createHarness();
+    const started = harness.controller.startOnTrustedTab('tab-missing', 'Should fail');
+    assert.equal(started.ok, false);
+    assert.equal(harness.controller.hasActiveTask(), false);
+    assert.equal(harness.browser.activeTabId, 'tab-a');
+  });
+
   it('does not include chain-of-thought or planner instruction in renderer events', () => {
     const source = readFileSync(path.join(__dirname, 'autonomous-task-controller.ts'), 'utf8');
     assert.equal(source.includes('setInterval'), false);
@@ -546,6 +599,20 @@ describe('AutonomousTaskController', () => {
     assert.equal(source.includes('approval:decide'), false);
     assert.match(source, /this\.quiesceLoop\(taskId\);\s*try \{\s*const result = await this\.lifecycle\.pause/s);
     assert.match(source, /this\.quiesceLoop\(taskId\);\s*try \{\s*const result = await this\.lifecycle\.stop/s);
+    assert.match(source, /startOnTrustedTab\(/);
+    assert.match(source, /hasActiveTask\(\)/);
+  });
+
+  it('does not expose exact-tab start through shared IPC contracts', () => {
+    const shared = readFileSync(path.join(__dirname, '../shared/autonomous-task-types.ts'), 'utf8');
+    const ipc = readFileSync(path.join(__dirname, '../shared/ipc-contract.ts'), 'utf8');
+    const preload = readFileSync(path.join(__dirname, '../preload/app-preload.ts'), 'utf8');
+    const guards = readFileSync(path.join(__dirname, 'autonomous-task-ipc-guards.ts'), 'utf8');
+    for (const source of [shared, ipc, preload, guards]) {
+      assert.equal(source.includes('startOnTrustedTab'), false);
+      assert.equal(source.includes('hasActiveTask'), false);
+    }
+    assert.match(shared, /export interface AutonomousTaskStartInput \{\s*readonly objective: string;\s*\}/s);
   });
 
   it('Pause vs completed child does not start the next planner', async () => {

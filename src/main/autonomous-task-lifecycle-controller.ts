@@ -22,7 +22,10 @@ import {
 import { TaskTabStateRegistry } from '../autonomous-task/task-tab-state-registry';
 
 export interface TrustedBrowserStatePort {
-  getBrowserState(): { readonly activeTabId: TabId };
+  getBrowserState(): {
+    readonly activeTabId: TabId;
+    readonly tabs: readonly { readonly id: TabId }[];
+  };
 }
 
 export interface ManualActActivityPort {
@@ -68,13 +71,33 @@ export class AutonomousTaskLifecycleController {
     if (typeof activeTabId !== 'string' || activeTabId.trim().length === 0) {
       throw new AutonomousTaskError('INVALID_TAB_ID', 'Trusted browser state has no active tab.');
     }
-    if (this.manualRuns.isActive(activeTabId)) {
+    return this.startOnTrustedTab(activeTabId, objective);
+  }
+
+  /**
+   * Main-only start on an exact trusted tab. Does not activate that tab.
+   * No new authority type and no workflow-specific grants.
+   */
+  startOnTrustedTab(tabId: TabId, objective: string): AutonomousTaskSnapshot {
+    if (typeof tabId !== 'string' || tabId.trim().length === 0) {
+      throw new AutonomousTaskError('INVALID_TAB_ID', 'Trusted tab id is invalid.');
+    }
+    let tabs: readonly { readonly id: TabId }[];
+    try {
+      tabs = this.browser.getBrowserState().tabs;
+    } catch {
+      throw new AutonomousTaskError('INVALID_TAB_ID', 'Trusted browser state has no matching tab.');
+    }
+    if (!Array.isArray(tabs) || !tabs.some((tab) => tab.id === tabId)) {
+      throw new AutonomousTaskError('INVALID_TAB_ID', 'Trusted browser state has no matching tab.');
+    }
+    if (this.manualRuns.isActive(tabId)) {
       throw new AutonomousTaskError(
         'AUTONOMOUS_TASK_INVALID_TRANSITION',
         'Cannot start an AutonomousTask while a manual Act is active on the current tab.',
       );
     }
-    const snapshot = this.coordinator.startTask(activeTabId, objective);
+    const snapshot = this.coordinator.startTask(tabId, objective);
     const owned = this.coordinator.getOwnedTabs(snapshot.taskId)[0];
     if (owned === undefined) {
       throw new AutonomousTaskError(

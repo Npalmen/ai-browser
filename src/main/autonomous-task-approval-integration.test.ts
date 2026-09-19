@@ -157,8 +157,13 @@ function runSnapshot(
 
 class FakeBrowser {
   activeTabId: TabId = 'tab-a';
-  getBrowserState(): { activeTabId: TabId } {
-    return { activeTabId: this.activeTabId };
+  extraTabIds: TabId[] = [];
+  getBrowserState(): { activeTabId: TabId; tabs: { id: TabId }[] } {
+    const ids = new Set<TabId>([this.activeTabId, ...this.extraTabIds]);
+    return {
+      activeTabId: this.activeTabId,
+      tabs: [...ids].map((id) => ({ id })),
+    };
   }
 }
 

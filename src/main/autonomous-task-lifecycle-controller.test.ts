@@ -41,12 +41,17 @@ class Deferred<T> {
 
 class FakeBrowser {
   activeTabId: TabId = 'tab-a';
+  extraTabIds: TabId[] = [];
 
-  getBrowserState(): { activeTabId: TabId } {
+  getBrowserState(): { activeTabId: TabId; tabs: { id: TabId }[] } {
     if (!this.activeTabId) {
       throw new Error('No active tab');
     }
-    return { activeTabId: this.activeTabId };
+    const ids = new Set<TabId>([this.activeTabId, ...this.extraTabIds]);
+    return {
+      activeTabId: this.activeTabId,
+      tabs: [...ids].map((id) => ({ id })),
+    };
   }
 }
 
@@ -246,6 +251,54 @@ describe('AutonomousTaskLifecycleController', () => {
       AutonomousTaskError,
     );
     assert.equal(harness.coordinator.getActiveTask(), undefined);
+  });
+
+  it('starts on a trusted inactive tab without changing the foreground tab', () => {
+    const harness = createLifecycle();
+    harness.browser.extraTabIds = ['tab-workflow'];
+    const task = harness.lifecycle.startOnTrustedTab(
+      'tab-workflow',
+      'Book the cheapest refundable flight',
+    );
+    assert.equal(task.startingTabId, 'tab-workflow');
+    assert.equal(harness.coordinator.getTabOwner('tab-workflow')?.alias, 'task-tab-1');
+    assert.equal(harness.tabState.getToken(task.taskId, 'task-tab-1'), 'task-tab-state-v1:1');
+    assert.equal(harness.browser.activeTabId, 'tab-a');
+    assert.equal(harness.coordinator.getTabOwner('tab-a'), undefined);
+  });
+
+  it('rejects an unknown exact tab without starting a task', () => {
+    const harness = createLifecycle();
+    assert.throws(
+      () => harness.lifecycle.startOnTrustedTab('tab-missing', 'Book the cheapest refundable flight'),
+      (error: unknown) => error instanceof AutonomousTaskError && error.code === 'INVALID_TAB_ID',
+    );
+    assert.equal(harness.coordinator.getActiveTask(), undefined);
+    assert.equal(harness.browser.activeTabId, 'tab-a');
+  });
+
+  it('rejects startOnTrustedTab while a manual Act is active on that exact tab', () => {
+    const harness = createLifecycle();
+    harness.browser.extraTabIds = ['tab-workflow'];
+    harness.manualRuns.active.add('tab-workflow');
+    assert.throws(
+      () => harness.lifecycle.startOnTrustedTab('tab-workflow', 'Book the cheapest refundable flight'),
+      AutonomousTaskError,
+    );
+    assert.equal(harness.coordinator.getActiveTask(), undefined);
+    assert.equal(harness.browser.activeTabId, 'tab-a');
+  });
+
+  it('still blocks a second start while an AutonomousTask is active', () => {
+    const harness = createLifecycle();
+    harness.browser.extraTabIds = ['tab-workflow'];
+    harness.lifecycle.startOnCurrentTab('Book the cheapest refundable flight');
+    assert.throws(
+      () => harness.lifecycle.startOnTrustedTab('tab-workflow', 'Another task'),
+      AutonomousTaskError,
+    );
+    assert.equal(harness.coordinator.getActiveTask()?.startingTabId, 'tab-a');
+    assert.equal(harness.browser.activeTabId, 'tab-a');
   });
 
   it('pauses planning with an active planner and ignores the late result', async () => {
@@ -707,5 +760,7 @@ describe('AutonomousTaskLifecycleController source isolation', () => {
     ]) {
       assert.equal(source.includes(token), false, token);
     }
+    assert.match(source, /startOnCurrentTab\([\s\S]*return this\.startOnTrustedTab\(activeTabId, objective\)/s);
+    assert.equal(source.includes('activateTab('), false);
   });
 });

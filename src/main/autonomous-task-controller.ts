@@ -92,24 +92,45 @@ export class AutonomousTaskController {
       return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };
     }
     try {
-      const snapshot = this.lifecycle.startOnCurrentTab(objective);
-      this.products.set(snapshot.taskId, {
-        taskId: snapshot.taskId,
-        objective: snapshot.objective,
-        trustedProgress: [],
-        modelSubgoalResults: [],
-        loopGeneration: 1,
-      });
-      this.emitFromSnapshot(snapshot.taskId, 'autonomous-task-started');
-      this.startPlanningLoop(snapshot.taskId, 1);
-      const view = this.toView(snapshot);
-      if (view === undefined) {
-        return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };
-      }
-      return { ok: true, task: view };
+      return this.startFromSnapshot(this.lifecycle.startOnCurrentTab(objective));
     } catch (error) {
       return { ok: false, error: mapTaskError(error) };
     }
+  }
+
+  /**
+   * Main-only start on an exact trusted tab. Not exposed through renderer IPC.
+   */
+  startOnTrustedTab(tabId: TabId, objective: string): AutonomousTaskStartResult {
+    if (this.disposed) {
+      return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };
+    }
+    try {
+      return this.startFromSnapshot(this.lifecycle.startOnTrustedTab(tabId, objective));
+    } catch (error) {
+      return { ok: false, error: mapTaskError(error) };
+    }
+  }
+
+  hasActiveTask(): boolean {
+    return this.coordinator.getActiveTask() !== undefined;
+  }
+
+  private startFromSnapshot(snapshot: AutonomousTaskSnapshot): AutonomousTaskStartResult {
+    this.products.set(snapshot.taskId, {
+      taskId: snapshot.taskId,
+      objective: snapshot.objective,
+      trustedProgress: [],
+      modelSubgoalResults: [],
+      loopGeneration: 1,
+    });
+    this.emitFromSnapshot(snapshot.taskId, 'autonomous-task-started');
+    this.startPlanningLoop(snapshot.taskId, 1);
+    const view = this.toView(snapshot);
+    if (view === undefined) {
+      return { ok: false, error: aiSafeError('AI_REQUEST_FAILED') };
+    }
+    return { ok: true, task: view };
   }
 
   async pause(taskId: string): Promise<AutonomousTaskControlResult> {

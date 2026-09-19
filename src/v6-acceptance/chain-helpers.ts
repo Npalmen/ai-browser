@@ -78,11 +78,12 @@ export function createV6FakeAdapter(
   adapter: BrowserAdapter;
   counts: { click: number; hook: number; input: number; observePage: number; type: number };
   clicksByTab: Map<TabId, number>;
-  browserState: { activeTabId: TabId };
+  browserState: { activeTabId: TabId; tabs: { id: TabId }[] };
 } {
   const counts = { click: 0, hook: 0, input: 0, observePage: 0, type: 0 };
   const clicksByTab = new Map<TabId, number>();
-  const browserState = { activeTabId: options.activeTabId ?? V6_TAB_A };
+  const initialTabId = options.activeTabId ?? V6_TAB_A;
+  const browserState = { activeTabId: initialTabId, tabs: [{ id: initialTabId }] };
   const adapter: BrowserAdapter = {
     createTab: async () => V6_TAB_A,
     closeTab: async () => undefined,
@@ -149,7 +150,7 @@ export function createV6ProductChain(input: {
   };
   now?: () => number;
   generateTaskId?: () => string;
-  browserState?: { activeTabId: TabId };
+  browserState?: { activeTabId: TabId; tabs?: readonly { readonly id: TabId }[] };
   emitApproval?: (event: ApprovalEvent) => void;
   emitAi?: (event: AiAnswerEvent) => void;
   emitTask?: (event: AutonomousTaskEvent) => void;
@@ -319,7 +320,14 @@ export function createV6ProductChain(input: {
     planner: plannerExecutor,
     childRuns,
     browser: {
-      getBrowserState: () => ({ activeTabId: browserState.activeTabId }),
+      getBrowserState: () => {
+        const extra = browserState.tabs ?? [];
+        const ids = new Set<TabId>([browserState.activeTabId, ...extra.map((tab) => tab.id)]);
+        return {
+          activeTabId: browserState.activeTabId,
+          tabs: [...ids].map((id) => ({ id })),
+        };
+      },
     },
     manualRuns: {
       isActive: (tabId) => agentRunController.isActive(tabId),
