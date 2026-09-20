@@ -230,6 +230,25 @@ describe('ax-parser', () => {
 });
 
 describe('normalizeCollectedSources', () => {
+  it('derives documentHeight from cssContentSize layout metrics', () => {
+    const normalized = normalizeCollectedSources({
+      frameTree: frameTree(),
+      layoutMetrics: layoutMetrics({
+        cssContentSize: { width: 800, height: 4200 },
+      }),
+      accessibilityTree: { nodes: [] },
+      domSnapshot: baseSnapshot(),
+      documentIdentity: {
+        mainFrameId: 'main-frame',
+        loaderId: 'loader-1',
+        revision: 'main-frame:loader-1',
+      },
+      pageMetadata: { url: 'https://example.com/', title: 'Example', loading: false },
+    });
+
+    assert.equal(normalized.viewport.documentHeight, 4200);
+  });
+
   it('joins AX and DOM on backendNodeId without duplicates', () => {
     const ax: CdpAccessibilityTreeResponse = {
       nodes: [

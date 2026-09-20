@@ -9,7 +9,10 @@ import type { AgentModelOutput } from '../ai/interaction-output-schema';
 import { MODEL_CATALOG } from '../ai/model-catalog';
 import { ModelError } from '../ai/model-errors';
 import type { ModelRequest } from '../ai/model-types';
-import { TRUSTED_RUN_PROGRESS_OPEN } from '../ai/trusted-run-progress';
+import {
+  serializeTrustedRunProgress,
+  TRUSTED_RUN_PROGRESS_OPEN,
+} from '../ai/trusted-run-progress';
 import type { PageState, TabId } from '../shared/browser-types';
 import type {
   BoundInteractionProposal,
@@ -128,6 +131,68 @@ function boundClick(
     observationId,
     documentRevision: revision,
   };
+}
+
+function boundScroll(
+  revision: string,
+  observationId: string,
+  amountPx = 300,
+  tabId: TabId = TAB,
+): BoundInteractionProposal {
+  return {
+    kind: 'scroll',
+    mode: 'viewport',
+    direction: 'down',
+    amountPx,
+    tabId,
+    observationId,
+    documentRevision: revision,
+  };
+}
+
+const WEBDRIVERIO_TARGET = 'target-webdriverio';
+
+function electronTestingObservation(
+  scrollY = 0,
+  includeWebdriverLink = false,
+): PageObservation {
+  const nodes = includeWebdriverLink
+    ? [
+        node({
+          targetId: WEBDRIVERIO_TARGET,
+          role: 'link',
+          name: 'WebdriverIO',
+          tag: 'a',
+          interactive: true,
+          inViewport: true,
+        }),
+      ]
+    : [];
+  return observation({
+    observationId: `obs-electron-${scrollY}`,
+    document: {
+      ...observation().document,
+      revision: `rev-electron-${scrollY}`,
+      url: 'https://www.electronjs.org/docs/latest/tutorial/automated-testing',
+      title: 'Automated Testing',
+    },
+    viewport: {
+      width: 400,
+      height: 300,
+      scrollX: 0,
+      scrollY,
+      deviceScaleFactor: 1,
+      documentHeight: 2400,
+    },
+    nodes,
+    stats: {
+      ...observation().stats,
+      truncated: true,
+      emittedNodeCount: nodes.length,
+      sourceAxNodeCount: nodes.length,
+      sourceDomNodeCount: nodes.length,
+    },
+  });
 }
 
 function succeeded(
@@ -1930,6 +1995,328 @@ describe('SafeAgentLoop causal popup continuation', () => {
     assert.notEqual(newer.runId, origin.runId);
     assert.equal(newer.state, 'running');
     assert.equal(coordinator.getActiveRunForTab(TAB), undefined);
+  });
+});
+
+describe('SafeAgentLoop offscreen target discovery', () => {
+  it('scrolls once to discover a below-viewport target and clicks it exactly once', async () => {
+    const before = electronTestingObservation(0, false);
+    const afterScroll = electronTestingObservation(300, true);
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex === 1) {
+        return proposalStep(
+          boundScroll(before.document.revision, before.observationId),
+          before,
+        );
+      }
+      if (callIndex === 2) {
+        return proposalStep(
+          boundClick(
+            afterScroll.document.revision,
+            WEBDRIVERIO_TARGET,
+            afterScroll.observationId,
+          ),
+          afterScroll,
+        );
+      }
+      return answerStep('Opened WebDriverIO.', afterScroll);
+    });
+    const executor = new FakeV3Executor([succeeded(afterScroll), succeeded(afterScroll)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'completed');
+    assert.equal(executor.calls.length, 2);
+    assert.equal(executor.calls[0]?.proposal.kind, 'scroll');
+    assert.equal(executor.calls[1]?.proposal.kind, 'click');
+    if (executor.calls[1]?.proposal.kind === 'click') {
+      assert.equal(executor.calls[1].proposal.targetId, WEBDRIVERIO_TARGET);
+    }
+  });
+
+  it('uses bounded sequential scrolls before clicking a distant target once', async () => {
+    const scrollYs = [0, 300, 600];
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex <= 2) {
+        const current = electronTestingObservation(scrollYs[callIndex - 1], false);
+        return proposalStep(
+          boundScroll(current.document.revision, current.observationId),
+          current,
+        );
+      }
+      if (callIndex === 3) {
+        const revealed = electronTestingObservation(900, true);
+        return proposalStep(
+          boundScroll(revealed.document.revision, electronTestingObservation(600, false).observationId),
+          electronTestingObservation(600, false),
+        );
+      }
+      if (callIndex === 4) {
+        const revealed = electronTestingObservation(900, true);
+        return proposalStep(
+          boundClick(revealed.document.revision, WEBDRIVERIO_TARGET, revealed.observationId),
+          revealed,
+        );
+      }
+      return answerStep('Opened WebDriverIO.', electronTestingObservation(900, true));
+    });
+    const executor = new FakeV3Executor([
+      succeeded(electronTestingObservation(300, false)),
+      succeeded(electronTestingObservation(600, false)),
+      succeeded(electronTestingObservation(900, true)),
+      succeeded(electronTestingObservation(900, true)),
+    ]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'completed');
+    assert.equal(executor.calls.length, 4);
+    assert.equal(executor.calls.filter((call) => call.proposal.kind === 'scroll').length, 3);
+    assert.equal(executor.calls.at(-1)?.proposal.kind, 'click');
+  });
+
+  it('stops discovery at the page bottom without infinite scrolling', async () => {
+    const atBottom = electronTestingObservation(2100, false);
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex === 1) {
+        return proposalStep(
+          boundScroll(atBottom.document.revision, atBottom.observationId),
+          atBottom,
+        );
+      }
+      return answerStep('Could not find WebDriverIO.', atBottom);
+    });
+    const executor = new FakeV3Executor([succeeded(atBottom)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'completed');
+    assert.equal(executor.calls.length, 1);
+    assert.equal(executor.calls[0]?.proposal.kind, 'scroll');
+  });
+
+  it('clicks an exported in-viewport target without discovery scrolling', async () => {
+    const page = electronTestingObservation(0, true);
+    page.viewport = {
+      width: 800,
+      height: 600,
+      scrollX: 0,
+      scrollY: 0,
+      deviceScaleFactor: 1,
+      documentHeight: 2400,
+    };
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex === 1) {
+        return proposalStep(
+          boundClick(page.document.revision, WEBDRIVERIO_TARGET, page.observationId),
+          page,
+        );
+      }
+      return answerStep('Opened WebDriverIO.', page);
+    });
+    const executor = new FakeV3Executor([succeeded(page)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'completed');
+    assert.equal(executor.calls.length, 1);
+    assert.equal(executor.calls[0]?.proposal.kind, 'click');
+  });
+});
+
+describe('SafeAgentLoop multi-step navigation completion', () => {
+  it('completes a three-navigation run without repeating earlier steps', async () => {
+    const searchObs = observation({
+      observationId: 'obs-search',
+      document: {
+        ...observation().document,
+        revision: 'rev-search',
+        url: 'https://duckduckgo.com/?q=electron',
+      },
+      nodes: [
+        node({
+          targetId: 'target-first-result',
+          role: 'link',
+          name: 'Electron browser automation',
+          tag: 'a',
+          interactive: true,
+        }),
+      ],
+    });
+    const electronObs = observation({
+      observationId: 'obs-electron',
+      document: {
+        ...observation().document,
+        revision: 'rev-electron',
+        url: 'https://www.electronjs.org/docs/latest/tutorial/automated-testing',
+      },
+      nodes: [
+        node({
+          targetId: 'target-webdriverio',
+          role: 'link',
+          name: 'WebdriverIO',
+          tag: 'a',
+          interactive: true,
+        }),
+      ],
+    });
+    const dest = destObservation();
+    const gettingStartedObs = observation({
+      tabId: POPUP_DEST,
+      observationId: 'obs-getting-started',
+      document: {
+        ...dest.document,
+        revision: 'rev-getting-started',
+        url: 'https://webdriver.io/docs/gettingstarted',
+        title: 'Getting Started',
+      },
+      nodes: [],
+    });
+    let answerCalls = 0;
+    const stepAgent = new FakeStepAgent(async (request, options, callIndex) => {
+      if (callIndex === 1) {
+        return proposalStep(
+          boundClick('rev-search', 'target-first-result', 'obs-search'),
+          searchObs,
+        );
+      }
+      if (callIndex === 2) {
+        assert.equal(
+          options?.trustedProgress?.some((entry) => entry.kind === 'safe-navigation-succeeded'),
+          true,
+        );
+        return proposalStep(
+          boundClick('rev-electron', 'target-webdriverio', 'obs-electron'),
+          electronObs,
+        );
+      }
+      if (callIndex === 3) {
+        assert.equal(request.tabId, POPUP_DEST);
+        return proposalStep(
+          boundClick('rev-dest', 'target-dest', 'obs-dest', POPUP_DEST),
+          dest,
+        );
+      }
+      answerCalls += 1;
+      const serialized = serializeTrustedRunProgress(options?.trustedProgress);
+      assert.ok(serialized);
+      assert.match(serialized ?? '', /immediately previous model step proposed a link navigation/i);
+      assert.match(
+        serialized ?? '',
+        /Do not search the current page for the same link or control/i,
+      );
+      assert.equal(
+        options?.trustedObservation?.document.url,
+        'https://webdriver.io/docs/gettingstarted',
+      );
+      return answerStep('All steps complete.', gettingStartedObs);
+    });
+    const executor = new FakeV3Executor([
+      succeeded(electronObs),
+      succeededPopup(dest),
+      succeeded(gettingStartedObs),
+    ]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(
+      refOf(
+        start(
+          coordinator,
+          'Open the first result, click WebDriverIO, then click Get Started.',
+        ),
+      ),
+    );
+    assert.equal(result.status, 'completed');
+    assert.equal(answerCalls, 1);
+    assert.equal(executor.calls.length, 3);
+    assert.equal(executor.calls[0]?.proposal.kind, 'click');
+    if (executor.calls[0]?.proposal.kind === 'click') {
+      assert.equal(executor.calls[0].proposal.targetId, 'target-first-result');
+    }
+    assert.equal(executor.calls[1]?.proposal.kind, 'click');
+    if (executor.calls[1]?.proposal.kind === 'click') {
+      assert.equal(executor.calls[1].proposal.targetId, 'target-webdriverio');
+    }
+    assert.equal(executor.calls[2]?.proposal.kind, 'click');
+    if (executor.calls[2]?.proposal.kind === 'click') {
+      assert.equal(executor.calls[2].proposal.targetId, 'target-dest');
+    }
+  });
+
+  it('still allows a later step after Get Started when the instruction requires one', async () => {
+    const searchObs = observation({
+      observationId: 'obs-search',
+      document: { ...observation().document, revision: 'rev-search' },
+      nodes: [node({ targetId: 'target-first-result', role: 'link', tag: 'a', interactive: true })],
+    });
+    const electronObs = observation({
+      observationId: 'obs-electron',
+      document: { ...observation().document, revision: 'rev-electron' },
+      nodes: [node({ targetId: 'target-webdriverio', role: 'link', tag: 'a', interactive: true })],
+    });
+    const dest = destObservation();
+    const gettingStartedObs = observation({
+      tabId: POPUP_DEST,
+      observationId: 'obs-getting-started',
+      document: {
+        ...dest.document,
+        revision: 'rev-getting-started',
+        url: 'https://webdriver.io/docs/gettingstarted',
+      },
+      nodes: [
+        node({
+          targetId: 'target-docs-heading',
+          role: 'heading',
+          name: 'Getting Started',
+          tag: 'h1',
+        }),
+      ],
+    });
+    const stepAgent = new FakeStepAgent(async (request, options, callIndex) => {
+      if (callIndex === 1) {
+        return proposalStep(
+          boundClick('rev-search', 'target-first-result', 'obs-search'),
+          searchObs,
+        );
+      }
+      if (callIndex === 2) {
+        return proposalStep(
+          boundClick('rev-electron', 'target-webdriverio', 'obs-electron'),
+          electronObs,
+        );
+      }
+      if (callIndex === 3) {
+        assert.equal(request.tabId, POPUP_DEST);
+        return proposalStep(
+          boundClick('rev-dest', 'target-dest', 'obs-dest', POPUP_DEST),
+          dest,
+        );
+      }
+      if (callIndex === 4) {
+        assert.equal(
+          options?.trustedProgress?.some((entry) => entry.kind === 'safe-navigation-succeeded'),
+          true,
+        );
+        return proposalStep(
+          boundScroll('rev-getting-started', 'obs-getting-started', 200, POPUP_DEST),
+          gettingStartedObs,
+        );
+      }
+      return answerStep('Done.', gettingStartedObs);
+    });
+    const executor = new FakeV3Executor([
+      succeeded(electronObs),
+      succeededPopup(dest),
+      succeeded(gettingStartedObs),
+      succeeded(gettingStartedObs),
+    ]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(
+      refOf(
+        start(
+          coordinator,
+          'Open the first result, click WebDriverIO, click Get Started, then scroll down.',
+        ),
+      ),
+    );
+    assert.equal(result.status, 'completed');
+    assert.equal(executor.calls.length, 4);
+    assert.equal(executor.calls[3]?.proposal.kind, 'scroll');
   });
 });
 

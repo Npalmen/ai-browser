@@ -1,16 +1,35 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { INTERACTION_SYSTEM_PROMPT } from './interaction-system-prompt';
+import {
+  INTERACTION_SYSTEM_PROMPT,
+  MAX_VIEWPORT_DISCOVERY_SCROLLS,
+} from './interaction-system-prompt';
 
 describe('INTERACTION_SYSTEM_PROMPT precedence', () => {
   it('tells the model to treat trusted progress as current-task facts', () => {
     assert.match(INTERACTION_SYSTEM_PROMPT, /TRUSTED_RUN_PROGRESS/);
     assert.match(
       INTERACTION_SYSTEM_PROMPT,
-      /confirm completion instead of searching the destination page/,
+      /immediately previous navigation step succeeded/,
     );
-    assert.match(INTERACTION_SYSTEM_PROMPT, /continue using the current page/);
+    assert.match(INTERACTION_SYSTEM_PROMPT, /confirm completion instead of searching/);
+    assert.match(INTERACTION_SYSTEM_PROMPT, /continue using the current page only for those remaining steps/);
+  });
+
+  it('defines bounded viewport discovery instead of premature not-found answers', () => {
+    assert.equal(MAX_VIEWPORT_DISCOVERY_SCROLLS, 4);
+    assert.match(INTERACTION_SYSTEM_PROMPT, /documentHeight/);
+    assert.match(INTERACTION_SYSTEM_PROMPT, /bounded viewport scroll/);
+    assert.match(INTERACTION_SYSTEM_PROMPT, /never reuse stale targetIds/);
+    assert.match(
+      INTERACTION_SYSTEM_PROMPT,
+      /truncated=true means the exported node list was shortened/,
+    );
+    assert.match(
+      INTERACTION_SYSTEM_PROMPT,
+      /truncated=false does not guarantee every offscreen element is exported/,
+    );
   });
 
   it('tells the model that prior conversation is not current browser state', () => {

@@ -102,12 +102,12 @@ describe('trusted run progress', () => {
       { kind: 'safe-navigation-succeeded', pageChanged: true, sameDocument: false },
     ]);
     assert.ok(serialized);
-    assert.match(serialized, /previously selected link navigation was executed successfully/i);
+    assert.match(serialized, /immediately previous model step proposed a link navigation/i);
     assert.match(serialized, /destination page was reached/i);
-    assert.match(serialized, /previous navigation step is complete/i);
+    assert.match(serialized, /proposed navigation step is complete/i);
     assert.match(serialized, /confirm completion/i);
-    assert.match(serialized, /do not search the destination page/i);
-    assert.match(serialized, /additional steps after navigation/i);
+    assert.match(serialized, /do not search the current page for the same link or control/i);
+    assert.match(serialized, /additional independent steps remain/i);
     assert.doesNotMatch(serialized, /targetId/i);
     assert.doesNotMatch(serialized, /https?:\/\//);
     assert.doesNotMatch(serialized, /href/i);

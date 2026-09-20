@@ -77,6 +77,7 @@ export interface PageObservation {
     scrollX: number;
     scrollY: number;
     deviceScaleFactor: number;
+    documentHeight?: number;
   };
 
   nodes: ObservationNode[];

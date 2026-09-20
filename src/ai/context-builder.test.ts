@@ -156,6 +156,52 @@ describe('buildModelPageContext', () => {
     assert.equal(serialized.includes(JSON.stringify(built.context)), true);
   });
 
+  it('exports documentHeight in model viewport when observed', () => {
+    const built = buildModelPageContext(
+      observation([], {
+        viewport: {
+          width: 400,
+          height: 300,
+          scrollX: 0,
+          scrollY: 0,
+          deviceScaleFactor: 1,
+          documentHeight: 2400,
+        },
+      }),
+    );
+    assert.deepEqual(built.context.viewport, {
+      width: 400,
+      height: 300,
+      scrollX: 0,
+      scrollY: 0,
+      documentHeight: 2400,
+    });
+  });
+
+  it('exposes scroll extent so the model can tell more content exists below the viewport', () => {
+    const built = buildModelPageContext(
+      observation([], {
+        viewport: {
+          width: 400,
+          height: 300,
+          scrollX: 0,
+          scrollY: 0,
+          deviceScaleFactor: 1,
+          documentHeight: 2400,
+        },
+        stats: {
+          ...observation([]).stats,
+          truncated: true,
+        },
+      }),
+    );
+    const viewport = built.context.viewport;
+    assert.ok(viewport);
+    assert.equal(viewport.documentHeight, 2400);
+    assert.equal(built.context.truncated, true);
+    assert.ok(viewport.scrollY + viewport.height < viewport.documentHeight!);
+  });
+
   it('strips secret value, text, and matching names from exported context', () => {
     const built = buildModelPageContext(
       observation([

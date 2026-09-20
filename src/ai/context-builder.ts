@@ -73,6 +73,7 @@ export interface ModelPageContext {
     height: number;
     scrollX: number;
     scrollY: number;
+    documentHeight?: number;
   };
   truncated: boolean;
   nodes: ModelPageNode[];
@@ -697,7 +698,7 @@ function isNearViewport(
 }
 
 function compactViewport(observation: PageObservation): ModelPageContext['viewport'] {
-  const { width, height, scrollX, scrollY } = observation.viewport;
+  const { width, height, scrollX, scrollY, documentHeight } = observation.viewport;
   if (
     !isFiniteNumber(width) ||
     !isFiniteNumber(height) ||
@@ -705,6 +706,9 @@ function compactViewport(observation: PageObservation): ModelPageContext['viewpo
     !isFiniteNumber(scrollY)
   ) {
     return undefined;
+  }
+  if (documentHeight !== undefined && isFiniteNumber(documentHeight)) {
+    return { width, height, scrollX, scrollY, documentHeight };
   }
   return { width, height, scrollX, scrollY };
 }

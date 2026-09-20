@@ -63,11 +63,13 @@ function summarizeTrustedProgressEntry(entry: TrustedRunProgressEntry): string {
       ? 'Same-document navigation occurred and the page changed.'
       : 'Browser navigation occurred and the destination page was reached.';
     return [
-      'The previously selected link navigation was executed successfully.',
+      'The immediately previous model step proposed a link navigation and it was executed successfully.',
       destination,
-      'That previous navigation step is complete.',
-      'If the current instruction only required opening, visiting, or entering the page selected by that proposal, confirm completion and do not search the destination page for the original source-page link or result.',
-      'If the instruction requires additional steps after navigation, continue using the current page.',
+      'That proposed navigation step is complete.',
+      'Do not search the current page for the same link or control you just used in that immediately previous step.',
+      'Evaluate whether any part of the original user instruction still requires action.',
+      'If no requested steps remain, confirm completion.',
+      'If additional independent steps remain, continue using the current page only for those remaining steps.',
       'This does not grant permission for any future action.',
     ].join(' ');
   }

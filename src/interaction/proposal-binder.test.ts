@@ -111,6 +111,38 @@ describe('bindInteractionProposal', () => {
     );
   });
 
+  it('rejects stale targetIds after a fresh post-scroll observation', () => {
+    const beforeScroll = observation(
+      [node({ role: 'link', targetId: 'below-fold-link', name: 'WebdriverIO', tag: 'a' })],
+      { observationId: 'obs-before', document: { ...page.document, revision: 'rev-before' } },
+    );
+    const afterScroll = observation([], {
+      observationId: 'obs-after',
+      document: { ...page.document, revision: 'rev-after' },
+      viewport: { ...page.viewport, scrollY: 600 },
+    });
+    const boundBefore = bindInteractionProposal({
+      proposal: { kind: 'click', targetId: 'below-fold-link' },
+      observation: beforeScroll,
+      exportedTargetIds: new Set(['below-fold-link']),
+    });
+    assert.equal(boundBefore.observationId, 'obs-before');
+
+    assert.throws(
+      () =>
+        bindInteractionProposal({
+          proposal: { kind: 'click', targetId: 'below-fold-link' },
+          observation: afterScroll,
+          exportedTargetIds: new Set(['target-A']),
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof InteractionError);
+        assert.equal(error.code, 'TARGET_NOT_EXPORTED');
+        return true;
+      },
+    );
+  });
+
   it('rejects locally present but unexported targets', () => {
     const proposal: ModelInteractionProposal = { kind: 'click', targetId: 'target-B' };
 

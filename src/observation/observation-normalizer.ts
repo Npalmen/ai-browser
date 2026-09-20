@@ -163,6 +163,11 @@ function deriveViewport(layoutMetrics: CdpLayoutMetricsResponse): PageObservatio
 
   // Electron/CDP exposes visual viewport scale as the reliable deviceScaleFactor source.
   const deviceScaleFactor = visual?.scale ?? 1;
+  const contentHeight = layoutMetrics.cssContentSize?.height;
+  const documentHeight =
+    contentHeight !== undefined && Number.isFinite(contentHeight) && contentHeight > 0
+      ? contentHeight
+      : undefined;
 
   if (width <= 0 || height <= 0) {
     throw new ObservationError('OBSERVATION_FAILED', 'Layout metrics are missing viewport dimensions');
@@ -174,6 +179,7 @@ function deriveViewport(layoutMetrics: CdpLayoutMetricsResponse): PageObservatio
     scrollX,
     scrollY,
     deviceScaleFactor,
+    ...(documentHeight !== undefined ? { documentHeight } : {}),
   };
 }
 
