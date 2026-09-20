@@ -564,6 +564,7 @@ export class SafeAgentLoop {
         continuation,
         budgets,
         evidence,
+        options,
       );
     }
     if (result.status === 'denied') {
@@ -583,6 +584,7 @@ export class SafeAgentLoop {
     continuation: PostNavigationContinuation,
     budgets: RunLocalBudgets,
     evidence: TrustedRunActionEvidence,
+    options: SafeAgentLoopOptions,
   ): SafeAgentLoopResult | undefined {
     const postObservation = result.observation;
     const live = this.coordinator.getRun(ref.runId);
@@ -661,6 +663,14 @@ export class SafeAgentLoop {
         kind: effect.actionKind,
         evidence: completeOnSuccessEvidenceLabel(effect),
       });
+      const current = this.coordinator.getRun(ref.runId);
+      if (
+        current !== undefined &&
+        current.executionTabId !== undefined &&
+        current.executionTabId !== current.tabId
+      ) {
+        this.notifyContinuing(ref, options);
+      }
       return this.completeAfterTrustedSuccess(ref, step, postObservation);
     }
     if (step.continuation === 'complete-on-success' && step.proposal.kind !== 'scroll') {

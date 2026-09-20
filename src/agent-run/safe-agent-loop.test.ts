@@ -34,6 +34,9 @@ import {
   type AgentRunRef,
   type AgentRunSnapshot,
 } from './agent-run-types';
+import { AgentRunController } from '../main/agent-run-controller';
+import { AgentRunExecutor } from '../main/agent-run-executor';
+import type { AiAnswerEvent } from '../shared/ai-types';
 import { SafeAgentLoop, type SafeV3InteractionExecutionPort } from './safe-agent-loop';
 import type { AgentRunApprovalPort } from './approval-pause-port';
 import type {
@@ -2476,6 +2479,51 @@ describe('SafeAgentLoop complete-on-success', () => {
     assert.equal(executor.calls[0]?.proposal.kind, 'click');
   });
 
+  it('notifies continuing before complete-on-success popup completion', async () => {
+    const source = observation();
+    const dest = destObservation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), source, {
+        continuation: 'complete-on-success',
+        onSuccessText: 'Clicked WebdriverIO.',
+      }),
+    ]);
+    const executor = new FakeV3Executor([succeededPopup(dest)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    let continuingSnapshot: AgentRunSnapshot | undefined;
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')), {
+      onContinuing: (snapshot) => {
+        continuingSnapshot = snapshot;
+      },
+    });
+    assert.equal(result.status, 'completed');
+    assert.equal(continuingSnapshot?.executionTabId, POPUP_DEST);
+    assert.equal(continuingSnapshot?.tabId, TAB);
+    assert.equal(stepAgent.calls.length, 1);
+    assert.equal(executor.calls.length, 1);
+  });
+
+  it('does not notify continuing for same-tab complete-on-success', async () => {
+    const obs = observation();
+    const after = observation({
+      observationId: 'obs-after',
+      document: { ...obs.document, revision: 'rev-after' },
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), obs, { continuation: 'complete-on-success' }),
+    ]);
+    const executor = new FakeV3Executor([succeeded(after)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    let continuingCount = 0;
+    const result = await loop.run(refOf(start(coordinator, 'Click save.')), {
+      onContinuing: () => {
+        continuingCount += 1;
+      },
+    });
+    assert.equal(result.status, 'completed');
+    assert.equal(continuingCount, 0);
+  });
+
   it('uses generic Done. text when onSuccessText is omitted', async () => {
     const obs = observation();
     const after = observation({
@@ -3894,6 +3942,129 @@ describe('SafeAgentLoop false completion guard', () => {
       assert.equal(secondResult.answer.text, 'Need a fresh action.');
     }
     assert.equal(secondExecutor.calls.length, 0);
+  });
+});
+
+describe('SafeAgentLoop controller UI correlation', () => {
+  it('syncs product UI to destination before complete-on-success popup completion', async () => {
+    const events: AiAnswerEvent[] = [];
+    const coordinator = new AgentRunCoordinator();
+    const conversationStore = new ConversationStore();
+    const source = observation();
+    const dest = destObservation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), source, {
+        continuation: 'complete-on-success',
+        onSuccessText: 'Clicked WebdriverIO.',
+      }),
+    ]);
+    const executor = new FakeV3Executor([succeededPopup(dest)]);
+    const loop = new SafeAgentLoop({
+      coordinator,
+      stepAgent,
+      interactionExecutor: executor,
+    });
+    const agentExecutor = new AgentRunExecutor({
+      coordinator,
+      loop,
+      manager: { getSnapshot: () => undefined },
+      lifecycle: { invalidateTab: () => {} },
+    });
+    const controller = new AgentRunController({
+      executor: agentExecutor,
+      conversationStore,
+      emit: (event) => {
+        events.push(event);
+      },
+    });
+
+    const started = await controller.start(TAB, 'klicka på WebDriverIO', { askId: 'ask-1' });
+    assert.equal(started.status, 'started');
+    if (started.status === 'started') {
+      await started.completion;
+    }
+
+    assert.equal(stepAgent.calls.length, 1);
+    assert.equal(executor.calls.length, 1);
+    assert.equal(executor.calls[0]?.proposal.kind, 'click');
+    assert.equal(conversationStore.get(TAB), undefined);
+    const stored = conversationStore.get(POPUP_DEST);
+    assert.equal(stored?.turns.length, 1);
+    assert.equal(stored?.turns[0]?.question, 'klicka på WebDriverIO');
+    assert.equal(stored?.turns[0]?.answer, 'Clicked WebdriverIO.');
+
+    const completed = events.filter((event) => event.type === 'agent-run-completed');
+    assert.equal(completed.length, 1);
+    if (completed[0]?.type === 'agent-run-completed') {
+      assert.equal(completed[0].tabId, POPUP_DEST);
+      assert.equal(completed[0].answer.text, 'Clicked WebdriverIO.');
+    }
+    const detached = events.filter((event) => event.type === 'agent-run-detached');
+    assert.equal(detached.length, 1);
+    if (detached[0]?.type === 'agent-run-detached') {
+      assert.equal(detached[0].tabId, TAB);
+    }
+    assert.equal(
+      events.some((event) => event.type === 'agent-run-completed' && event.tabId === TAB),
+      false,
+    );
+    assert.equal(
+      events.some(
+        (event) =>
+          event.type === 'agent-run-progress' &&
+          'tabId' in event &&
+          event.tabId === POPUP_DEST,
+      ),
+      true,
+    );
+    assert.equal(controller.isActive(TAB), false);
+    assert.equal(controller.isActive(POPUP_DEST), false);
+  });
+
+  it('keeps same-tab complete-on-success completion without detach events', async () => {
+    const events: AiAnswerEvent[] = [];
+    const coordinator = new AgentRunCoordinator();
+    const conversationStore = new ConversationStore();
+    const obs = observation();
+    const after = observation({
+      observationId: 'obs-after',
+      document: { ...obs.document, revision: 'rev-after' },
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), obs, { continuation: 'complete-on-success' }),
+    ]);
+    const executor = new FakeV3Executor([succeeded(after)]);
+    const loop = new SafeAgentLoop({
+      coordinator,
+      stepAgent,
+      interactionExecutor: executor,
+    });
+    const agentExecutor = new AgentRunExecutor({
+      coordinator,
+      loop,
+      manager: { getSnapshot: () => undefined },
+      lifecycle: { invalidateTab: () => {} },
+    });
+    const controller = new AgentRunController({
+      executor: agentExecutor,
+      conversationStore,
+      emit: (event) => {
+        events.push(event);
+      },
+    });
+
+    const started = await controller.start(TAB, 'Click save', { askId: 'ask-1' });
+    if (started.status === 'started') {
+      await started.completion;
+    }
+
+    assert.equal(events.some((event) => event.type === 'agent-run-detached'), false);
+    const completed = events.find((event) => event.type === 'agent-run-completed');
+    if (completed?.type === 'agent-run-completed') {
+      assert.equal(completed.tabId, TAB);
+      assert.equal(completed.answer.text, 'Done.');
+    }
+    assert.equal(conversationStore.get(TAB)?.turns.length, 1);
   });
 });
 
