@@ -31,6 +31,8 @@ interface ProductAgentRun {
   readonly instruction: string;
   /** Product request correlation only. Not browser authority. */
   readonly askId: string;
+  /** Trusted product/UI tab for streamed answer text and active progress. */
+  currentUiTabId: TabId;
 }
 
 export interface AgentRunControllerDependencies {
@@ -75,6 +77,7 @@ export class AgentRunController {
           ref,
           instruction,
           askId: options.askId,
+          currentUiTabId: tabId,
         };
         this.productByTab.set(tabId, product);
         this.emitIfCurrentRun(tabId, options.askId, run.runId, {
@@ -88,24 +91,25 @@ export class AgentRunController {
         });
       },
       onAnswerTextDelta: (text) => {
-        if (!text) {
+        if (!text || product === undefined) {
           return;
         }
-        this.emitIfCurrentAsk(tabId, options.askId, {
+        const uiTabId = product.currentUiTabId;
+        this.emitIfCurrentAsk(uiTabId, options.askId, {
           type: 'answer-text',
           askId: options.askId,
-          tabId,
+          tabId: uiTabId,
           delta: text,
         });
       },
       priorConversationForRevision: (historyTabId, revision) =>
         this.conversationStore.serializeForActRevision(historyTabId, revision),
       onContinuing: (current) => {
-        this.aliasProductToExecutionTab(product, current);
+        this.syncProductUiTab(product, current);
         this.emitRunLifecycle(product, current, 'agent-run-progress');
       },
       onAwaitingApproval: (current) => {
-        this.aliasProductToExecutionTab(product, current);
+        this.syncProductUiTab(product, current);
         this.emitRunLifecycle(product, current, 'agent-run-awaiting-approval');
       },
     });
@@ -203,6 +207,17 @@ export class AgentRunController {
     return this.canStartManualAct?.(tabId) !== false;
   }
 
+  private syncProductUiTab(
+    product: ProductAgentRun | undefined,
+    snapshot: AgentRunSnapshot,
+  ): void {
+    if (product === undefined) {
+      return;
+    }
+    product.currentUiTabId = conversationTabIdForSnapshot(snapshot);
+    this.aliasProductToExecutionTab(product, snapshot);
+  }
+
   private aliasProductToExecutionTab(
     product: ProductAgentRun | undefined,
     snapshot: AgentRunSnapshot,
@@ -263,6 +278,7 @@ export class AgentRunController {
         question: product.instruction,
         answer: result.answer.text,
       });
+      this.emitDetachedMirrors(product, snapshot, conversationTabId);
       this.emitIfCurrentRun(conversationTabId, product.askId, snapshot.runId, {
         type: 'agent-run-completed',
         askId: product.askId,
@@ -279,6 +295,27 @@ export class AgentRunController {
 
     this.emitTerminal(product, snapshot);
     this.detachProduct(product);
+  }
+
+  private emitDetachedMirrors(
+    product: ProductAgentRun,
+    snapshot: AgentRunSnapshot,
+    conversationTabId: TabId,
+  ): void {
+    for (const [tabId, current] of this.productByTab.entries()) {
+      if (
+        tabId !== conversationTabId &&
+        current.ref.runId === product.ref.runId &&
+        current.askId === product.askId
+      ) {
+        this.emitIfCurrentRun(tabId, product.askId, snapshot.runId, {
+          type: 'agent-run-detached',
+          askId: product.askId,
+          runId: snapshot.runId,
+          tabId,
+        });
+      }
+    }
   }
 
   private detachProduct(product: ProductAgentRun): void {

@@ -211,6 +211,12 @@ export type AiAnswerEvent =
       };
     }
   | {
+      type: 'agent-run-detached';
+      askId: string;
+      runId: AgentRunUiId;
+      tabId: TabId;
+    }
+  | {
       type: 'agent-run-cancelled';
       askId: string;
       runId: AgentRunUiId;

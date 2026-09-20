@@ -6,6 +6,7 @@ export type AiAssistantStatus =
   | 'working'
   | 'awaiting-approval'
   | 'complete'
+  | 'detached'
   | 'cancelled'
   | 'error'
   | 'denied'
@@ -355,6 +356,15 @@ function applyAskProgress(tab: TabAiUiState, event: Exclude<AiAnswerEvent, { typ
       text: event.answer.text,
       truncatedContext: event.answer.truncatedContext,
     };
+  } else if (event.type === 'agent-run-detached') {
+    if (isTerminal(entry.status)) {
+      return tab;
+    }
+    updated = {
+      ...entry,
+      status: 'detached',
+      text: 'Continued in another tab.',
+    };
   } else if (event.type === 'agent-run-cancelled') {
     if (entry.status === 'complete' || entry.status === 'error' || entry.status === 'unknown') {
       return tab;
@@ -477,6 +487,7 @@ function findAssistantIndex(entries: readonly AiTranscriptEntry[], askId: string
 function isTerminal(status: AiAssistantStatus | undefined): boolean {
   return (
     status === 'complete' ||
+    status === 'detached' ||
     status === 'cancelled' ||
     status === 'error' ||
     status === 'denied' ||

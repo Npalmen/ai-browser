@@ -648,6 +648,16 @@ describe('V5 AgentRun UI events', () => {
     state = applyAiAnswerEvent(
       state,
       {
+        type: 'agent-run-detached',
+        askId: ASK_A,
+        runId: RUN_A,
+        tabId: TAB,
+      },
+      createId,
+    );
+    state = applyAiAnswerEvent(
+      state,
+      {
         type: 'agent-run-completed',
         askId: ASK_A,
         runId: RUN_A,
@@ -658,9 +668,39 @@ describe('V5 AgentRun UI events', () => {
     );
     assert.equal(assistants(state, dest).at(-1)?.status, 'complete');
     assert.equal(assistants(state, dest).at(-1)?.text, 'Clicked WebdriverIO.');
-    assert.equal(assistants(state, TAB).at(-1)?.status, 'working');
+    assert.equal(assistants(state, TAB).at(-1)?.status, 'detached');
+    assert.equal(assistants(state, TAB).at(-1)?.text, 'Continued in another tab.');
+    assert.equal(tab(state, TAB).activeAskId, null);
     assert.equal(tab(state, dest).entries.some((entry) => entry.role === 'user'), true);
     assert.equal(tab(state, TAB).entries.some((entry) => entry.role === 'user'), true);
+  });
+
+  it('routes accepted answer text to the execution tab after popup adoption', () => {
+    const createId = ids();
+    const dest = 'tab-popup';
+    let state: AiUiState = {};
+    state = appendUserQuestion(state, TAB, 'klicka på WebDriverIO', SUB_A, createId);
+    state = applyAiAnswerEvent(state, runStarted(), createId);
+    state = applyAiAnswerEvent(
+      state,
+      {
+        type: 'agent-run-progress',
+        askId: ASK_A,
+        runId: RUN_A,
+        tabId: dest,
+        modelStepCount: 1,
+        actionAttemptCount: 1,
+        approvalCount: 0,
+      },
+      createId,
+    );
+    state = applyAiAnswerEvent(state, delta(ASK_A, 'Clicked WebdriverIO.', dest), createId);
+    const destAssistant = assistants(state, dest).at(-1);
+    assert.match(destAssistant?.text ?? '', /Clicked WebdriverIO\./);
+    assert.equal(destAssistant?.text?.includes('Continuing on the updated page'), true);
+    const originAssistant = assistants(state, TAB).at(-1);
+    assert.equal(originAssistant?.text?.includes('Clicked WebdriverIO.'), false);
+    assert.equal(originAssistant?.status, 'working');
   });
 
   it('keeps the same logical AgentRun visible after a causal popup tab switch', () => {

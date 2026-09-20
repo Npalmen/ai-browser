@@ -926,6 +926,72 @@ describe('AgentRunController', () => {
     }
   });
 
+  it('does not emit agent-run-detached for same-tab completion', async () => {
+    const harness = controllerOf(new FakeLoop());
+    const started = await harness.controller.start(TAB, 'Same tab act', { askId: 'ask-1' });
+    if (started.status === 'started') {
+      await started.completion;
+    }
+    assert.equal(
+      harness.events.some((event) => event.type === 'agent-run-detached'),
+      false,
+    );
+  });
+
+  it('routes accepted answer text to the execution tab after popup adoption', async () => {
+    const box: { coordinator?: AgentRunCoordinator } = {};
+    const hold = new Deferred<SafeAgentLoopResult>();
+    const loop = new FakeLoop(async (ref, options) => {
+      const coordinator = box.coordinator;
+      assert.ok(coordinator);
+      const adopted = coordinator.adoptCausalPopup(ref, TAB_B);
+      assert.equal(adopted.status, 'applied');
+      const snapshot = coordinator.getRun(ref.runId);
+      assert.ok(snapshot);
+      options.onContinuing?.(snapshot);
+      options.onAnswerTextDelta?.('Clicked WebdriverIO.');
+      return hold.promise;
+    });
+    const harness = controllerOf(loop);
+    box.coordinator = harness.coordinator;
+    const started = await harness.controller.start(TAB, 'klicka på WebDriverIO', { askId: 'ask-1' });
+    assert.equal(started.status, 'started');
+    const textEvents = harness.events.filter((event) => event.type === 'answer-text');
+    assert.equal(textEvents.length, 1);
+    if (textEvents[0]?.type === 'answer-text') {
+      assert.equal(textEvents[0].tabId, TAB_B);
+      assert.equal(textEvents[0].delta, 'Clicked WebdriverIO.');
+    }
+    assert.equal(
+      harness.events.some((event) => event.type === 'answer-text' && event.tabId === TAB),
+      false,
+    );
+    hold.resolve({ status: 'ignored' });
+    if (started.status === 'started') {
+      await started.completion;
+    }
+  });
+
+  it('keeps accepted answer text on the origin tab before popup adoption', async () => {
+    const hold = new Deferred<SafeAgentLoopResult>();
+    const loop = new FakeLoop(async (_ref, options) => {
+      options.onAnswerTextDelta?.('Still on origin.');
+      return hold.promise;
+    });
+    const harness = controllerOf(loop);
+    const started = await harness.controller.start(TAB, 'Before popup', { askId: 'ask-1' });
+    assert.equal(started.status, 'started');
+    const textEvents = harness.events.filter((event) => event.type === 'answer-text');
+    assert.equal(textEvents.length, 1);
+    if (textEvents[0]?.type === 'answer-text') {
+      assert.equal(textEvents[0].tabId, TAB);
+    }
+    hold.resolve({ status: 'ignored' });
+    if (started.status === 'started') {
+      await started.completion;
+    }
+  });
+
   it('commits a causal popup completion only to the execution tab', async () => {
     const box: { coordinator?: AgentRunCoordinator } = {};
     const loop = new FakeLoop(async (ref, options) => {
@@ -969,6 +1035,11 @@ describe('AgentRunController', () => {
     assert.equal(completed.length, 1);
     if (completed[0]?.type === 'agent-run-completed') {
       assert.equal(completed[0].tabId, TAB_B);
+    }
+    const detached = harness.events.filter((event) => event.type === 'agent-run-detached');
+    assert.equal(detached.length, 1);
+    if (detached[0]?.type === 'agent-run-detached') {
+      assert.equal(detached[0].tabId, TAB);
     }
     assert.equal(harness.controller.isActive(TAB), false);
     assert.equal(harness.controller.isActive(TAB_B), false);
@@ -1059,6 +1130,94 @@ describe('AgentRunController', () => {
     const dest = harness.conversationStore.get(TAB_B);
     assert.equal(dest?.turns.length, 1);
     assert.equal(dest?.turns[0]?.question, 'popup act');
+  });
+
+  it('does not emit agent-run-detached for cancelled popup runs', async () => {
+    const box: { coordinator?: AgentRunCoordinator } = {};
+    const loop = new FakeLoop(async (ref, options) => {
+      const coordinator = box.coordinator;
+      assert.ok(coordinator);
+      const adopted = coordinator.adoptCausalPopup(ref, TAB_B);
+      assert.equal(adopted.status, 'applied');
+      const snapshot = coordinator.getRun(ref.runId);
+      assert.ok(snapshot);
+      options.onContinuing?.(snapshot);
+      return {
+        status: 'terminal',
+        run: { ...snapshot, state: 'cancelled', terminalReason: 'USER_CANCELLED' },
+      };
+    });
+    const harness = controllerOf(loop);
+    box.coordinator = harness.coordinator;
+    const started = await harness.controller.start(TAB, 'popup act', { askId: 'ask-popup' });
+    if (started.status === 'started') {
+      await started.completion;
+    }
+    assert.equal(
+      harness.events.some((event) => event.type === 'agent-run-detached'),
+      false,
+    );
+    assert.equal(
+      harness.events.some((event) => event.type === 'agent-run-cancelled'),
+      true,
+    );
+  });
+
+  it('lets a fresh Act on the origin tab start after popup completion', async () => {
+    const box: { coordinator?: AgentRunCoordinator } = {};
+    const popupHold = new Deferred<SafeAgentLoopResult>();
+    const followHold = new Deferred<SafeAgentLoopResult>();
+    let runs = 0;
+    const loop = new FakeLoop(async (ref, options) => {
+      runs += 1;
+      if (runs === 1) {
+        const coordinator = box.coordinator;
+        assert.ok(coordinator);
+        const adopted = coordinator.adoptCausalPopup(ref, TAB_B);
+        assert.equal(adopted.status, 'applied');
+        const snapshot = coordinator.getRun(ref.runId);
+        assert.ok(snapshot);
+        options.onContinuing?.(snapshot);
+        return popupHold.promise;
+      }
+      return followHold.promise;
+    });
+    const harness = controllerOf(loop);
+    box.coordinator = harness.coordinator;
+    harness.conversationStore.commitTurn(TAB, 'rev-source-old', {
+      question: 'older source question',
+      answer: 'older source answer',
+    });
+    const first = await harness.controller.start(TAB, 'Open WebDriverIO', { askId: 'ask-popup' });
+    const snapshot = first.status === 'started' ? harness.coordinator.getRun(first.run.runId) : undefined;
+    assert.ok(snapshot);
+    popupHold.resolve({
+      status: 'completed',
+      run: { ...snapshot, state: 'completed', terminalReason: 'COMPLETED' },
+      answer: {
+        text: 'Opened WebDriverIO.',
+        referencedTargets: [],
+        alias: 'page-standard',
+        truncatedContext: false,
+        documentRevision: 'rev-webdriverio',
+      },
+    });
+    if (first.status === 'started') {
+      await first.completion;
+    }
+    const second = await harness.controller.start(TAB, 'Fresh source act', { askId: 'ask-fresh' });
+    assert.equal(second.status, 'started');
+    assert.match(
+      harness.loop.lastOptions?.priorConversationForRevision?.(TAB, 'rev-source-old') ?? '',
+      /older source question/,
+    );
+    const prior =
+      harness.loop.lastOptions?.priorConversationForRevision?.(TAB, 'rev-source-old') ?? '';
+    assert.equal(prior.includes('Open WebDriverIO'), false);
+    followHold.resolve({ status: 'ignored' });
+    if (second.status === 'started') {
+      await second.completion;
+    }
   });
 
   it('lets a follow-up Act on the destination tab read popup completion history', async () => {
