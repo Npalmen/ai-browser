@@ -92,6 +92,19 @@ describe('resolveInteractionFixtureRoute', () => {
       exactSelect.absolutePath,
       path.join(INTERACTION_FIXTURE_DIR, 'select-exact-target.html'),
     );
+
+    const delayedA = resolveInteractionFixtureRoute('/interaction/delayed-navigation-a.html');
+    assert.ok(delayedA);
+    assert.equal(
+      delayedA.absolutePath,
+      path.join(INTERACTION_FIXTURE_DIR, 'delayed-navigation-a.html'),
+    );
+    const delayedB = resolveInteractionFixtureRoute('/interaction/delayed-navigation-b.html');
+    assert.ok(delayedB);
+    const sameDocument = resolveInteractionFixtureRoute('/interaction/same-document.html');
+    assert.ok(sameDocument);
+    const popupSource = resolveInteractionFixtureRoute('/interaction/popup-source.html');
+    assert.ok(popupSource);
   });
 
   it('rejects unknown and traversal paths for interaction routes', () => {

@@ -11,6 +11,10 @@ export const V3_PROMPT_INJECTION_PATH = '/interaction/prompt-injection.html';
 export const V3_FRAME_PARENT_PATH = '/interaction/frame-parent.html';
 export const V3_FRAME_CHILD_PATH = '/interaction/frame-child.html';
 export const V3_SELECT_EXACT_TARGET_PATH = '/interaction/select-exact-target.html';
+export const V3_DELAYED_NAVIGATION_A_PATH = '/interaction/delayed-navigation-a.html';
+export const V3_DELAYED_NAVIGATION_B_PATH = '/interaction/delayed-navigation-b.html';
+export const V3_SAME_DOCUMENT_PATH = '/interaction/same-document.html';
+export const V3_POPUP_SOURCE_PATH = '/interaction/popup-source.html';
 
 export const V3_EXPANDED_DETAIL_MARKER = 'V3_EXPANDED_DETAIL_MARKER';
 export const V3_LOWER_SECTION_MARKER = 'V3_LOWER_SECTION_MARKER';

@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>V3 Delayed Navigation A</title>
+  </head>
+  <body>
+    <h1>Delayed Navigation Source</h1>
+    <p id="page-marker">V3_DELAYED_NAV_A_MARKER</p>
+    <a id="delayed-link" href="delayed-navigation-b.html">Open destination</a>
+    <script>
+      document.getElementById('delayed-link')?.addEventListener('click', (event) => {
+        event.preventDefault();
+        window.setTimeout(() => {
+          window.location.href = 'delayed-navigation-b.html';
+        }, 250);
+      });
+    </script>
+  </body>
+</html>

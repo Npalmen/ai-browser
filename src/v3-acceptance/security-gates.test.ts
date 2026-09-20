@@ -129,6 +129,8 @@ describe('V3 security gates', () => {
       'ai:execute',
       'ai:grant',
       'ai:proposal',
+      'captureNavigationMarker',
+      'waitForNavigationAfter',
     ]) {
       assert.equal(contract.includes(forbidden), false, forbidden);
     }
@@ -141,9 +143,21 @@ describe('V3 security gates', () => {
     ]);
 
     const preload = readSrc('src/preload/app-preload.ts');
-    for (const forbidden of ['click:', 'type:', 'select:', 'scroll:', 'execute:', 'runInteraction']) {
+    for (const forbidden of [
+      'click:',
+      'type:',
+      'select:',
+      'scroll:',
+      'execute:',
+      'runInteraction',
+      'captureNavigationMarker',
+      'waitForNavigationAfter',
+    ]) {
       assert.equal(preload.includes(forbidden), false, forbidden);
     }
+    const ipc = readSrc('src/main/ipc.ts');
+    assert.equal(ipc.includes('captureNavigationMarker'), false);
+    assert.equal(ipc.includes('waitForNavigationAfter'), false);
     const aiTypes = readSrc('src/shared/ai-types.ts');
     assert.match(aiTypes, /mode: AiRequestMode/);
   });

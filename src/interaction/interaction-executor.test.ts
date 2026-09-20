@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 
 import type { BrowserAdapter } from '../browser/browser-adapter';
+import { TabNavigationLifecycle } from '../browser/navigation-lifecycle';
 import { TargetRegistry } from '../observation/target-registry';
 import type { PageState } from '../shared/browser-types';
 import { InteractionError } from '../shared/interaction-errors';
@@ -149,7 +150,11 @@ function createFakeAdapter(options: {
   return { adapter, counts, lastSelectRequest };
 }
 
-function createExecutor(adapter: BrowserAdapter, registry = new TargetRegistry()) {
+function createExecutor(
+  adapter: BrowserAdapter,
+  registry = new TargetRegistry(),
+  options: { navigationWaitTimeoutMs?: number } = {},
+) {
   const audit = new InMemoryInteractionAuditSink();
   const executor = new InteractionExecutor({
     adapter,
@@ -158,6 +163,9 @@ function createExecutor(adapter: BrowserAdapter, registry = new TargetRegistry()
     generateActionId: () => 'action-1',
     now: () => 1,
     sleep: async () => undefined,
+    ...(options.navigationWaitTimeoutMs !== undefined
+      ? { navigationWaitTimeoutMs: options.navigationWaitTimeoutMs }
+      : {}),
   });
   return { executor, audit, registry };
 }
@@ -777,6 +785,321 @@ describe('InteractionExecutor', () => {
   });
 });
 
+describe('navigation lifecycle completion', () => {
+  const OLD_URL = 'https://example.com/search';
+  const NEW_URL = 'https://www.electronjs.org/docs/latest';
+
+  function linkObservation(revision: string, url: string): PageObservation {
+    const base = observation(
+      [
+        node({
+          role: 'link',
+          tag: 'a',
+          targetId: 'target-1',
+          name: 'Electron documentation',
+          attributes: { href: NEW_URL },
+        }),
+      ],
+      revision,
+    );
+    return {
+      ...base,
+      document: { ...base.document, url, revision },
+    };
+  }
+
+  function attachLifecycle(
+    adapter: BrowserAdapter,
+    lifecycle: TabNavigationLifecycle,
+  ): void {
+    Object.assign(adapter, {
+      captureNavigationMarker: (tabId: string) => lifecycle.captureMarker(tabId),
+      waitForNavigationAfter: (
+        tabId: string,
+        marker: Parameters<TabNavigationLifecycle['waitForNavigationAfter']>[1],
+        options: Parameters<TabNavigationLifecycle['waitForNavigationAfter']>[2],
+      ) => lifecycle.waitForNavigationAfter(tabId, marker, options),
+    });
+  }
+
+  function navigationProposal(): BoundInteractionProposal {
+    return {
+      kind: 'click',
+      targetId: 'target-1',
+      tabId: 'tab-1',
+      observationId: 'obs-1',
+      documentRevision: 'rev-A',
+    };
+  }
+
+  function seedLink(registry: TargetRegistry): void {
+    registry.replaceObservation('tab-1', 'obs-1', [
+      {
+        ...record('target-1', 1),
+        documentRevision: 'rev-A',
+      },
+    ]);
+  }
+
+  it('does not accept loading=false on the old document as settled navigation', async () => {
+    const lifecycle = new TabNavigationLifecycle();
+    let settled = false;
+    const { adapter, counts } = createFakeAdapter({
+      observePage: async () => {
+        if (!settled) {
+          return linkObservation('rev-A', OLD_URL);
+        }
+        return linkObservation('rev-B', NEW_URL);
+      },
+    });
+    attachLifecycle(adapter, lifecycle);
+    adapter.getPageState = async () => ({
+      ...pageState(),
+      url: settled ? NEW_URL : OLD_URL,
+      loading: false,
+    });
+    adapter.click = async () => {
+      counts.click += 1;
+      setTimeout(() => {
+        lifecycle.noteMainFrameNavigationStart('tab-1');
+        setTimeout(() => {
+          settled = true;
+          lifecycle.noteMainFrameNavigationSettled('tab-1');
+        }, 15);
+      }, 15);
+      return { primitive: 'click' };
+    };
+    const { executor, registry } = createExecutor(adapter, new TargetRegistry(), {
+      navigationWaitTimeoutMs: 400,
+    });
+    seedLink(registry);
+
+    const result = await executor.execute({
+      proposal: navigationProposal(),
+      observation: linkObservation('rev-A', OLD_URL),
+    });
+
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.observation?.document.revision, 'rev-B');
+    assert.equal(result.observation?.document.url, NEW_URL);
+    assert.equal(counts.click, 1);
+  });
+
+  it('detects navigation that starts before the click promise resolves', async () => {
+    const lifecycle = new TabNavigationLifecycle();
+    let settled = false;
+    const { adapter, counts } = createFakeAdapter({
+      observePage: async () => linkObservation(settled ? 'rev-B' : 'rev-A', settled ? NEW_URL : OLD_URL),
+    });
+    attachLifecycle(adapter, lifecycle);
+    adapter.click = async () => {
+      counts.click += 1;
+      lifecycle.noteMainFrameNavigationStart('tab-1');
+      lifecycle.noteMainFrameNavigationSettled('tab-1');
+      settled = true;
+      return { primitive: 'click' };
+    };
+    const { executor, registry } = createExecutor(adapter, new TargetRegistry(), {
+      navigationWaitTimeoutMs: 200,
+    });
+    seedLink(registry);
+
+    const result = await executor.execute({
+      proposal: navigationProposal(),
+      observation: linkObservation('rev-A', OLD_URL),
+    });
+
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.observation?.document.revision, 'rev-B');
+    assert.equal(counts.click, 1);
+  });
+
+  it('retries transient post-navigation observation without a second click', async () => {
+    const lifecycle = new TabNavigationLifecycle();
+    let observeAttempts = 0;
+    const { adapter, counts } = createFakeAdapter({
+      observePage: async () => {
+        observeAttempts += 1;
+        if (observeAttempts === 1) {
+          throw new ObservationError('PAGE_NOT_READY', 'loader transition');
+        }
+        return linkObservation('rev-B', NEW_URL);
+      },
+    });
+    attachLifecycle(adapter, lifecycle);
+    adapter.click = async () => {
+      counts.click += 1;
+      lifecycle.noteMainFrameNavigationStart('tab-1');
+      lifecycle.noteMainFrameNavigationSettled('tab-1');
+      return { primitive: 'click' };
+    };
+    const { executor, registry } = createExecutor(adapter);
+    seedLink(registry);
+
+    const result = await executor.execute({
+      proposal: navigationProposal(),
+      observation: linkObservation('rev-A', OLD_URL),
+    });
+
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.observation?.document.revision, 'rev-B');
+    assert.equal(counts.click, 1);
+    assert.equal(observeAttempts, 2);
+  });
+
+  it('returns execution-state-unknown when a started transition never settles', async () => {
+    const lifecycle = new TabNavigationLifecycle();
+    const { adapter, counts } = createFakeAdapter();
+    attachLifecycle(adapter, lifecycle);
+    adapter.click = async () => {
+      counts.click += 1;
+      lifecycle.noteMainFrameNavigationStart('tab-1');
+      return { primitive: 'click' };
+    };
+    const { executor, audit, registry } = createExecutor(adapter, new TargetRegistry(), {
+      navigationWaitTimeoutMs: 25,
+    });
+    seedLink(registry);
+
+    const result = await executor.execute({
+      proposal: navigationProposal(),
+      observation: linkObservation('rev-A', OLD_URL),
+    });
+
+    assert.equal(result.status, 'execution-state-unknown');
+    assert.equal(result.errorCode, 'INTERACTION_TIMEOUT');
+    assert.equal(counts.click, 1);
+    assert.equal(counts.observePage, 0);
+    assert.equal(lastAuditEvent(audit).resultStatus, 'execution-state-unknown');
+  });
+
+  it('does not retry the click when no navigation transition can be proven', async () => {
+    const lifecycle = new TabNavigationLifecycle();
+    const { adapter, counts } = createFakeAdapter();
+    attachLifecycle(adapter, lifecycle);
+    const { executor, registry } = createExecutor(adapter, new TargetRegistry(), {
+      navigationWaitTimeoutMs: 20,
+    });
+    seedLink(registry);
+
+    const result = await executor.execute({
+      proposal: navigationProposal(),
+      observation: linkObservation('rev-A', OLD_URL),
+    });
+
+    assert.equal(result.status, 'execution-state-unknown');
+    assert.equal(counts.click, 1);
+    assert.equal(counts.observePage, 0);
+  });
+
+  it('preserves cancellation during navigation wait', async () => {
+    const lifecycle = new TabNavigationLifecycle();
+    const { adapter, counts } = createFakeAdapter();
+    attachLifecycle(adapter, lifecycle);
+    const { executor, registry } = createExecutor(adapter, new TargetRegistry(), {
+      navigationWaitTimeoutMs: 400,
+    });
+    seedLink(registry);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 10);
+
+    const result = await executor.execute({
+      proposal: navigationProposal(),
+      observation: linkObservation('rev-A', OLD_URL),
+      signal: controller.signal,
+    });
+
+    assert.equal(result.status, 'failed');
+    assert.equal(result.errorCode, 'REQUEST_CANCELLED');
+    assert.equal(counts.click, 1);
+  });
+
+  it('does not wait for navigation on a local INTERACT click', async () => {
+    const lifecycle = new TabNavigationLifecycle();
+    const { adapter, counts } = createFakeAdapter();
+    attachLifecycle(adapter, lifecycle);
+    const { executor, audit, registry } = createExecutor(adapter, new TargetRegistry(), {
+      navigationWaitTimeoutMs: 20,
+    });
+    registry.replaceObservation('tab-1', 'obs-1', [record('target-1', 1)]);
+
+    const result = await executor.execute({
+      proposal: {
+        kind: 'click',
+        targetId: 'target-1',
+        tabId: 'tab-1',
+        observationId: 'obs-1',
+        documentRevision: 'rev-1',
+      },
+      observation: observation([
+        node({
+          role: 'button',
+          tag: 'button',
+          targetId: 'target-1',
+          name: 'Expand',
+          attributes: { type: 'button' },
+        }),
+      ]),
+    });
+
+    assert.equal(result.status, 'succeeded');
+    assert.equal(counts.click, 1);
+    assert.equal(lastAuditEvent(audit).policyOutcome, 'ALLOW_INTERACT');
+  });
+
+  it('accepts same-document navigation without a new documentRevision', async () => {
+    const lifecycle = new TabNavigationLifecycle();
+    const hashed = `${OLD_URL}#section`;
+    const { adapter, counts } = createFakeAdapter({
+      observePage: async () => linkObservation('rev-A', hashed),
+    });
+    attachLifecycle(adapter, lifecycle);
+    adapter.click = async () => {
+      counts.click += 1;
+      lifecycle.noteSameDocumentNavigation('tab-1');
+      return { primitive: 'click' };
+    };
+    const { executor, registry } = createExecutor(adapter);
+    seedLink(registry);
+
+    const result = await executor.execute({
+      proposal: navigationProposal(),
+      observation: linkObservation('rev-A', OLD_URL),
+    });
+
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.observation?.document.revision, 'rev-A');
+    assert.equal(result.observation?.document.url, hashed);
+    assert.equal(counts.click, 1);
+  });
+
+  it('does not wait forever on the source tab when a popup is converted', async () => {
+    const lifecycle = new TabNavigationLifecycle();
+    const { adapter, counts } = createFakeAdapter({
+      observePage: async () => linkObservation('rev-A', OLD_URL),
+    });
+    attachLifecycle(adapter, lifecycle);
+    adapter.click = async () => {
+      counts.click += 1;
+      lifecycle.notePopupOpenedFrom('tab-1');
+      return { primitive: 'click' };
+    };
+    const { executor, registry } = createExecutor(adapter, new TargetRegistry(), {
+      navigationWaitTimeoutMs: 200,
+    });
+    seedLink(registry);
+
+    const result = await executor.execute({
+      proposal: navigationProposal(),
+      observation: linkObservation('rev-A', OLD_URL),
+    });
+
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.observation?.document.revision, 'rev-A');
+    assert.equal(counts.click, 1);
+  });
+});
+
 describe('interaction adapter boundary', () => {
   function collectTsFiles(directory: string): string[] {
     const entries = readdirSync(directory);
@@ -836,5 +1159,12 @@ describe('interaction adapter boundary', () => {
     assert.equal(/adapter\.select\(/.test(executeExecutorSource), false);
     assert.equal(/adapter\.scroll\(/.test(executeExecutorSource), false);
     assert.equal(/adapter\.scrollIntoView\(/.test(executeExecutorSource), false);
+
+    const executorSource = readFileSync(executorPath, 'utf8');
+    assert.equal(executorSource.includes('waitWhilePageLoading'), false);
+    assert.ok(
+      executorSource.indexOf('captureNavigationMarker') < executorSource.indexOf('dispatchGrantedAction'),
+    );
+    assert.ok(executorSource.includes('waitForNavigationAfter'));
   });
 });

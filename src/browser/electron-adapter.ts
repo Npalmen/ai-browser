@@ -21,6 +21,12 @@ import {
   executeAdapterViewportScroll,
 } from './interaction-primitives';
 import { InteractionSessionManager } from './interaction-session';
+import {
+  TabNavigationLifecycle,
+  type NavigationMarker,
+  type NavigationWaitOptions,
+  type NavigationWaitResult,
+} from './navigation-lifecycle';
 import { TabNotFoundError, TabRegistry } from './tab-registry';
 import { isMainFrameNavigationInvalidation, type TabInvalidationReason } from './tab-invalidation';
 import {
@@ -69,6 +75,7 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
   private websiteRightInsetPx = 0;
   private disposed = false;
   private readonly dispatchScope = new AgentInputDispatchScope();
+  private readonly navigationLifecycle = new TabNavigationLifecycle();
 
   constructor(
     private readonly mainWindow: BrowserWindow,
@@ -97,6 +104,7 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     }
 
     this.options.onTabInvalidated?.(tabId, 'tab-close');
+    this.navigationLifecycle.removeTab(tabId);
 
     if (this.activeAttachedTabId === tabId) {
       this.detachActiveView();
@@ -279,6 +287,43 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     };
   }
 
+  /** Trusted-main only. Not renderer IPC, not a capability token. */
+  captureNavigationMarker(tabId: TabId): NavigationMarker {
+    this.assertNotDisposed();
+    if (!this.views.has(tabId)) {
+      throw new TabNotFoundError(tabId);
+    }
+    const marker = this.navigationLifecycle.captureMarker(tabId);
+    console.log(
+      `[adapter] navigation-marker-captured generation=${marker.generation} popupGeneration=${marker.popupGeneration}`,
+    );
+    return marker;
+  }
+
+  /** Trusted-main only. Not renderer IPC, not a capability token. */
+  async waitForNavigationAfter(
+    tabId: TabId,
+    marker: NavigationMarker,
+    options: NavigationWaitOptions,
+  ): Promise<NavigationWaitResult> {
+    this.assertNotDisposed();
+    if (!this.views.has(tabId)) {
+      throw new TabNotFoundError(tabId);
+    }
+    const result = await this.navigationLifecycle.waitForNavigationAfter(tabId, marker, options);
+    if (result.status === 'settled') {
+      console.log(
+        `[adapter] navigation-transition-observed generation=${result.generation} kind=${result.kind}`,
+      );
+      console.log(
+        `[adapter] navigation-settle-completed generation=${result.generation} kind=${result.kind}`,
+      );
+    } else if (result.status === 'timeout') {
+      console.log(`[adapter] navigation-transition-timeout started=${result.started}`);
+    }
+    return result;
+  }
+
   layoutActiveView(): void {
     if (this.disposed || !this.activeAttachedTabId) {
       return;
@@ -304,6 +349,7 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     }
 
     this.disposed = true;
+    this.navigationLifecycle.clear();
     this.pageObserver.dispose();
     this.targetRegistry.clearAll();
     this.detachActiveView();
@@ -484,6 +530,8 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
       const activate = shouldActivateConvertedPopup(tabId, activeTabId);
 
       if (isAllowedWebsiteNavigation(url)) {
+        this.navigationLifecycle.notePopupOpenedFrom(tabId);
+        console.log('[adapter] navigation-popup-opened');
         void this.createTabInternal({
           url,
           activate,
@@ -518,11 +566,16 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
 
     webContents.on(
       'did-start-navigation',
-      (event: { isMainFrame?: boolean }, _url?: string, _isInPlace?: boolean, isMainFrame?: boolean) => {
+      (event: { isMainFrame?: boolean }, _url?: string, isInPlace?: boolean, isMainFrame?: boolean) => {
         const mainFrame =
           typeof isMainFrame === 'boolean' ? isMainFrame : event?.isMainFrame;
         if (isMainFrameNavigationInvalidation({ isMainFrame: mainFrame })) {
           this.options.onTabInvalidated?.(tabId, 'navigation');
+          const sameDocument = isInPlace === true;
+          this.navigationLifecycle.noteMainFrameNavigationStart(tabId, { sameDocument });
+          console.log(
+            `[adapter] navigation-start generation-advanced sameDocument=${sameDocument}`,
+          );
         }
         sync();
       },
@@ -530,25 +583,45 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
     webContents.on('did-navigate', () => {
       if (!this.disposed && this.views.has(tabId)) {
         this.targetRegistry.clearTab(tabId);
+        this.navigationLifecycle.noteMainFrameNavigationCommitted(tabId);
       }
       sync();
     });
-    webContents.on('did-navigate-in-page', sync);
+    webContents.on(
+      'did-navigate-in-page',
+      (_event: unknown, _url?: string, isMainFrame?: boolean) => {
+        if (isMainFrame !== false) {
+          this.navigationLifecycle.noteSameDocumentNavigation(tabId);
+          console.log('[adapter] navigation-same-document');
+        }
+        sync();
+      },
+    );
     webContents.on('did-finish-load', sync);
     webContents.on('page-title-updated', sync);
     webContents.on('did-start-loading', sync);
-    webContents.on('did-stop-loading', sync);
-    webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
-      if (this.disposed || !this.views.has(tabId)) {
-        return;
-      }
-
-      console.error(
-        `[adapter] page load failed (${errorCode}) ${validatedURL}: ${errorDescription}`,
-      );
-      this.registry.updateTab(tabId, { loading: false });
-      this.syncMetadata(tabId, true);
+    webContents.on('did-stop-loading', () => {
+      this.navigationLifecycle.noteMainFrameNavigationSettled(tabId);
+      console.log('[adapter] navigation-settled');
+      sync();
     });
+    webContents.on(
+      'did-fail-load',
+      (_event, errorCode, errorDescription, validatedURL, isMainFrame?: boolean) => {
+        if (this.disposed || !this.views.has(tabId)) {
+          return;
+        }
+
+        if (isMainFrame !== false) {
+          this.navigationLifecycle.noteMainFrameNavigationSettled(tabId);
+        }
+        console.error(
+          `[adapter] page load failed (${errorCode}) ${validatedURL}: ${errorDescription}`,
+        );
+        this.registry.updateTab(tabId, { loading: false });
+        this.syncMetadata(tabId, true);
+      },
+    );
   }
 
   private publishState(): void {

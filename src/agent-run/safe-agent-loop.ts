@@ -75,6 +75,8 @@ export class SafeAgentLoop {
   private readonly stepAgent: Pick<InteractiveStepAgent, 'step'>;
   private readonly interactionExecutor: SafeV3InteractionExecutionPort;
   private readonly approvalPort: AgentRunApprovalPort | undefined;
+  private nextTrustedObservation: PageObservation | undefined;
+  private postNavigationObservationRetriesRemaining = 0;
 
   constructor(deps: SafeAgentLoopDependencies) {
     this.coordinator = deps.coordinator;
@@ -111,14 +113,22 @@ export class SafeAgentLoop {
 
       let step;
       try {
+        const trustedObservation = this.nextTrustedObservation;
+        this.nextTrustedObservation = undefined;
         step = await this.stepAgent.step(this.buildStepRequest(runSnapshot, options), {
           signal: options.signal,
           onAnswerTextDelta: options.onAnswerTextDelta,
           trustedProgress: trustedProgress.length > 0 ? trustedProgress : undefined,
           priorConversationForRevision:
             modelIteration === 0 ? options.priorConversationForRevision : undefined,
+          ...(trustedObservation !== undefined ? { trustedObservation } : {}),
         });
       } catch (error) {
+        if (this.shouldRetryPostNavigationObservation(error)) {
+          this.postNavigationObservationRetriesRemaining -= 1;
+          console.log('[agent-loop] post-navigation-observation-retry');
+          continue;
+        }
         return this.handleStepError(ref, error);
       }
 
@@ -310,6 +320,15 @@ export class SafeAgentLoop {
       actionKind: step.proposal.kind,
       pageChanged,
     });
+
+    const urlChanged = postObservation.document.url !== step.observation.document.url;
+    if (step.proposal.kind === 'click' && (pageChanged || urlChanged)) {
+      this.postNavigationObservationRetriesRemaining = 1;
+      this.nextTrustedObservation = urlChanged ? postObservation : undefined;
+    } else {
+      this.postNavigationObservationRetriesRemaining = 0;
+      this.nextTrustedObservation = undefined;
+    }
 
     return undefined;
   }
@@ -561,6 +580,20 @@ export class SafeAgentLoop {
       throw new Error(`AgentRun ${ref.runId} is missing.`);
     }
     return snapshot;
+  }
+
+  private shouldRetryPostNavigationObservation(error: unknown): boolean {
+    if (this.postNavigationObservationRetriesRemaining <= 0) {
+      return false;
+    }
+    if (!(error instanceof ObservationError)) {
+      return false;
+    }
+    return (
+      error.code === 'PAGE_NOT_READY' ||
+      error.code === 'PAGE_CHANGED_DURING_OBSERVATION' ||
+      error.code === 'OBSERVATION_IN_PROGRESS'
+    );
   }
 }
 

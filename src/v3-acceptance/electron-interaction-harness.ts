@@ -14,10 +14,13 @@ import type { PageObservation } from '../shared/observation-types';
 import {
   V3_BUY_MUTATED,
   V3_EXPANDED_DETAIL_MARKER,
+  V3_DELAYED_NAVIGATION_A_PATH,
   V3_POLICY_DENY_PATH,
+  V3_POPUP_SOURCE_PATH,
   V3_PROMPT_INJECTION_CANARY,
   V3_PROMPT_INJECTION_PATH,
   V3_SAFE_INTERACT_PATH,
+  V3_SAME_DOCUMENT_PATH,
   V3_SELECT_EXACT_TARGET_PATH,
   V3_SENSITIVE_FIELDS_PATH,
   V3_TAB_ID,
@@ -451,6 +454,117 @@ async function run(): Promise<void> {
     }
     assert.equal(injectionResult.result.status, 'denied');
     assert.equal(lastAuditEvent(audit).adapterPrimitiveInvoked, false);
+    assertDebuggerDetached(window);
+
+    await adapter.navigate(tabId, `${baseUrl}${V3_DELAYED_NAVIGATION_A_PATH}`);
+    await waitForObservation(adapter, tabId);
+    audit.clear();
+    const delayedRuntime = new RecordingInteractionModelRuntime((context) => ({
+      kind: 'interaction',
+      proposal: {
+        kind: 'click',
+        targetId: findNodeByName(context, 'Open destination').targetId,
+      },
+    }));
+    const delayedAgent = new InteractiveAgent({
+      observationSource: {
+        observePage: (requestedTabId, options) => adapter.observePage(requestedTabId, options),
+      },
+      modelRuntime: delayedRuntime,
+      interactionExecutor: executor,
+      allowScreenshotExport: false,
+    });
+    const delayedResult = await delayedAgent.interact({
+      tabId,
+      instruction: 'Open destination',
+    });
+    assert.equal(delayedResult.kind, 'interaction');
+    if (delayedResult.kind !== 'interaction') {
+      throw new Error('Expected interaction result for delayed navigation');
+    }
+    const delayed = requireV3InteractionResult(delayedResult.result);
+    assert.equal(
+      delayed.status,
+      'succeeded',
+      `delayed nav status=${delayed.status} error=${delayed.errorCode ?? 'none'}`,
+    );
+    assert.equal(delayed.observation?.document.url.includes('delayed-navigation-b.html'), true);
+    assert.equal(
+      observationContainsText(delayed.observation!.nodes, 'V3_DELAYED_NAV_B_MARKER'),
+      true,
+    );
+    assert.equal(lastAuditEvent(audit).adapterPrimitiveInvoked, true);
+    assert.equal(lastAuditEvent(audit).resultStatus, 'succeeded');
+    assertDebuggerDetached(window);
+
+    await adapter.navigate(tabId, `${baseUrl}${V3_SAME_DOCUMENT_PATH}`);
+    await waitForObservation(adapter, tabId);
+    audit.clear();
+    const hashRuntime = new RecordingInteractionModelRuntime((context) => ({
+      kind: 'interaction',
+      proposal: {
+        kind: 'click',
+        targetId: findNodeByName(context, 'Jump to section').targetId,
+      },
+    }));
+    const hashAgent = new InteractiveAgent({
+      observationSource: {
+        observePage: (requestedTabId, options) => adapter.observePage(requestedTabId, options),
+      },
+      modelRuntime: hashRuntime,
+      interactionExecutor: executor,
+      allowScreenshotExport: false,
+    });
+    const hashResult = await hashAgent.interact({ tabId, instruction: 'Jump to section' });
+    assert.equal(hashResult.kind, 'interaction');
+    if (hashResult.kind !== 'interaction') {
+      throw new Error('Expected interaction result for same-document navigation');
+    }
+    const hashed = requireV3InteractionResult(hashResult.result);
+    assert.equal(
+      hashed.status,
+      'succeeded',
+      `hash nav status=${hashed.status} error=${hashed.errorCode ?? 'none'}`,
+    );
+    assert.equal(hashed.observation?.document.url.includes('#section'), true);
+    assertDebuggerDetached(window);
+
+    await adapter.navigate(tabId, `${baseUrl}${V3_POPUP_SOURCE_PATH}`);
+    await waitForObservation(adapter, tabId);
+    const tabsBeforePopup = adapter.getBrowserState().tabs.length;
+    audit.clear();
+    const popupRuntime = new RecordingInteractionModelRuntime((context) => ({
+      kind: 'interaction',
+      proposal: {
+        kind: 'click',
+        targetId: findNodeByName(context, 'Open popup').targetId,
+      },
+    }));
+    const popupAgent = new InteractiveAgent({
+      observationSource: {
+        observePage: (requestedTabId, options) => adapter.observePage(requestedTabId, options),
+      },
+      modelRuntime: popupRuntime,
+      interactionExecutor: executor,
+      allowScreenshotExport: false,
+    });
+    const popupResult = await popupAgent.interact({ tabId, instruction: 'Open popup' });
+    assert.equal(popupResult.kind, 'interaction');
+    if (popupResult.kind !== 'interaction') {
+      throw new Error('Expected interaction result for popup conversion');
+    }
+    const popup = requireV3InteractionResult(popupResult.result);
+    assert.equal(
+      popup.status,
+      'succeeded',
+      `popup nav status=${popup.status} error=${popup.errorCode ?? 'none'}`,
+    );
+    assert.equal(
+      observationContainsText(popup.observation!.nodes, 'V3_POPUP_SOURCE_MARKER'),
+      true,
+    );
+    await waitUntil(() => adapter.getBrowserState().tabs.length > tabsBeforePopup);
+    assert.equal(lastAuditEvent(audit).adapterPrimitiveInvoked, true);
     assertDebuggerDetached(window);
 
     const controllerEvents: import('../shared/ai-types').AiAnswerEvent[] = [];

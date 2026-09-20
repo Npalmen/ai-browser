@@ -748,6 +748,85 @@ describe('SafeAgentLoop fresh observation policy', () => {
     assert.equal(stepAgent.calls[0]?.options?.trustedObservation, undefined);
     assert.equal(stepAgent.calls[1]?.options?.trustedObservation, undefined);
   });
+
+  it('supplies the post-navigation observation to the next model step', async () => {
+    const before = observation({
+      observationId: 'obs-search',
+      document: {
+        ...observation().document,
+        revision: 'rev-A',
+        url: 'https://duckduckgo.com/?q=electron',
+      },
+    });
+    const after = observation({
+      observationId: 'obs-docs',
+      document: {
+        ...observation().document,
+        revision: 'rev-B',
+        url: 'https://www.electronjs.org/docs/latest',
+      },
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick('rev-A'), before),
+      answerStep('Opened the first result.', after),
+    ]);
+    const executor = new FakeV3Executor([succeeded(after)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator)));
+    assert.equal(result.status, 'completed');
+    assert.equal(stepAgent.calls[1]?.options?.trustedObservation?.document.revision, 'rev-B');
+    assert.equal(executor.calls.length, 1);
+  });
+
+  it('does not fail the run when the next observation races a successful navigation', async () => {
+    const before = observation({
+      observationId: 'obs-search',
+      document: { ...observation().document, revision: 'rev-A' },
+    });
+    const after = observation({
+      observationId: 'obs-docs',
+      document: { ...observation().document, revision: 'rev-B' },
+    });
+    let secondStepAttempts = 0;
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex === 1) {
+        return proposalStep(boundClick('rev-A'), before);
+      }
+      secondStepAttempts += 1;
+      if (secondStepAttempts === 1) {
+        throw new ObservationError('PAGE_NOT_READY', 'document still replacing');
+      }
+      return answerStep('Opened the first result.', after);
+    });
+    const executor = new FakeV3Executor([succeeded(after)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator)));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.notEqual(result.run.terminalReason, 'ACTION_FAILED');
+      assert.equal(result.answer.text, 'Opened the first result.');
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(secondStepAttempts, 2);
+  });
+
+  it('does not globally retry observation errors after a local INTERACT click', async () => {
+    const obs = observation();
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex === 1) {
+        return proposalStep(boundClick(), obs);
+      }
+      throw new ObservationError('PAGE_NOT_READY', 'unrelated');
+    });
+    const executor = new FakeV3Executor([succeeded(obs)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator)));
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'ACTION_FAILED');
+    }
+    assert.equal(executor.calls.length, 1);
+  });
 });
 
 describe('SafeAgentLoop provider fallback logical count', () => {

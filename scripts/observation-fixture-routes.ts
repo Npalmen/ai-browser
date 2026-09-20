@@ -52,6 +52,26 @@ const INTERACTION_ROUTE_MAP: Record<string, { fileName: string; contentType: str
     fileName: 'select-exact-target.html',
     contentType: 'text/html; charset=utf-8',
   },
+  '/interaction/delayed-navigation-a.html': {
+    fileName: 'delayed-navigation-a.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/interaction/delayed-navigation-b.html': {
+    fileName: 'delayed-navigation-b.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/interaction/same-document.html': {
+    fileName: 'same-document.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/interaction/popup-source.html': {
+    fileName: 'popup-source.html',
+    contentType: 'text/html; charset=utf-8',
+  },
+  '/interaction/popup-destination.html': {
+    fileName: 'popup-destination.html',
+    contentType: 'text/html; charset=utf-8',
+  },
 };
 
 const AGENT_RUN_ROUTE_MAP: Record<string, { fileName: string; contentType: string }> = {

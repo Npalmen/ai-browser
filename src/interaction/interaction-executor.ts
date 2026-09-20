@@ -5,6 +5,11 @@ import type {
   AdapterObservedBounds,
   AdapterTargetRef,
 } from '../browser/interaction-adapter-types';
+import {
+  getNavigationLifecycle,
+  navigationWaitToError,
+  type NavigationMarker,
+} from '../browser/navigation-lifecycle';
 import type { PageState } from '../shared/browser-types';
 import { InteractionError, type InteractionErrorCode } from '../shared/interaction-errors';
 import type {
@@ -35,8 +40,8 @@ import { classifyInteraction } from './interaction-policy';
 import { resolveInteractionTarget, type ResolvedInteractionTarget } from './target-resolver';
 
 const POST_NAVIGATION_OBSERVATION_ATTEMPTS = 3;
-const POST_NAVIGATION_LOADING_POLLS = 20;
 const POST_NAVIGATION_RETRY_DELAY_MS = 50;
+const POST_NAVIGATION_WAIT_TIMEOUT_MS = 15_000;
 
 export interface InteractionExecutorDependencies {
   adapter: BrowserAdapter;
@@ -45,6 +50,7 @@ export interface InteractionExecutorDependencies {
   generateActionId?: () => string;
   now?: () => number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  navigationWaitTimeoutMs?: number;
 }
 
 export interface ExecuteInteractionInput {
@@ -133,6 +139,16 @@ export class InteractionExecutor {
       stage.grant = grant;
       assertGrantMatchesProposal(grant, proposal);
 
+      const navigationClick = isNavigationClick(proposal, stage);
+      const lifecycle = navigationClick ? getNavigationLifecycle(this.deps.adapter) : undefined;
+      let navigationMarker: NavigationMarker | undefined;
+      if (lifecycle) {
+        navigationMarker = lifecycle.captureNavigationMarker(proposal.tabId);
+        console.log(
+          `[interaction] navigation-marker-captured generation=${navigationMarker.generation} popupGeneration=${navigationMarker.popupGeneration}`,
+        );
+      }
+
       stage.adapterPrimitiveInvoked = true;
       await this.dispatchGrantedAction(grant, proposal, observation, policyContext);
 
@@ -142,6 +158,7 @@ export class InteractionExecutor {
         proposal,
         stage,
         signal,
+        navigationMarker,
       });
     } catch (error: unknown) {
       if (stage.adapterPrimitiveInvoked && stage.grant && stage.decision && isAllowPolicyDecision(stage.decision)) {
@@ -173,12 +190,17 @@ export class InteractionExecutor {
     proposal: BoundInteractionProposal;
     stage: ExecutionStageState;
     signal?: AbortSignal;
+    navigationMarker?: NavigationMarker;
   }): Promise<InteractionResult> {
     const navigationClick = isNavigationClick(input.proposal, input.stage);
 
     try {
       if (navigationClick) {
-        await this.waitWhilePageLoading(input.proposal.tabId, input.signal);
+        await this.waitForNavigationTransition({
+          tabId: input.proposal.tabId,
+          marker: input.navigationMarker,
+          signal: input.signal,
+        });
       }
 
       const { observation, pageState } = await this.observeAfterAction({
@@ -233,6 +255,7 @@ export class InteractionExecutor {
           observation.document.loading &&
           attempt < attempts
         ) {
+          console.log(`[interaction] post-navigation-observation-retry attempt=${attempt}`);
           await this.sleep(POST_NAVIGATION_RETRY_DELAY_MS, input.signal);
           continue;
         }
@@ -246,6 +269,7 @@ export class InteractionExecutor {
         ) {
           throw error;
         }
+        console.log(`[interaction] post-navigation-observation-retry attempt=${attempt}`);
         await this.sleep(POST_NAVIGATION_RETRY_DELAY_MS, input.signal);
       }
     }
@@ -253,15 +277,37 @@ export class InteractionExecutor {
     throw lastError ?? new InteractionError('INTERACTION_FAILED', 'Post-action observation failed.');
   }
 
-  private async waitWhilePageLoading(tabId: string, signal?: AbortSignal): Promise<void> {
-    for (let poll = 0; poll < POST_NAVIGATION_LOADING_POLLS; poll += 1) {
-      this.assertNotCancelled(signal);
-      const pageState = await this.safePageState(tabId);
-      if (!pageState.loading) {
-        return;
-      }
-      await this.sleep(POST_NAVIGATION_RETRY_DELAY_MS, signal);
+  private async waitForNavigationTransition(input: {
+    tabId: string;
+    marker: NavigationMarker | undefined;
+    signal?: AbortSignal;
+  }): Promise<void> {
+    const lifecycle = getNavigationLifecycle(this.deps.adapter);
+    if (!lifecycle || input.marker === undefined) {
+      return;
     }
+
+    this.assertNotCancelled(input.signal);
+    const result = await lifecycle.waitForNavigationAfter(input.tabId, input.marker, {
+      signal: input.signal,
+      timeoutMs: this.deps.navigationWaitTimeoutMs ?? POST_NAVIGATION_WAIT_TIMEOUT_MS,
+    });
+
+    if (result.status === 'settled') {
+      console.log(
+        `[interaction] navigation-transition-observed kind=${result.kind} generation=${result.generation}`,
+      );
+      console.log(
+        `[interaction] navigation-settle-completed kind=${result.kind} generation=${result.generation}`,
+      );
+      return;
+    }
+
+    if (result.status === 'timeout') {
+      console.log(`[interaction] navigation-transition-timeout started=${result.started}`);
+    }
+
+    throw navigationWaitToError(result);
   }
 
   private async finishAfterPrimitive(input: {
