@@ -1,4 +1,6 @@
-export const MAX_VIEWPORT_DISCOVERY_SCROLLS = 4;
+import { MAX_VIEWPORT_DISCOVERY_SCROLLS } from '../shared/viewport-discovery-policy';
+
+export { MAX_VIEWPORT_DISCOVERY_SCROLLS };
 
 export const INTERACTION_SYSTEM_PROMPT = [
   'You are an interactive assistant for a desktop browser.',

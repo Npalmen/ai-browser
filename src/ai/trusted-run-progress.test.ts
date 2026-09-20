@@ -115,6 +115,26 @@ describe('trusted run progress', () => {
     assert.doesNotMatch(serialized, /backendNodeId/i);
   });
 
+  it('uses temporal wording only for the latest navigation entry', () => {
+    const serialized = serializeTrustedRunProgress([
+      { kind: 'safe-navigation-succeeded', pageChanged: true, sameDocument: false },
+      { kind: 'safe-navigation-succeeded', pageChanged: true, sameDocument: false },
+      { kind: 'safe-navigation-succeeded', pageChanged: true, sameDocument: false },
+    ]);
+    assert.ok(serialized);
+    assert.equal(
+      [...serialized.matchAll(/immediately previous model step proposed a link navigation/gi)].length,
+      1,
+    );
+    assert.equal(
+      [...serialized.matchAll(/An earlier navigation step in this current task completed successfully/g)]
+        .length,
+      2,
+    );
+    assert.match(serialized, /Do not search the current page for the same link or control/i);
+    assert.match(serialized, /confirm completion/i);
+  });
+
   it('does not copy untrusted website strings into trusted navigation progress', () => {
     const serialized = serializeTrustedRunProgress([
       { kind: 'safe-navigation-succeeded', pageChanged: true, sameDocument: false },

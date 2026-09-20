@@ -151,6 +151,7 @@ function boundScroll(
 }
 
 const WEBDRIVERIO_TARGET = 'target-webdriverio';
+const ELECTRON_TESTING_REVISION = 'rev-electron-testing';
 
 function electronTestingObservation(
   scrollY = 0,
@@ -172,7 +173,7 @@ function electronTestingObservation(
     observationId: `obs-electron-${scrollY}`,
     document: {
       ...observation().document,
-      revision: `rev-electron-${scrollY}`,
+      revision: ELECTRON_TESTING_REVISION,
       url: 'https://www.electronjs.org/docs/latest/tutorial/automated-testing',
       title: 'Automated Testing',
     },
@@ -2092,6 +2093,84 @@ describe('SafeAgentLoop offscreen target discovery', () => {
     assert.equal(executor.calls[0]?.proposal.kind, 'scroll');
   });
 
+  it('allows two identical viewport scrolls on the same revision from different scrollY values', async () => {
+    const first = electronTestingObservation(0, false);
+    const second = electronTestingObservation(300, false);
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex === 1) {
+        return proposalStep(
+          boundScroll(first.document.revision, first.observationId),
+          first,
+        );
+      }
+      if (callIndex === 2) {
+        return proposalStep(
+          boundScroll(second.document.revision, second.observationId),
+          second,
+        );
+      }
+      return answerStep('Still searching.', second);
+    });
+    const executor = new FakeV3Executor([succeeded(second), succeeded(second)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'completed');
+    assert.equal(executor.calls.length, 2);
+    assert.equal(first.document.revision, second.document.revision);
+  });
+
+  it('blocks a fifth discovery scroll after four successful viewport scrolls on one revision', async () => {
+    const scrollYs = [0, 300, 600, 900];
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex <= 4) {
+        const current = electronTestingObservation(scrollYs[callIndex - 1], false);
+        return proposalStep(
+          boundScroll(current.document.revision, current.observationId),
+          current,
+        );
+      }
+      return proposalStep(
+        boundScroll(ELECTRON_TESTING_REVISION, 'obs-electron-1200'),
+        electronTestingObservation(1200, false),
+      );
+    });
+    const executor = new FakeV3Executor([
+      succeeded(electronTestingObservation(300, false)),
+      succeeded(electronTestingObservation(600, false)),
+      succeeded(electronTestingObservation(900, false)),
+      succeeded(electronTestingObservation(1200, false)),
+    ]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'AGENT_LOOP_NO_PROGRESS');
+    }
+    assert.equal(executor.calls.length, 4);
+  });
+
+  it('blocks repeating a viewport scroll when scrollY does not move at the page bottom', async () => {
+    const atBottom = electronTestingObservation(2100, false);
+    const stepAgent = new FakeStepAgent([
+      proposalStep(
+        boundScroll(atBottom.document.revision, atBottom.observationId),
+        atBottom,
+      ),
+      proposalStep(
+        boundScroll(atBottom.document.revision, 'obs-electron-bottom-2'),
+        atBottom,
+      ),
+    ]);
+    const executor = new FakeV3Executor([succeeded(atBottom)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'AGENT_LOOP_NO_PROGRESS');
+    }
+    assert.equal(executor.calls.length, 1);
+  });
+
   it('clicks an exported in-viewport target without discovery scrolling', async () => {
     const page = electronTestingObservation(0, true);
     page.viewport = {
@@ -2196,7 +2275,12 @@ describe('SafeAgentLoop multi-step navigation completion', () => {
       answerCalls += 1;
       const serialized = serializeTrustedRunProgress(options?.trustedProgress);
       assert.ok(serialized);
-      assert.match(serialized ?? '', /immediately previous model step proposed a link navigation/i);
+      assert.equal(
+        [
+          ...(serialized ?? '').matchAll(/immediately previous model step proposed a link navigation/gi),
+        ].length,
+        1,
+      );
       assert.match(
         serialized ?? '',
         /Do not search the current page for the same link or control/i,

@@ -1,11 +1,18 @@
 import type { BoundInteractionProposal } from '../shared/interaction-types';
+import type { PageObservation } from '../shared/observation-types';
 import { fingerprintAction, type ActionFingerprintInput } from './action-fingerprint';
 
-export function fingerprintBoundProposal(proposal: BoundInteractionProposal): string {
-  return fingerprintAction(toFingerprintInput(proposal));
+export function fingerprintBoundProposal(
+  proposal: BoundInteractionProposal,
+  observation: PageObservation,
+): string {
+  return fingerprintAction(toFingerprintInput(proposal, observation));
 }
 
-function toFingerprintInput(proposal: BoundInteractionProposal): ActionFingerprintInput {
+function toFingerprintInput(
+  proposal: BoundInteractionProposal,
+  observation: PageObservation,
+): ActionFingerprintInput {
   switch (proposal.kind) {
     case 'click':
       return {
@@ -35,6 +42,8 @@ function toFingerprintInput(proposal: BoundInteractionProposal): ActionFingerpri
           documentRevision: proposal.documentRevision,
           direction: proposal.direction,
           amountPx: proposal.amountPx,
+          scrollX: observation.viewport.scrollX,
+          scrollY: observation.viewport.scrollY,
         };
       }
       return {

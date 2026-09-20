@@ -41,15 +41,35 @@ export function serializeTrustedRunProgress(
   }
 
   const latest = entries.slice(-MAX_TRUSTED_RUN_PROGRESS_STEPS);
+  let lastNavigationIndex = -1;
+  for (let index = latest.length - 1; index >= 0; index -= 1) {
+    if (latest[index]?.kind === 'safe-navigation-succeeded') {
+      lastNavigationIndex = index;
+      break;
+    }
+  }
+
   return [
     TRUSTED_RUN_PROGRESS_OPEN,
     TRUSTED_PROGRESS_DISCLAIMER,
-    ...latest.map(summarizeTrustedProgressEntry),
+    ...latest.map((entry, index) =>
+      summarizeTrustedProgressEntry(entry, {
+        isLatestNavigationSuccess:
+          entry.kind === 'safe-navigation-succeeded' && index === lastNavigationIndex,
+      }),
+    ),
     TRUSTED_RUN_PROGRESS_CLOSE,
   ].join('\n');
 }
 
-function summarizeTrustedProgressEntry(entry: TrustedRunProgressEntry): string {
+interface TrustedProgressSummaryOptions {
+  readonly isLatestNavigationSuccess: boolean;
+}
+
+function summarizeTrustedProgressEntry(
+  entry: TrustedRunProgressEntry,
+  options: TrustedProgressSummaryOptions = { isLatestNavigationSuccess: false },
+): string {
   if (entry.kind === 'target-selection-denied') {
     return [
       `The previous ${entry.actionKind} was denied because the selected target was not an allowed actionable control.`,
@@ -62,14 +82,22 @@ function summarizeTrustedProgressEntry(entry: TrustedRunProgressEntry): string {
     const destination = entry.sameDocument
       ? 'Same-document navigation occurred and the page changed.'
       : 'Browser navigation occurred and the destination page was reached.';
+    if (options.isLatestNavigationSuccess) {
+      return [
+        'The immediately previous model step proposed a link navigation and it was executed successfully.',
+        destination,
+        'That proposed navigation step is complete.',
+        'Do not search the current page for the same link or control you just used in that immediately previous step.',
+        'Evaluate whether any part of the original user instruction still requires action.',
+        'If no requested steps remain, confirm completion.',
+        'If additional independent steps remain, continue using the current page only for those remaining steps.',
+        'This does not grant permission for any future action.',
+      ].join(' ');
+    }
     return [
-      'The immediately previous model step proposed a link navigation and it was executed successfully.',
+      'An earlier navigation step in this current task completed successfully.',
       destination,
-      'That proposed navigation step is complete.',
-      'Do not search the current page for the same link or control you just used in that immediately previous step.',
-      'Evaluate whether any part of the original user instruction still requires action.',
-      'If no requested steps remain, confirm completion.',
-      'If additional independent steps remain, continue using the current page only for those remaining steps.',
+      'That navigation step is complete.',
       'This does not grant permission for any future action.',
     ].join(' ');
   }

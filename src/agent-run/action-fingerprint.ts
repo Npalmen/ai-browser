@@ -28,6 +28,8 @@ export type ActionFingerprintInput =
       readonly documentRevision: DocumentRevision;
       readonly direction: ActionFingerprintDirection;
       readonly amountPx: number;
+      readonly scrollX: number;
+      readonly scrollY: number;
     }
   | {
       readonly kind: 'scroll';
@@ -58,6 +60,8 @@ function canonicalFingerprintSource(input: ActionFingerprintInput): string {
           input.documentRevision,
           input.direction,
           input.amountPx,
+          input.scrollX,
+          input.scrollY,
         ]);
       }
       return JSON.stringify(['scroll', 'into-view', input.documentRevision, input.targetId]);

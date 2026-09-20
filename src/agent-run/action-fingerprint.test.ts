@@ -60,6 +60,8 @@ describe('action fingerprint', () => {
       documentRevision: 'rev-1',
       direction: 'down',
       amountPx: 100,
+      scrollX: 0,
+      scrollY: 0,
     });
     const scroll200 = fingerprintAction({
       kind: 'scroll',
@@ -67,8 +69,51 @@ describe('action fingerprint', () => {
       documentRevision: 'rev-1',
       direction: 'down',
       amountPx: 200,
+      scrollX: 0,
+      scrollY: 0,
     });
     assert.notEqual(scroll100, scroll200);
+
+    const scrollFromTop = fingerprintAction({
+      kind: 'scroll',
+      mode: 'viewport',
+      documentRevision: 'rev-1',
+      direction: 'down',
+      amountPx: 500,
+      scrollX: 0,
+      scrollY: 0,
+    });
+    const scrollFromMiddle = fingerprintAction({
+      kind: 'scroll',
+      mode: 'viewport',
+      documentRevision: 'rev-1',
+      direction: 'down',
+      amountPx: 500,
+      scrollX: 0,
+      scrollY: 500,
+    });
+    const scrollAtBottomRepeat = fingerprintAction({
+      kind: 'scroll',
+      mode: 'viewport',
+      documentRevision: 'rev-1',
+      direction: 'down',
+      amountPx: 500,
+      scrollX: 0,
+      scrollY: 2000,
+    });
+    assert.notEqual(scrollFromTop, scrollFromMiddle);
+    assert.equal(
+      scrollAtBottomRepeat,
+      fingerprintAction({
+        kind: 'scroll',
+        mode: 'viewport',
+        documentRevision: 'rev-1',
+        direction: 'down',
+        amountPx: 500,
+        scrollX: 0,
+        scrollY: 2000,
+      }),
+    );
 
     const intoView = fingerprintAction({
       kind: 'scroll',

@@ -11,6 +11,7 @@ import type {
 } from '../shared/interaction-types';
 import type { DocumentRevision, PageObservation, TargetId } from '../shared/observation-types';
 import { ObservationError, type ObservationErrorCode } from '../shared/observation-types';
+import { MAX_VIEWPORT_DISCOVERY_SCROLLS } from '../shared/viewport-discovery-policy';
 import { fingerprintBoundProposal } from './bound-proposal-fingerprint';
 import type { AgentRunCoordinator } from './agent-run-coordinator';
 import type { AgentRunApprovalPort } from './approval-pause-port';
@@ -76,11 +77,25 @@ interface PostNavigationContinuation {
   observationRetriesRemaining: number;
 }
 
+interface ViewportDiscoveryState {
+  consecutiveViewportScrolls: number;
+}
+
 function createPostNavigationContinuation(): PostNavigationContinuation {
   return {
     trustedObservation: undefined,
     observationRetriesRemaining: 0,
   };
+}
+
+function createViewportDiscoveryState(): ViewportDiscoveryState {
+  return {
+    consecutiveViewportScrolls: 0,
+  };
+}
+
+function isViewportDiscoveryScroll(proposal: BoundInteractionProposal): boolean {
+  return proposal.kind === 'scroll' && proposal.mode === 'viewport';
 }
 
 export class SafeAgentLoop {
@@ -104,6 +119,7 @@ export class SafeAgentLoop {
 
     const trustedProgress: TrustedRunProgressEntry[] = [];
     const continuation = createPostNavigationContinuation();
+    const discoveryState = createViewportDiscoveryState();
     let modelIteration = 0;
 
     while (true) {
@@ -189,7 +205,14 @@ export class SafeAgentLoop {
         };
       }
 
-      const fingerprint = fingerprintBoundProposal(step.proposal);
+      if (
+        isViewportDiscoveryScroll(step.proposal) &&
+        discoveryState.consecutiveViewportScrolls >= MAX_VIEWPORT_DISCOVERY_SCROLLS
+      ) {
+        return this.blockTerminal(ref, 'AGENT_LOOP_NO_PROGRESS');
+      }
+
+      const fingerprint = fingerprintBoundProposal(step.proposal, step.observation);
 
       const originPopupRepeat = this.coordinator.assertNotRepeatOriginPopupClick(
         ref,
@@ -230,6 +253,7 @@ export class SafeAgentLoop {
         trustedProgress,
         options,
         continuation,
+        discoveryState,
       );
       if (actionOutcome !== undefined) {
         return actionOutcome;
@@ -325,9 +349,17 @@ export class SafeAgentLoop {
     trustedProgress: TrustedRunProgressEntry[],
     options: SafeAgentLoopOptions,
     continuation: PostNavigationContinuation,
+    discoveryState: ViewportDiscoveryState,
   ): Promise<SafeAgentLoopResult | undefined> {
     if (result.status === 'succeeded') {
-      return this.handleSucceededAction(ref, step, result, trustedProgress, continuation);
+      return this.handleSucceededAction(
+        ref,
+        step,
+        result,
+        trustedProgress,
+        continuation,
+        discoveryState,
+      );
     }
     if (result.status === 'denied') {
       return this.handleDeniedAction(ref, step, result.errorCode, trustedProgress, options);
@@ -344,6 +376,7 @@ export class SafeAgentLoop {
     result: InteractionResult,
     trustedProgress: TrustedRunProgressEntry[],
     continuation: PostNavigationContinuation,
+    discoveryState: ViewportDiscoveryState,
   ): SafeAgentLoopResult | undefined {
     const postObservation = result.observation;
     const live = this.coordinator.getRun(ref.runId);
@@ -383,7 +416,7 @@ export class SafeAgentLoop {
     const navigated =
       causalPopup === true ||
       (step.proposal.kind === 'click' && (revisionChanged || urlChanged));
-    const fingerprint = fingerprintBoundProposal(step.proposal);
+    const fingerprint = fingerprintBoundProposal(step.proposal, step.observation);
 
     const recordedFingerprint = this.coordinator.recordSuccessfulActionFingerprint(
       ref,
@@ -400,7 +433,16 @@ export class SafeAgentLoop {
         pageChanged: true,
         sameDocument: causalPopup !== true && !revisionChanged,
       });
+      discoveryState.consecutiveViewportScrolls = 0;
+    } else if (isViewportDiscoveryScroll(step.proposal)) {
+      discoveryState.consecutiveViewportScrolls += 1;
+      trustedProgress.push({
+        kind: 'safe-interaction-succeeded',
+        actionKind: step.proposal.kind,
+        pageChanged: revisionChanged,
+      });
     } else {
+      discoveryState.consecutiveViewportScrolls = 0;
       trustedProgress.push({
         kind: 'safe-interaction-succeeded',
         actionKind: step.proposal.kind,
@@ -452,7 +494,7 @@ export class SafeAgentLoop {
   ): SafeAgentLoopResult | undefined {
     const recordedFingerprint = this.coordinator.recordSuccessfulActionFingerprint(
       ref,
-      fingerprintBoundProposal(step.proposal),
+      fingerprintBoundProposal(step.proposal, step.observation),
     );
     const fingerprintStop = this.terminalFromMutation(recordedFingerprint);
     if (fingerprintStop !== undefined) {
@@ -552,7 +594,7 @@ export class SafeAgentLoop {
         if (!this.coordinator.isCurrentRun(ref)) {
           return { status: 'ignored' };
         }
-        const fingerprint = fingerprintBoundProposal(step.proposal);
+        const fingerprint = fingerprintBoundProposal(step.proposal, step.observation);
         const recorded = this.coordinator.recordSuccessfulActionFingerprint(ref, fingerprint);
         const fingerprintStop = this.terminalFromMutation(recorded);
         if (fingerprintStop !== undefined) {
