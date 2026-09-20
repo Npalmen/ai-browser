@@ -38,6 +38,7 @@ import type {
 } from '../ai/interactive-step-agent';
 
 const TAB: TabId = 'tab-1';
+const TAB_B: TabId = 'tab-2';
 
 class Deferred<T = void> {
   readonly promise: Promise<T>;
@@ -118,11 +119,12 @@ function boundClick(
   revision = 'rev-a',
   targetId = 'target-1',
   observationId = 'obs-1',
+  tabId: TabId = TAB,
 ): BoundInteractionProposal {
   return {
     kind: 'click',
     targetId,
-    tabId: TAB,
+    tabId,
     observationId,
     documentRevision: revision,
   };
@@ -829,6 +831,185 @@ describe('SafeAgentLoop fresh observation policy', () => {
   });
 });
 
+describe('SafeAgentLoop post-navigation continuation isolation', () => {
+  const searchPage = observation({
+    observationId: 'obs-search',
+    document: {
+      ...observation().document,
+      revision: 'rev-A',
+      url: 'https://duckduckgo.com/?q=electron',
+    },
+  });
+  const docsPage = observation({
+    observationId: 'obs-docs',
+    document: {
+      ...observation().document,
+      revision: 'rev-B',
+      url: 'https://www.electronjs.org/docs/latest',
+    },
+  });
+
+  it('does not give a later run the previous run leftover observation retry', async () => {
+    let phase: 'a' | 'b' = 'a';
+    let runBAttempts = 0;
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (phase === 'a') {
+        if (callIndex === 1) {
+          return proposalStep(boundClick('rev-A'), searchPage);
+        }
+        return answerStep('Opened.', docsPage);
+      }
+      runBAttempts += 1;
+      throw new ObservationError('PAGE_NOT_READY', 'unrelated later run');
+    });
+    const executor = new FakeV3Executor([succeeded(docsPage)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const first = await loop.run(refOf(start(coordinator, 'open first result')));
+    assert.equal(first.status, 'completed');
+
+    phase = 'b';
+    const second = await loop.run(refOf(start(coordinator, 'later task')));
+    assert.equal(second.status, 'terminal');
+    if (second.status === 'terminal') {
+      assert.equal(second.run.terminalReason, 'ACTION_FAILED');
+    }
+    assert.equal(runBAttempts, 1);
+    assert.equal(executor.calls.length, 1);
+  });
+
+  it('does not pass a previous run trusted observation into a later run', async () => {
+    let phase: 'a' | 'b' = 'a';
+    const seenTrusted: Array<string | undefined> = [];
+    const stepAgent = new FakeStepAgent(async (_request, options, callIndex) => {
+      seenTrusted.push(options?.trustedObservation?.observationId);
+      if (phase === 'a') {
+        if (callIndex === 1) {
+          return proposalStep(boundClick('rev-A'), searchPage);
+        }
+        return answerStep('Opened.', docsPage);
+      }
+      throw new ObservationError('PAGE_NOT_READY', 'later run');
+    });
+    const executor = new FakeV3Executor([succeeded(docsPage)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    await loop.run(refOf(start(coordinator, 'open first result')));
+
+    phase = 'b';
+    const later = await loop.run(refOf(start(coordinator, 'later task')));
+    assert.equal(later.status, 'terminal');
+    if (later.status === 'terminal') {
+      assert.equal(later.run.terminalReason, 'ACTION_FAILED');
+    }
+    assert.equal(seenTrusted[1], 'obs-docs');
+    assert.equal(seenTrusted[2], undefined);
+  });
+
+  it('does not leak tab-A navigation continuation into an overlapping tab-B run', async () => {
+    const searchA = observation({
+      tabId: TAB,
+      observationId: 'obs-a-search',
+      document: {
+        ...observation().document,
+        revision: 'rev-A',
+        url: 'https://duckduckgo.com/?q=electron',
+      },
+    });
+    const docsA = observation({
+      tabId: TAB,
+      observationId: 'obs-a-docs',
+      document: {
+        ...observation().document,
+        revision: 'rev-B',
+        url: 'https://www.electronjs.org/docs/latest',
+      },
+    });
+    const holdA = new Deferred();
+    let tabAAttempts = 0;
+    let tabBAttempts = 0;
+    const seenTrustedOnB: Array<string | undefined> = [];
+    const stepAgent = new FakeStepAgent(async (request, options) => {
+      if (request.tabId === TAB) {
+        tabAAttempts += 1;
+        if (tabAAttempts === 1) {
+          return proposalStep(boundClick('rev-A', 'target-1', 'obs-1', TAB), searchA);
+        }
+        await holdA.promise;
+        return answerStep('Opened A.', docsA);
+      }
+      seenTrustedOnB.push(options?.trustedObservation?.observationId);
+      tabBAttempts += 1;
+      throw new ObservationError('PAGE_NOT_READY', 'tab B loading');
+    });
+    const executor = new FakeV3Executor(async (input) => {
+      assert.equal(input.proposal.tabId, TAB);
+      return succeeded(docsA);
+    });
+    const coordinator = new AgentRunCoordinator();
+    const loop = new SafeAgentLoop({
+      coordinator,
+      stepAgent,
+      interactionExecutor: executor,
+    });
+    const runA = coordinator.startRun(TAB, 'open A');
+    const pendingA = loop.run(refOf(runA));
+    await waitUntil(() => tabAAttempts >= 2);
+
+    const runB = coordinator.startRun(TAB_B, 'task B');
+    const resultB = await loop.run(refOf(runB), {});
+    assert.equal(resultB.status, 'terminal');
+    if (resultB.status === 'terminal') {
+      assert.equal(resultB.run.terminalReason, 'ACTION_FAILED');
+    }
+    assert.equal(tabBAttempts, 1);
+    assert.deepEqual(seenTrustedOnB, [undefined]);
+
+    holdA.resolve();
+    const resultA = await pendingA;
+    assert.equal(resultA.status, 'completed');
+    assert.equal(executor.calls.length, 1);
+  });
+
+  it('does not keep cancelled-run continuation for the next run', async () => {
+    const controller = new AbortController();
+    let phase: 'a' | 'b' = 'a';
+    let runBAttempts = 0;
+    const seenTrustedOnB: Array<string | undefined> = [];
+    const stepAgent = new FakeStepAgent(async (_request, options, callIndex) => {
+      if (phase === 'a') {
+        if (callIndex === 1) {
+          return proposalStep(boundClick('rev-A'), searchPage);
+        }
+        throw new ModelError('REQUEST_CANCELLED', 'cancelled');
+      }
+      seenTrustedOnB.push(options?.trustedObservation?.observationId);
+      runBAttempts += 1;
+      throw new ObservationError('PAGE_NOT_READY', 'later run');
+    });
+    const executor = new FakeV3Executor([succeeded(docsPage)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const cancelled = await loop.run(refOf(start(coordinator, 'open first result')), {
+      signal: controller.signal,
+      onContinuing: () => {
+        controller.abort();
+      },
+    });
+    assert.equal(cancelled.status, 'terminal');
+    if (cancelled.status === 'terminal') {
+      assert.equal(cancelled.run.terminalReason, 'USER_CANCELLED');
+    }
+
+    phase = 'b';
+    const later = await loop.run(refOf(start(coordinator, 'later task')));
+    assert.equal(later.status, 'terminal');
+    if (later.status === 'terminal') {
+      assert.equal(later.run.terminalReason, 'ACTION_FAILED');
+    }
+    assert.equal(runBAttempts, 1);
+    assert.deepEqual(seenTrustedOnB, [undefined]);
+    assert.equal(executor.calls.length, 1);
+  });
+});
+
 describe('SafeAgentLoop provider fallback logical count', () => {
   it('counts provider fallback inside InteractiveStepAgent as one model step', async () => {
     class FakeObservationSource {
@@ -935,6 +1116,9 @@ describe('SafeAgentLoop source isolation', () => {
     for (const needle of forbidden) {
       assert.equal(source.includes(needle), false, needle);
     }
+    assert.equal(source.includes('this.nextTrustedObservation'), false);
+    assert.equal(source.includes('this.postNavigationObservationRetriesRemaining'), false);
+    assert.match(source, /const continuation = createPostNavigationContinuation\(\)/);
   });
 });
 

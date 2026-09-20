@@ -70,13 +70,23 @@ export type SafeAgentLoopResult =
       readonly status: 'ignored';
     };
 
+interface PostNavigationContinuation {
+  trustedObservation: PageObservation | undefined;
+  observationRetriesRemaining: number;
+}
+
+function createPostNavigationContinuation(): PostNavigationContinuation {
+  return {
+    trustedObservation: undefined,
+    observationRetriesRemaining: 0,
+  };
+}
+
 export class SafeAgentLoop {
   private readonly coordinator: AgentRunCoordinator;
   private readonly stepAgent: Pick<InteractiveStepAgent, 'step'>;
   private readonly interactionExecutor: SafeV3InteractionExecutionPort;
   private readonly approvalPort: AgentRunApprovalPort | undefined;
-  private nextTrustedObservation: PageObservation | undefined;
-  private postNavigationObservationRetriesRemaining = 0;
 
   constructor(deps: SafeAgentLoopDependencies) {
     this.coordinator = deps.coordinator;
@@ -92,6 +102,7 @@ export class SafeAgentLoop {
     }
 
     const trustedProgress: TrustedRunProgressEntry[] = [];
+    const continuation = createPostNavigationContinuation();
     let modelIteration = 0;
 
     while (true) {
@@ -113,8 +124,8 @@ export class SafeAgentLoop {
 
       let step;
       try {
-        const trustedObservation = this.nextTrustedObservation;
-        this.nextTrustedObservation = undefined;
+        const trustedObservation = continuation.trustedObservation;
+        continuation.trustedObservation = undefined;
         step = await this.stepAgent.step(this.buildStepRequest(runSnapshot, options), {
           signal: options.signal,
           onAnswerTextDelta: options.onAnswerTextDelta,
@@ -124,8 +135,8 @@ export class SafeAgentLoop {
           ...(trustedObservation !== undefined ? { trustedObservation } : {}),
         });
       } catch (error) {
-        if (this.shouldRetryPostNavigationObservation(error)) {
-          this.postNavigationObservationRetriesRemaining -= 1;
+        if (shouldRetryPostNavigationObservation(error, continuation.observationRetriesRemaining)) {
+          continuation.observationRetriesRemaining -= 1;
           console.log('[agent-loop] post-navigation-observation-retry');
           continue;
         }
@@ -195,6 +206,7 @@ export class SafeAgentLoop {
         result,
         trustedProgress,
         options,
+        continuation,
       );
       if (actionOutcome !== undefined) {
         return actionOutcome;
@@ -278,9 +290,10 @@ export class SafeAgentLoop {
     result: InteractionResult,
     trustedProgress: TrustedRunProgressEntry[],
     options: SafeAgentLoopOptions,
+    continuation: PostNavigationContinuation,
   ): Promise<SafeAgentLoopResult | undefined> {
     if (result.status === 'succeeded') {
-      return this.handleSucceededAction(ref, step, result, trustedProgress);
+      return this.handleSucceededAction(ref, step, result, trustedProgress, continuation);
     }
     if (result.status === 'denied') {
       return this.handleDeniedAction(ref, step, result.errorCode, trustedProgress, options);
@@ -296,6 +309,7 @@ export class SafeAgentLoop {
     step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'proposal' }>,
     result: InteractionResult,
     trustedProgress: TrustedRunProgressEntry[],
+    continuation: PostNavigationContinuation,
   ): SafeAgentLoopResult | undefined {
     const postObservation = result.observation;
     if (postObservation === undefined || postObservation.tabId !== ref.tabId) {
@@ -323,11 +337,11 @@ export class SafeAgentLoop {
 
     const urlChanged = postObservation.document.url !== step.observation.document.url;
     if (step.proposal.kind === 'click' && (pageChanged || urlChanged)) {
-      this.postNavigationObservationRetriesRemaining = 1;
-      this.nextTrustedObservation = urlChanged ? postObservation : undefined;
+      continuation.observationRetriesRemaining = 1;
+      continuation.trustedObservation = urlChanged ? postObservation : undefined;
     } else {
-      this.postNavigationObservationRetriesRemaining = 0;
-      this.nextTrustedObservation = undefined;
+      continuation.observationRetriesRemaining = 0;
+      continuation.trustedObservation = undefined;
     }
 
     return undefined;
@@ -581,20 +595,23 @@ export class SafeAgentLoop {
     }
     return snapshot;
   }
+}
 
-  private shouldRetryPostNavigationObservation(error: unknown): boolean {
-    if (this.postNavigationObservationRetriesRemaining <= 0) {
-      return false;
-    }
-    if (!(error instanceof ObservationError)) {
-      return false;
-    }
-    return (
-      error.code === 'PAGE_NOT_READY' ||
-      error.code === 'PAGE_CHANGED_DURING_OBSERVATION' ||
-      error.code === 'OBSERVATION_IN_PROGRESS'
-    );
+function shouldRetryPostNavigationObservation(
+  error: unknown,
+  observationRetriesRemaining: number,
+): boolean {
+  if (observationRetriesRemaining <= 0) {
+    return false;
   }
+  if (!(error instanceof ObservationError)) {
+    return false;
+  }
+  return (
+    error.code === 'PAGE_NOT_READY' ||
+    error.code === 'PAGE_CHANGED_DURING_OBSERVATION' ||
+    error.code === 'OBSERVATION_IN_PROGRESS'
+  );
 }
 
 function isReplannableTargetSelectionDenial(
