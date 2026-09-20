@@ -35,6 +35,9 @@ export type TrustedRunProgressEntry =
     }
   | {
       readonly kind: 'no-verified-task-effect-yet';
+    }
+  | {
+      readonly kind: 'target-search-not-exhausted';
     };
 
 const TRUSTED_PROGRESS_DISCLAIMER = [
@@ -82,6 +85,15 @@ function summarizeTrustedProgressEntry(
   entry: TrustedRunProgressEntry,
   options: TrustedProgressSummaryOptions = { isLatestNavigationSuccess: false },
 ): string {
+  if (entry.kind === 'target-search-not-exhausted') {
+    return [
+      'The requested target has not been proven absent.',
+      'Additional page content may remain uninspected.',
+      'Continue bounded target discovery using viewport scrolling.',
+      'Do not claim the target is missing yet.',
+    ].join(' ');
+  }
+
   if (entry.kind === 'no-verified-task-effect-yet') {
     return [
       'The most recent semantic browser action was dispatched, but no trusted observable task effect was verified.',

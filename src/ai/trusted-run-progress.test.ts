@@ -97,6 +97,17 @@ describe('trusted run progress', () => {
     }
   });
 
+  it('serializes target-search-not-exhausted without page content or target ids', () => {
+    const serialized = serializeTrustedRunProgress([{ kind: 'target-search-not-exhausted' }]);
+    assert.ok(serialized);
+    assert.match(serialized, /has not been proven absent/);
+    assert.match(serialized, /Continue bounded target discovery using viewport scrolling/);
+    assert.match(serialized, /Do not claim the target is missing yet/);
+    assert.doesNotMatch(serialized, /targetId/i);
+    assert.doesNotMatch(serialized, /https?:\/\//);
+    assert.doesNotMatch(serialized, /WebDriverIO/);
+  });
+
   it('serializes no-verified-task-effect-yet without page content or target ids', () => {
     const serialized = serializeTrustedRunProgress([{ kind: 'no-verified-task-effect-yet' }]);
     assert.ok(serialized);

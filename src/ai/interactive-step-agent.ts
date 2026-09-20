@@ -9,6 +9,7 @@ import {
   type AgentAnswerDisposition,
   type AgentModelOutput,
   type AgentTaskContinuation,
+  type CannotCompleteReason,
 } from './interaction-output-schema';
 import type { InteractionModelRuntime } from './interaction-model-runtime';
 import { decideModelExport } from './export-policy';
@@ -84,6 +85,7 @@ export type InteractiveStepResult =
   | {
       readonly kind: 'answer';
       readonly disposition: AgentAnswerDisposition;
+      readonly cannotCompleteReason?: CannotCompleteReason;
       readonly text: string;
       readonly referencedTargets: readonly TargetId[];
       readonly alias: ModelAlias;
@@ -167,6 +169,9 @@ export class InteractiveStepAgent {
       return {
         kind: 'answer',
         disposition: output.disposition ?? 'task-complete',
+        ...(output.disposition === 'cannot-complete'
+          ? { cannotCompleteReason: output.cannotCompleteReason ?? 'other' }
+          : {}),
         text: output.text,
         referencedTargets: filterReferencedTargets(
           output.referencedTargets,

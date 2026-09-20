@@ -9,6 +9,7 @@ import {
 } from '../agent-run/agent-run-types';
 import { TargetRegistry } from '../observation/target-registry';
 import { InteractionError } from '../shared/interaction-errors';
+import { trustedCannotCompleteCopy } from '../ai/interaction-output-schema';
 import {
   answerRuntime,
   buyNowPage,
@@ -82,7 +83,8 @@ describe('V5 agent loop acceptance', () => {
         () => ({ kind: 'interaction', proposal: { kind: 'click', targetId: 'target-b' } }),
         () => ({
           kind: 'answer',
-          disposition: 'informational',
+          disposition: 'cannot-complete',
+          cannotCompleteReason: 'completion-not-verifiable',
           text: 'Navigation done.',
           referencedTargets: [],
         }),
@@ -133,11 +135,12 @@ describe('V5 agent loop acceptance', () => {
       () => ({ kind: 'interaction', proposal: { kind: 'click', targetId: 'target-a' } }),
       () => ({ kind: 'interaction', proposal: { kind: 'click', targetId: 'target-b' } }),
       () => ({
-        kind: 'answer',
-        disposition: 'informational',
-        text: 'Task complete.',
-        referencedTargets: [],
-      }),
+          kind: 'answer',
+          disposition: 'cannot-complete',
+          cannotCompleteReason: 'completion-not-verifiable',
+          text: 'Task complete.',
+          referencedTargets: [],
+        }),
     ]);
     const chain = createV5ProductChain({
       adapter,
@@ -151,13 +154,13 @@ describe('V5 agent loop acceptance', () => {
       assert.equal(result.run.modelStepCount, 3);
       assert.equal(result.run.actionAttemptCount, 2);
       assert.equal(result.run.approvalCount, 0);
-      assert.equal(result.answer.text, 'Task complete.');
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('completion-not-verifiable'));
     }
     assert.equal(counts.click, 2);
     const stored = chain.conversationStore.get(V5_TAB_A);
     assert.equal(stored?.turns.length, 1);
     assert.equal(stored?.turns[0]?.question, 'Do two safe actions');
-    assert.equal(stored?.turns[0]?.answer, 'Task complete.');
+    assert.equal(stored?.turns[0]?.answer, trustedCannotCompleteCopy('completion-not-verifiable'));
   });
 
   it('rejects consequential approval and blocks the run without execution', async () => {
@@ -603,7 +606,7 @@ describe('V5 agent loop acceptance', () => {
         () => ({ kind: 'interaction', proposal: { kind: 'click', targetId: 'target-a' } }),
         () => ({
           kind: 'answer',
-          disposition: 'informational',
+          disposition: 'needs-clarification',
           text: 'done',
           referencedTargets: [],
         }),

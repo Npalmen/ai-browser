@@ -277,6 +277,42 @@ describe('buildModelPageContext', () => {
     );
   });
 
+  it('keeps a visible in-viewport WebdriverIO link under compaction pressure', () => {
+    const nodes: ObservationNode[] = [];
+    for (let index = 0; index < 80; index += 1) {
+      nodes.push(
+        node({
+          role: 'generic',
+          tag: 'p',
+          text: `Documentation paragraph ${index} about Electron automated testing. `.repeat(8),
+          interactive: false,
+          visible: true,
+          inViewport: index < 12,
+        }),
+      );
+    }
+    nodes.splice(
+      10,
+      0,
+      node({
+        targetId: 'target-webdriverio',
+        role: 'link',
+        tag: 'a',
+        name: 'WebdriverIO',
+        interactive: true,
+        visible: true,
+        inViewport: true,
+        attributes: { href: 'https://webdriver.io/' },
+      }),
+    );
+    const built = buildModelPageContext(observation(nodes));
+    const link = built.context.nodes.find((item) => item.targetId === 'target-webdriverio');
+    assert.ok(link);
+    assert.equal(link?.interactive, true);
+    assert.equal(link?.name, 'WebdriverIO');
+    assert.equal(built.exportedTargetIds.has('target-webdriverio'), true);
+  });
+
   it('drops low-information and offscreen content first while preserving document order', () => {
     const built = buildModelPageContext(
       observation([

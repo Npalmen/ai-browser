@@ -3,7 +3,11 @@ import { describe, it } from 'node:test';
 
 import { ModelError } from './model-errors';
 import { MAX_INTERACTION_TYPE_TEXT_LENGTH } from '../shared/interaction-types';
-import { MAX_ON_SUCCESS_TEXT_LENGTH, parseAgentModelOutput } from './interaction-output-schema';
+import {
+  MAX_ON_SUCCESS_TEXT_LENGTH,
+  parseAgentModelOutput,
+  trustedCannotCompleteCopy,
+} from './interaction-output-schema';
 
 function isModelOutputInvalid(error: unknown): boolean {
   return error instanceof ModelError && error.code === 'MODEL_OUTPUT_INVALID';
@@ -13,15 +17,15 @@ describe('parseAgentModelOutput', () => {
   it('parses a valid answer output', () => {
     const parsed = parseAgentModelOutput({
       kind: 'answer',
-      disposition: 'informational',
-      text: 'Hello',
+      disposition: 'needs-clarification',
+      text: 'Which button?',
       referencedTargets: ['target-1'],
     });
 
     assert.equal(parsed.kind, 'answer');
     if (parsed.kind === 'answer') {
-      assert.equal(parsed.disposition, 'informational');
-      assert.equal(parsed.text, 'Hello');
+      assert.equal(parsed.disposition, 'needs-clarification');
+      assert.equal(parsed.text, 'Which button?');
       assert.deepEqual(parsed.referencedTargets, ['target-1']);
     }
   });
@@ -38,19 +42,45 @@ describe('parseAgentModelOutput', () => {
     }
   });
 
-  it('parses cannot-complete and needs-clarification dispositions', () => {
-    for (const disposition of ['cannot-complete', 'needs-clarification', 'task-complete'] as const) {
-      const parsed = parseAgentModelOutput({
-        kind: 'answer',
-        disposition,
-        text: 'x',
-        referencedTargets: [],
-      });
-      assert.equal(parsed.kind, 'answer');
-      if (parsed.kind === 'answer') {
-        assert.equal(parsed.disposition, disposition);
-      }
+  it('parses cannot-complete with a structured reason and ignores success-style text', () => {
+    const parsed = parseAgentModelOutput({
+      kind: 'answer',
+      disposition: 'cannot-complete',
+      cannotCompleteReason: 'target-not-found',
+      text: 'Clicked WebdriverIO.',
+      referencedTargets: [],
+    });
+    assert.equal(parsed.kind, 'answer');
+    if (parsed.kind === 'answer') {
+      assert.equal(parsed.disposition, 'cannot-complete');
+      assert.equal(parsed.cannotCompleteReason, 'target-not-found');
+      assert.equal(trustedCannotCompleteCopy('target-not-found'), "I couldn't find the requested target.");
     }
+  });
+
+  it('defaults missing cannotCompleteReason to other', () => {
+    const parsed = parseAgentModelOutput({
+      kind: 'answer',
+      disposition: 'cannot-complete',
+      referencedTargets: [],
+    });
+    assert.equal(parsed.kind, 'answer');
+    if (parsed.kind === 'answer') {
+      assert.equal(parsed.cannotCompleteReason, 'other');
+    }
+  });
+
+  it('rejects informational as an Act answer disposition', () => {
+    assert.throws(
+      () =>
+        parseAgentModelOutput({
+          kind: 'answer',
+          disposition: 'informational',
+          text: 'No browser action was performed.',
+          referencedTargets: [],
+        }),
+      isModelOutputInvalid,
+    );
   });
 
   it('rejects invalid answer dispositions', () => {

@@ -200,6 +200,7 @@ describe('InteractiveStepAgent answer', () => {
     const runtime = new FakeInteractionRuntime({
       kind: 'answer',
       disposition: 'cannot-complete',
+      cannotCompleteReason: 'target-not-found',
       text: 'The requested control is not on this page.',
       referencedTargets: [],
     });
@@ -211,6 +212,7 @@ describe('InteractiveStepAgent answer', () => {
     assert.equal(result.kind, 'answer');
     if (result.kind === 'answer') {
       assert.equal(result.disposition, 'cannot-complete');
+      assert.equal(result.cannotCompleteReason, 'target-not-found');
       assert.equal(result.text, 'The requested control is not on this page.');
     }
   });

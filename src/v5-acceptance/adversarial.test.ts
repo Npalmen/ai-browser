@@ -89,7 +89,8 @@ describe('V5 adversarial acceptance', () => {
         () => ({ kind: 'interaction', proposal: { kind: 'click', targetId: 'target-repeat-b' } }),
         () => ({
           kind: 'answer',
-          disposition: 'informational',
+          disposition: 'cannot-complete',
+          cannotCompleteReason: 'completion-not-verifiable',
           text: 'done',
           referencedTargets: [],
         }),

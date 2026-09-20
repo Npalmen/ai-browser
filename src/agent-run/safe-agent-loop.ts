@@ -1,6 +1,7 @@
 import type { InteractiveStepAgent, InteractiveStepRequest } from '../ai/interactive-step-agent';
 import {
   DEFAULT_TASK_COMPLETION_TEXT,
+  trustedCannotCompleteCopy,
   type AgentAnswerDisposition,
 } from '../ai/interaction-output-schema';
 import {
@@ -9,6 +10,7 @@ import {
   logAgentLoopCompleteOnSuccessHonored,
   logAgentLoopFalseCompletionReplan,
   logAgentLoopModelStepFailed,
+  logAgentLoopProposalReceived,
   logAgentLoopTrustedActionSuccess,
 } from '../ai/model-diagnostics';
 import { ModelError, type ModelErrorCode } from '../ai/model-errors';
@@ -310,6 +312,7 @@ export class SafeAgentLoop {
           trustedProgress,
           pendingAnswerDeltas,
           options,
+          budgets,
           {
             iteration: modelStepIteration,
             postNavigation,
@@ -317,12 +320,20 @@ export class SafeAgentLoop {
           },
         );
         if (answerOutcome.kind === 'replan') {
-          falseCompletionReplanUsed = true;
+          if (answerOutcome.reason === 'false-completion') {
+            falseCompletionReplanUsed = true;
+          }
           this.notifyContinuing(ref, options);
           continue;
         }
         return answerOutcome.result;
       }
+
+      logAgentLoopProposalReceived({
+        kind: step.proposal.kind,
+        continuation: step.continuation,
+        iteration: modelStepIteration,
+      });
 
       if (isViewportDiscoveryScroll(step.proposal)) {
         if (budgets.consecutiveViewportScrolls >= MAX_VIEWPORT_DISCOVERY_SCROLLS) {
@@ -400,22 +411,28 @@ export class SafeAgentLoop {
     trustedProgress: TrustedRunProgressEntry[],
     pendingAnswerDeltas: readonly string[],
     options: SafeAgentLoopOptions,
+    budgets: RunLocalBudgets,
     context: {
       iteration: number;
       postNavigation: boolean;
       falseCompletionReplanUsed: boolean;
     },
   ):
-    | { kind: 'replan' }
+    | { kind: 'replan'; reason: 'false-completion' | 'target-search-not-exhausted' }
     | { kind: 'done'; result: SafeAgentLoopResult } {
     const disposition: AgentAnswerDisposition = step.disposition;
+    const moreContentBelow = hasMoreContentBelow(step.observation);
     logAgentLoopAnswerReceived({
       disposition,
+      cannotCompleteReason: step.cannotCompleteReason,
       browserDispatches: evidence.successfulBrowserDispatches,
       verifiedEffects: evidence.verifiedObservableEffects,
       navigations: evidence.verifiedNavigations,
       approvedExecutions: evidence.approvedExecutions,
       latestSemanticFrontier: evidence.latestSemanticFrontier,
+      discoveryScrolls: budgets.consecutiveViewportScrolls,
+      contextTruncated: step.truncatedContext,
+      moreContentBelow,
       iteration: context.iteration,
     });
 
@@ -438,11 +455,27 @@ export class SafeAgentLoop {
       }
       logAgentLoopFalseCompletionReplan(context.iteration);
       trustedProgress.push({ kind: 'no-verified-task-effect-yet' });
-      return { kind: 'replan' };
+      return { kind: 'replan', reason: 'false-completion' };
     }
 
-    for (const delta of pendingAnswerDeltas) {
-      options.onAnswerTextDelta?.(delta);
+    if (
+      disposition === 'cannot-complete' &&
+      step.cannotCompleteReason === 'target-not-found' &&
+      shouldRejectPrematureTargetNotFound(
+        step.observation,
+        step.truncatedContext,
+        budgets.consecutiveViewportScrolls,
+      )
+    ) {
+      trustedProgress.push({ kind: 'target-search-not-exhausted' });
+      return { kind: 'replan', reason: 'target-search-not-exhausted' };
+    }
+
+    const answerText = resolveActAnswerText(step);
+    if (disposition === 'task-complete' || disposition === 'needs-clarification') {
+      for (const delta of pendingAnswerDeltas) {
+        options.onAnswerTextDelta?.(delta);
+      }
     }
 
     const completed = this.coordinator.markCompleted(ref);
@@ -458,7 +491,7 @@ export class SafeAgentLoop {
         status: 'completed',
         run: completed.snapshot,
         answer: {
-          text: step.text,
+          text: answerText,
           referencedTargets: step.referencedTargets,
           alias: step.alias,
           truncatedContext: step.truncatedContext,
@@ -1152,4 +1185,47 @@ function selectedNativeOptionKey(node: ObservationNode): string {
     .filter((option) => option.selected === true)
     .map((option) => option.targetId)
     .join(',');
+}
+
+function resolveActAnswerText(
+  step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'answer' }>,
+): string {
+  if (step.disposition === 'cannot-complete') {
+    return trustedCannotCompleteCopy(step.cannotCompleteReason ?? 'other');
+  }
+  return step.text;
+}
+
+function shouldRejectPrematureTargetNotFound(
+  observation: PageObservation,
+  truncatedContext: boolean,
+  discoveryScrolls: number,
+): boolean {
+  if (discoveryScrolls >= MAX_VIEWPORT_DISCOVERY_SCROLLS) {
+    return false;
+  }
+  if (hasMoreContentBelow(observation)) {
+    return true;
+  }
+  if (truncatedContext && !isAtOrPastDocumentBottom(observation.viewport)) {
+    return true;
+  }
+  return false;
+}
+
+function hasMoreContentBelow(observation: PageObservation): boolean {
+  const documentHeight = observation.viewport.documentHeight;
+  if (documentHeight === undefined) {
+    return false;
+  }
+  return observation.viewport.scrollY + observation.viewport.height < documentHeight;
+}
+
+function isAtOrPastDocumentBottom(
+  viewport: PageObservation['viewport'],
+): boolean {
+  if (viewport.documentHeight === undefined) {
+    return false;
+  }
+  return viewport.scrollY + viewport.height >= viewport.documentHeight;
 }

@@ -10,16 +10,40 @@ import { parseModelInteractionProposal } from '../interaction/proposal-validator
 import { ModelError } from './model-errors';
 
 export const AGENT_ANSWER_DISPOSITIONS = [
-  'informational',
   'cannot-complete',
   'needs-clarification',
   'task-complete',
 ] as const;
 export type AgentAnswerDisposition = (typeof AGENT_ANSWER_DISPOSITIONS)[number];
 
+export const CANNOT_COMPLETE_REASONS = [
+  'target-not-found',
+  'unsupported-action',
+  'policy-or-safety',
+  'completion-not-verifiable',
+  'other',
+] as const;
+export type CannotCompleteReason = (typeof CANNOT_COMPLETE_REASONS)[number];
+
+export function trustedCannotCompleteCopy(reason: CannotCompleteReason): string {
+  switch (reason) {
+    case 'target-not-found':
+      return "I couldn't find the requested target.";
+    case 'unsupported-action':
+      return 'That action is not supported.';
+    case 'policy-or-safety':
+      return 'This action is not allowed.';
+    case 'completion-not-verifiable':
+      return 'The action could not be verified as completed.';
+    default:
+      return 'The requested action could not be completed.';
+  }
+}
+
 export interface AgentModelAnswerOutput {
   kind: 'answer';
   disposition?: AgentAnswerDisposition;
+  cannotCompleteReason?: CannotCompleteReason;
   text: string;
   referencedTargets: TargetId[];
 }
@@ -113,7 +137,22 @@ export const AGENT_MODEL_OUTPUT_JSON_SCHEMA = {
       additionalProperties: false,
       properties: {
         kind: { const: 'answer' },
-        disposition: { type: 'string', enum: [...AGENT_ANSWER_DISPOSITIONS] },
+        disposition: { const: 'cannot-complete' },
+        cannotCompleteReason: { type: 'string', enum: [...CANNOT_COMPLETE_REASONS] },
+        text: { type: 'string' },
+        referencedTargets: {
+          type: 'array',
+          items: { type: 'string' },
+        },
+      },
+      required: ['kind', 'disposition', 'cannotCompleteReason', 'referencedTargets'],
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        kind: { const: 'answer' },
+        disposition: { type: 'string', enum: ['needs-clarification', 'task-complete'] },
         text: { type: 'string' },
         referencedTargets: {
           type: 'array',
@@ -170,11 +209,10 @@ function parseAgentModelOutputInternal(input: unknown): AgentModelOutput {
 }
 
 function parseAnswerOutput(record: Record<string, unknown>): AgentModelAnswerOutput {
-  assertAllowedKeys(record, new Set(['kind', 'disposition', 'text', 'referencedTargets']));
-
-  if (typeof record.text !== 'string') {
-    throw new ModelError('MODEL_OUTPUT_INVALID', 'Answer text must be a string.');
-  }
+  assertAllowedKeys(
+    record,
+    new Set(['kind', 'disposition', 'cannotCompleteReason', 'text', 'referencedTargets']),
+  );
 
   if (
     !Array.isArray(record.referencedTargets) ||
@@ -183,9 +221,24 @@ function parseAnswerOutput(record: Record<string, unknown>): AgentModelAnswerOut
     throw new ModelError('MODEL_OUTPUT_INVALID', 'referencedTargets must be an array of strings.');
   }
 
+  const disposition = parseAnswerDisposition(record.disposition);
+  if (disposition === 'cannot-complete') {
+    return {
+      kind: 'answer',
+      disposition,
+      cannotCompleteReason: parseCannotCompleteReason(record.cannotCompleteReason),
+      text: typeof record.text === 'string' ? record.text : '',
+      referencedTargets: record.referencedTargets,
+    };
+  }
+
+  if (typeof record.text !== 'string') {
+    throw new ModelError('MODEL_OUTPUT_INVALID', 'Answer text must be a string.');
+  }
+
   return {
     kind: 'answer',
-    disposition: parseAnswerDisposition(record.disposition),
+    disposition,
     text: record.text,
     referencedTargets: record.referencedTargets,
   };
@@ -195,15 +248,29 @@ function parseAnswerDisposition(value: unknown): AgentAnswerDisposition {
   if (value === undefined) {
     return 'task-complete';
   }
+  if (value !== 'cannot-complete' && value !== 'needs-clarification' && value !== 'task-complete') {
+    throw new ModelError(
+      'MODEL_OUTPUT_INVALID',
+      'Answer disposition must be cannot-complete, needs-clarification, or task-complete.',
+    );
+  }
+  return value;
+}
+
+function parseCannotCompleteReason(value: unknown): CannotCompleteReason {
+  if (value === undefined) {
+    return 'other';
+  }
   if (
-    value !== 'informational' &&
-    value !== 'cannot-complete' &&
-    value !== 'needs-clarification' &&
-    value !== 'task-complete'
+    value !== 'target-not-found' &&
+    value !== 'unsupported-action' &&
+    value !== 'policy-or-safety' &&
+    value !== 'completion-not-verifiable' &&
+    value !== 'other'
   ) {
     throw new ModelError(
       'MODEL_OUTPUT_INVALID',
-      'Answer disposition must be informational, cannot-complete, needs-clarification, or task-complete.',
+      'cannotCompleteReason must be target-not-found, unsupported-action, policy-or-safety, completion-not-verifiable, or other.',
     );
   }
   return value;

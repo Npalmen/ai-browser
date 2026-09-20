@@ -123,11 +123,19 @@ export function logModelRequestFailed(diagnostics: ModelRequestFailedDiagnostics
 
 const SAFE_ACTION_KINDS = new Set(['click', 'type', 'select', 'scroll', 'execute']);
 const SAFE_ANSWER_DISPOSITIONS = new Set([
-  'informational',
   'cannot-complete',
   'needs-clarification',
   'task-complete',
 ]);
+const SAFE_CANNOT_COMPLETE_REASONS = new Set([
+  'none',
+  'target-not-found',
+  'unsupported-action',
+  'policy-or-safety',
+  'completion-not-verifiable',
+  'other',
+]);
+const SAFE_TASK_CONTINUATIONS = new Set(['continue', 'complete-on-success']);
 const SAFE_COMPLETION_EVIDENCE = new Set([
   'navigation',
   'page-change',
@@ -143,21 +151,42 @@ function sanitizeAllowlisted(value: string, allowed: Set<string>, fallback: stri
 
 export function formatAgentLoopAnswerReceived(diagnostics: {
   readonly disposition: string;
+  readonly cannotCompleteReason?: string;
   readonly browserDispatches: number;
   readonly verifiedEffects: number;
   readonly navigations: number;
   readonly approvedExecutions: number;
   readonly latestSemanticFrontier: string;
+  readonly discoveryScrolls: number;
+  readonly contextTruncated: boolean;
+  readonly moreContentBelow: boolean;
   readonly iteration: number;
 }): string {
   return [
     '[agent-loop] answer-received',
     `disposition=${sanitizeAllowlisted(diagnostics.disposition, SAFE_ANSWER_DISPOSITIONS, 'unknown')}`,
+    `cannotCompleteReason=${sanitizeAllowlisted(diagnostics.cannotCompleteReason ?? 'none', SAFE_CANNOT_COMPLETE_REASONS, 'unknown')}`,
     `browserDispatches=${Math.max(0, Math.floor(diagnostics.browserDispatches))}`,
     `verifiedEffects=${Math.max(0, Math.floor(diagnostics.verifiedEffects))}`,
     `navigations=${Math.max(0, Math.floor(diagnostics.navigations))}`,
     `approvedExecutions=${Math.max(0, Math.floor(diagnostics.approvedExecutions))}`,
     `latestSemanticFrontier=${sanitizeAllowlisted(diagnostics.latestSemanticFrontier, SAFE_SEMANTIC_FRONTIERS, 'unknown')}`,
+    `discoveryScrolls=${Math.max(0, Math.floor(diagnostics.discoveryScrolls))}`,
+    `contextTruncated=${diagnostics.contextTruncated === true}`,
+    `moreContentBelow=${diagnostics.moreContentBelow === true}`,
+    `iteration=${Math.max(0, Math.floor(diagnostics.iteration))}`,
+  ].join(' ');
+}
+
+export function formatAgentLoopProposalReceived(diagnostics: {
+  readonly kind: string;
+  readonly continuation: string;
+  readonly iteration: number;
+}): string {
+  return [
+    '[agent-loop] proposal-received',
+    `kind=${sanitizeAllowlisted(diagnostics.kind, SAFE_ACTION_KINDS, 'unknown')}`,
+    `continuation=${sanitizeAllowlisted(diagnostics.continuation, SAFE_TASK_CONTINUATIONS, 'unknown')}`,
     `iteration=${Math.max(0, Math.floor(diagnostics.iteration))}`,
   ].join(' ');
 }
@@ -205,6 +234,12 @@ export function logAgentLoopAnswerReceived(
   diagnostics: Parameters<typeof formatAgentLoopAnswerReceived>[0],
 ): void {
   console.log(formatAgentLoopAnswerReceived(diagnostics));
+}
+
+export function logAgentLoopProposalReceived(
+  diagnostics: Parameters<typeof formatAgentLoopProposalReceived>[0],
+): void {
+  console.log(formatAgentLoopProposalReceived(diagnostics));
 }
 
 export function logAgentLoopFalseCompletionReplan(iteration: number): void {

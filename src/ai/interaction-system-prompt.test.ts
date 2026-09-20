@@ -42,11 +42,12 @@ describe('INTERACTION_SYSTEM_PROMPT precedence', () => {
       /repeated imperative is a fresh request unless current-run trusted progress/,
     );
     assert.match(INTERACTION_SYSTEM_PROMPT, /current page observation is the current browser state/);
-    assert.match(INTERACTION_SYSTEM_PROMPT, /disposition must be informational/);
+    assert.match(INTERACTION_SYSTEM_PROMPT, /disposition must be cannot-complete/);
+    assert.match(INTERACTION_SYSTEM_PROMPT, /cannotCompleteReason/);
     assert.match(INTERACTION_SYSTEM_PROMPT, /task-complete is not proof/);
     assert.match(
       INTERACTION_SYSTEM_PROMPT,
-      /Never use informational, cannot-complete, or needs-clarification to claim/,
+      /Never use cannot-complete or needs-clarification to claim/,
     );
     assert.match(
       INTERACTION_SYSTEM_PROMPT,

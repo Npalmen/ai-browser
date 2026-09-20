@@ -5,15 +5,17 @@ import { describe, it, mock } from 'node:test';
 
 import { InteractiveStepAgent } from '../ai/interactive-step-agent';
 import type { InteractionModelRuntime } from '../ai/interaction-model-runtime';
-import type { AgentAnswerDisposition, AgentModelOutput } from '../ai/interaction-output-schema';
+import {
+  trustedCannotCompleteCopy,
+  type AgentAnswerDisposition,
+  type AgentModelOutput,
+  type AgentTaskContinuation,
+  type CannotCompleteReason,
+} from '../ai/interaction-output-schema';
 import { ConversationStore } from '../ai/conversation-store';
 import { MODEL_CATALOG } from '../ai/model-catalog';
 import { ModelError } from '../ai/model-errors';
-import type { AgentTaskContinuation } from '../ai/interaction-output-schema';
-import {
-  serializeTrustedRunProgress,
-  TRUSTED_RUN_PROGRESS_OPEN,
-} from '../ai/trusted-run-progress';
+import { serializeTrustedRunProgress } from '../ai/trusted-run-progress';
 import type { PageState, TabId } from '../shared/browser-types';
 import type {
   BoundInteractionProposal,
@@ -405,15 +407,22 @@ function proposalStep(
 function answerStep(
   text: string,
   obs: PageObservation,
-  disposition: AgentAnswerDisposition = 'informational',
+  disposition: AgentAnswerDisposition = 'task-complete',
+  extras?: {
+    cannotCompleteReason?: CannotCompleteReason;
+    truncatedContext?: boolean;
+  },
 ): InteractiveStepResult {
   return {
     kind: 'answer',
     disposition,
+    ...(disposition === 'cannot-complete'
+      ? { cannotCompleteReason: extras?.cannotCompleteReason ?? 'other' }
+      : {}),
     text,
     referencedTargets: [],
     alias: 'page-standard',
-    truncatedContext: false,
+    truncatedContext: extras?.truncatedContext ?? false,
     observation: obs,
   };
 }
@@ -1341,7 +1350,7 @@ describe('SafeAgentLoop provider fallback logical count', () => {
         return {
           output: {
             kind: 'answer',
-            disposition: 'informational',
+            disposition: 'needs-clarification',
             text: 'Fallback answer',
             referencedTargets: [],
           },
@@ -1662,7 +1671,9 @@ describe('SafeAgentLoop approval pause and resume', () => {
       coordinator,
       stepAgent: new FakeStepAgent([
         proposalStep(boundClick(), observation()),
-        answerStep('stopped', observation()),
+        answerStep('stopped', observation(), 'cannot-complete', {
+          cannotCompleteReason: 'policy-or-safety',
+        }),
       ]),
       interactionExecutor: new FakeV3Executor([denied('INTERACTION_DENIED')]),
       approvalPort,
@@ -2070,11 +2081,15 @@ describe('SafeAgentLoop offscreen target discovery', () => {
             afterScroll.observationId,
           ),
           afterScroll,
+          {
+            continuation: 'complete-on-success',
+            onSuccessText: 'Opened WebDriverIO.',
+          },
         );
       }
       return answerStep('Opened WebDriverIO.', afterScroll);
     });
-    const executor = new FakeV3Executor([succeeded(afterScroll), succeeded(afterScroll)]);
+    const executor = new FakeV3Executor([succeeded(afterScroll), succeededPopup(destObservation())]);
     const { coordinator, loop } = createLoop({ stepAgent, executor });
     const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
     assert.equal(result.status, 'completed');
@@ -2108,6 +2123,10 @@ describe('SafeAgentLoop offscreen target discovery', () => {
         return proposalStep(
           boundClick(revealed.document.revision, WEBDRIVERIO_TARGET, revealed.observationId),
           revealed,
+          {
+            continuation: 'complete-on-success',
+            onSuccessText: 'Opened WebDriverIO.',
+          },
         );
       }
       return answerStep('Opened WebDriverIO.', electronTestingObservation(900, true));
@@ -2116,7 +2135,7 @@ describe('SafeAgentLoop offscreen target discovery', () => {
       succeeded(electronTestingObservation(300, false)),
       succeeded(electronTestingObservation(600, false)),
       succeeded(electronTestingObservation(900, true)),
-      succeeded(electronTestingObservation(900, true)),
+      succeededPopup(destObservation()),
     ]);
     const { coordinator, loop } = createLoop({ stepAgent, executor });
     const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
@@ -2135,7 +2154,10 @@ describe('SafeAgentLoop offscreen target discovery', () => {
           atBottom,
         );
       }
-      return answerStep('Could not find WebDriverIO.', atBottom);
+      return answerStep('Could not find WebDriverIO.', atBottom, 'cannot-complete', {
+        cannotCompleteReason: 'target-not-found',
+        truncatedContext: true,
+      });
     });
     const executor = new FakeV3Executor([succeeded(atBottom)]);
     const { coordinator, loop } = createLoop({ stepAgent, executor });
@@ -2161,7 +2183,10 @@ describe('SafeAgentLoop offscreen target discovery', () => {
           second,
         );
       }
-      return answerStep('Still searching.', second);
+      return answerStep('Still searching.', second, 'cannot-complete', {
+        cannotCompleteReason: 'other',
+        truncatedContext: true,
+      });
     });
     const executor = new FakeV3Executor([succeeded(second), succeeded(second)]);
     const { coordinator, loop } = createLoop({ stepAgent, executor });
@@ -2238,11 +2263,15 @@ describe('SafeAgentLoop offscreen target discovery', () => {
         return proposalStep(
           boundClick(page.document.revision, WEBDRIVERIO_TARGET, page.observationId),
           page,
+          {
+            continuation: 'complete-on-success',
+            onSuccessText: 'Opened WebDriverIO.',
+          },
         );
       }
       return answerStep('Opened WebDriverIO.', page);
     });
-    const executor = new FakeV3Executor([succeeded(page)]);
+    const executor = new FakeV3Executor([succeededPopup(destObservation())]);
     const { coordinator, loop } = createLoop({ stepAgent, executor });
     const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
     assert.equal(result.status, 'completed');
@@ -2555,14 +2584,16 @@ describe('SafeAgentLoop complete-on-success', () => {
         before,
         { continuation: 'complete-on-success' },
       ),
-      answerStep('Still looking.', after),
+      answerStep('Still looking.', after, 'cannot-complete', {
+        cannotCompleteReason: 'other',
+      }),
     ]);
     const executor = new FakeV3Executor([succeeded(after)]);
     const { coordinator, loop } = createLoop({ stepAgent, executor });
     const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
     assert.equal(result.status, 'completed');
     if (result.status === 'completed') {
-      assert.equal(result.answer.text, 'Still looking.');
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('other'));
     }
     assert.equal(stepAgent.calls.length, 2);
     assert.equal(executor.calls.length, 1);
@@ -2888,11 +2919,13 @@ describe('SafeAgentLoop false completion guard', () => {
     assert.equal(coordinator.getRun(run.runId)?.state, 'running');
     assert.equal(deltas.join('').includes(FALSE_CLICK_TEXT), false);
     assert.equal(stepAgent.calls[1]?.options?.trustedProgress?.[0]?.kind, 'no-verified-task-effect-yet');
-    hold.resolve(answerStep('Could not find WebDriverIO.', obs, 'cannot-complete'));
+    hold.resolve(answerStep('Could not find WebDriverIO.', obs, 'cannot-complete', {
+        cannotCompleteReason: 'completion-not-verifiable',
+      }));
     const result = await pending;
     assert.equal(result.status, 'completed');
     if (result.status === 'completed') {
-      assert.equal(result.answer.text, 'Could not find WebDriverIO.');
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('completion-not-verifiable'));
       assert.notEqual(result.answer.text, FALSE_CLICK_TEXT);
     }
     assert.equal(executor.calls.length, 0);
@@ -2992,7 +3025,9 @@ describe('SafeAgentLoop false completion guard', () => {
     const source = observation();
     const stepAgent = new FakeStepAgent([
       proposalStep(boundClick(), source, { continuation: 'complete-on-success' }),
-      answerStep('Still on the search page.', source, 'cannot-complete'),
+      answerStep('Still on the search page.', source, 'cannot-complete', {
+        cannotCompleteReason: 'completion-not-verifiable',
+      }),
     ]);
     const executor = new FakeV3Executor([succeeded(source)]);
     const { coordinator, loop } = createLoop({ stepAgent, executor });
@@ -3002,7 +3037,7 @@ describe('SafeAgentLoop false completion guard', () => {
     });
     assert.equal(result.status, 'completed');
     if (result.status === 'completed') {
-      assert.equal(result.answer.text, 'Still on the search page.');
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('completion-not-verifiable'));
       assert.notEqual(result.answer.text, FALSE_CLICK_TEXT);
     }
     assert.equal(executor.calls.length, 1);
@@ -3049,14 +3084,16 @@ describe('SafeAgentLoop false completion guard', () => {
         continuation: 'complete-on-success',
         onSuccessText: FALSE_CLICK_TEXT,
       }),
-      answerStep('The page did not change.', page, 'cannot-complete'),
+      answerStep('The page did not change.', page, 'cannot-complete', {
+        cannotCompleteReason: 'completion-not-verifiable',
+      }),
     ]);
     const executor = new FakeV3Executor([succeeded(page)]);
     const { coordinator, loop } = createLoop({ stepAgent, executor });
     const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
     assert.equal(result.status, 'completed');
     if (result.status === 'completed') {
-      assert.equal(result.answer.text, 'The page did not change.');
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('completion-not-verifiable'));
       assert.notEqual(result.answer.text, FALSE_CLICK_TEXT);
     }
     assert.equal(executor.calls.length, 1);
@@ -3121,50 +3158,80 @@ describe('SafeAgentLoop false completion guard', () => {
     });
     const stepAgent = new FakeStepAgent([
       proposalStep(boundClick(), page, { continuation: 'complete-on-success' }),
-      answerStep('Nothing changed.', page, 'informational'),
+      answerStep('Nothing changed.', page, 'cannot-complete', {
+        cannotCompleteReason: 'completion-not-verifiable',
+      }),
     ]);
     const executor = new FakeV3Executor([succeeded(page)]);
     const { coordinator, loop } = createLoop({ stepAgent, executor });
     const result = await loop.run(refOf(start(coordinator, 'Expand details.')));
     assert.equal(result.status, 'completed');
     if (result.status === 'completed') {
-      assert.equal(result.answer.text, 'Nothing changed.');
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('completion-not-verifiable'));
       assert.notEqual(result.answer.text, 'Done.');
+      assert.notEqual(result.answer.text, 'Nothing changed.');
     }
     assert.equal(executor.calls.length, 1);
     assert.equal(stepAgent.calls.length, 2);
   });
 
-  it('allows an informational answer without a browser action', async () => {
+  it('does not accept informational as a successful Act result', async () => {
     const obs = observation();
     const stepAgent = new FakeStepAgent([
-      answerStep('The heading is Example page.', obs, 'informational'),
+      {
+        kind: 'answer',
+        disposition: 'cannot-complete',
+        cannotCompleteReason: 'other',
+        text: 'No browser action was performed.',
+        referencedTargets: [],
+        alias: 'page-standard',
+        truncatedContext: false,
+        observation: obs,
+      },
     ]);
     const executor = new FakeV3Executor([]);
     const { coordinator, loop } = createLoop({ stepAgent, executor });
     const result = await loop.run(refOf(start(coordinator, 'What is the heading?')));
     assert.equal(result.status, 'completed');
     if (result.status === 'completed') {
-      assert.equal(result.answer.text, 'The heading is Example page.');
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('other'));
+      assert.notEqual(result.answer.text, 'The heading is Example page.');
     }
     assert.equal(executor.calls.length, 0);
     assert.equal(stepAgent.calls.length, 1);
   });
 
   it('allows cannot-complete and needs-clarification without a browser action', async () => {
-    for (const disposition of ['cannot-complete', 'needs-clarification'] as const) {
-      const obs = observation();
-      const stepAgent = new FakeStepAgent([
-        answerStep(`Need to stop: ${disposition}`, obs, disposition),
-      ]);
-      const executor = new FakeV3Executor([]);
-      const { coordinator, loop } = createLoop({ stepAgent, executor });
-      const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
-      assert.equal(result.status, 'completed');
-      if (result.status === 'completed') {
-        assert.equal(result.answer.text, `Need to stop: ${disposition}`);
-      }
-      assert.equal(executor.calls.length, 0);
+    const obs = observation();
+    const cannotHarness = createLoop({
+      stepAgent: new FakeStepAgent([
+        answerStep('Clicked WebdriverIO.', obs, 'cannot-complete', {
+          cannotCompleteReason: 'unsupported-action',
+        }),
+      ]),
+      executor: new FakeV3Executor([]),
+    });
+    const cannotResult = await cannotHarness.loop.run(
+      refOf(start(cannotHarness.coordinator, 'klicka på WebDriverIO')),
+    );
+    assert.equal(cannotResult.status, 'completed');
+    if (cannotResult.status === 'completed') {
+      assert.equal(cannotResult.answer.text, trustedCannotCompleteCopy('unsupported-action'));
+      assert.notEqual(cannotResult.answer.text, 'Clicked WebdriverIO.');
+    }
+
+    const clarifyHarness = createLoop({
+      stepAgent: new FakeStepAgent([
+        answerStep('Which control should I use?', obs, 'needs-clarification'),
+      ]),
+      executor: new FakeV3Executor([]),
+    });
+    const clarifyResult = await clarifyHarness.loop.run(
+      refOf(start(clarifyHarness.coordinator, 'klicka på WebDriverIO')),
+    );
+    assert.equal(clarifyResult.status, 'completed');
+    if (clarifyResult.status === 'completed') {
+      assert.equal(clarifyResult.answer.text, 'Which control should I use?');
     }
   });
 
@@ -3183,14 +3250,16 @@ describe('SafeAgentLoop false completion guard', () => {
     });
     const stepAgent = new FakeStepAgent([
       proposalStep(boundType(), field, { continuation: 'complete-on-success' }),
-      answerStep('Typed, but the value is not visible.', field, 'informational'),
+      answerStep('Typed, but the value is not visible.', field, 'cannot-complete', {
+        cannotCompleteReason: 'completion-not-verifiable',
+      }),
     ]);
     const executor = new FakeV3Executor([succeeded(field)]);
     const { coordinator, loop } = createLoop({ stepAgent, executor });
     const result = await loop.run(refOf(start(coordinator, 'Type the password.')));
     assert.equal(result.status, 'completed');
     if (result.status === 'completed') {
-      assert.equal(result.answer.text, 'Typed, but the value is not visible.');
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('completion-not-verifiable'));
     }
     assert.equal(executor.calls.length, 1);
     assert.equal(stepAgent.calls.length, 2);
@@ -3233,11 +3302,13 @@ describe('SafeAgentLoop false completion guard', () => {
       ),
       true,
     );
-    hold.resolve(answerStep('The click could not be verified.', page, 'cannot-complete'));
+    hold.resolve(answerStep('The click could not be verified.', page, 'cannot-complete', {
+        cannotCompleteReason: 'completion-not-verifiable',
+      }));
     const result = await pending;
     assert.equal(result.status, 'completed');
     if (result.status === 'completed') {
-      assert.equal(result.answer.text, 'The click could not be verified.');
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('completion-not-verifiable'));
       assert.notEqual(result.answer.text, FALSE_CLICK_TEXT);
     }
     assert.equal(executor.calls.length, 1);
@@ -3442,14 +3513,16 @@ describe('SafeAgentLoop false completion guard', () => {
     const stepAgent = new FakeStepAgent([
       proposalStep(boundClick(), page),
       answerStep(FALSE_CLICK_TEXT, page, 'task-complete'),
-      answerStep('Could not verify the click.', page, 'cannot-complete'),
+      answerStep('Could not verify the click.', page, 'cannot-complete', {
+        cannotCompleteReason: 'completion-not-verifiable',
+      }),
     ]);
     const executor = new FakeV3Executor([succeeded(page)]);
     const { coordinator, loop } = createLoop({ stepAgent, executor });
     const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
     assert.equal(result.status, 'completed');
     if (result.status === 'completed') {
-      assert.equal(result.answer.text, 'Could not verify the click.');
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('completion-not-verifiable'));
       assert.notEqual(result.answer.text, FALSE_CLICK_TEXT);
     }
     assert.equal(executor.calls.length, 1);
@@ -3471,7 +3544,9 @@ describe('SafeAgentLoop false completion guard', () => {
     const page = observation();
     const firstAgent = new FakeStepAgent([
       proposalStep(boundClick(), page),
-      answerStep('Still on the page.', page, 'cannot-complete'),
+      answerStep('Still on the page.', page, 'cannot-complete', {
+        cannotCompleteReason: 'completion-not-verifiable',
+      }),
     ]);
     const firstExecutor = new FakeV3Executor([succeeded(page)]);
     const first = createLoop({ stepAgent: firstAgent, executor: firstExecutor });
@@ -3481,7 +3556,9 @@ describe('SafeAgentLoop false completion guard', () => {
 
     const secondAgent = new FakeStepAgent([
       answerStep(FALSE_CLICK_TEXT, page, 'task-complete'),
-      answerStep('Need a fresh click.', page, 'cannot-complete'),
+      answerStep('Need a fresh click.', page, 'cannot-complete', {
+        cannotCompleteReason: 'completion-not-verifiable',
+      }),
     ]);
     const secondExecutor = new FakeV3Executor([]);
     const second = createLoop({ stepAgent: secondAgent, executor: secondExecutor });
@@ -3490,7 +3567,7 @@ describe('SafeAgentLoop false completion guard', () => {
     );
     assert.equal(secondResult.status, 'completed');
     if (secondResult.status === 'completed') {
-      assert.equal(secondResult.answer.text, 'Need a fresh click.');
+      assert.equal(secondResult.answer.text, trustedCannotCompleteCopy('completion-not-verifiable'));
       assert.notEqual(secondResult.answer.text, FALSE_CLICK_TEXT);
     }
     assert.equal(secondExecutor.calls.length, 0);
@@ -3554,11 +3631,13 @@ describe('SafeAgentLoop false completion guard', () => {
       ),
       true,
     );
-    hold.resolve(answerStep('The second click could not be verified.', destination, 'cannot-complete'));
+    hold.resolve(answerStep('The second click could not be verified.', destination, 'cannot-complete', {
+        cannotCompleteReason: 'completion-not-verifiable',
+      }));
     const result = await pending;
     assert.equal(result.status, 'completed');
     if (result.status === 'completed') {
-      assert.equal(result.answer.text, 'The second click could not be verified.');
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('completion-not-verifiable'));
       assert.notEqual(result.answer.text, 'Clicked B.');
     }
     assert.equal(executor.calls.length, 2);
@@ -3640,14 +3719,16 @@ describe('SafeAgentLoop false completion guard', () => {
       proposalStep(boundClick(), unchecked),
       proposalStep(boundClick('rev-a', 'target-2', 'obs-checked'), checked),
       answerStep('Clicked Continue.', checked, 'task-complete'),
-      answerStep('The button click could not be verified.', checked, 'cannot-complete'),
+      answerStep('The button click could not be verified.', checked, 'cannot-complete', {
+        cannotCompleteReason: 'completion-not-verifiable',
+      }),
     ]);
     const executor = new FakeV3Executor([succeeded(checked), succeeded(checked)]);
     const { coordinator, loop } = createLoop({ stepAgent, executor });
     const result = await loop.run(refOf(start(coordinator, 'Check agree then continue.')));
     assert.equal(result.status, 'completed');
     if (result.status === 'completed') {
-      assert.equal(result.answer.text, 'The button click could not be verified.');
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('completion-not-verifiable'));
     }
     assert.equal(executor.calls.length, 2);
   });
@@ -3675,7 +3756,9 @@ describe('SafeAgentLoop false completion guard', () => {
       proposalStep(boundClick(), obs),
       proposalStep(boundClick('rev-a', 'target-2'), obs),
       answerStep('Clicked the safe control.', obs, 'task-complete'),
-      answerStep('The later click could not be verified.', obs, 'cannot-complete'),
+      answerStep('The later click could not be verified.', obs, 'cannot-complete', {
+        cannotCompleteReason: 'completion-not-verifiable',
+      }),
     ]);
     const executor = new FakeV3Executor([
       denied('DEFERRED_TO_EXECUTE'),
@@ -3696,7 +3779,7 @@ describe('SafeAgentLoop false completion guard', () => {
     const result = await pending;
     assert.equal(result.status, 'completed');
     if (result.status === 'completed') {
-      assert.equal(result.answer.text, 'The later click could not be verified.');
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('completion-not-verifiable'));
     }
     assert.equal(executor.calls.length, 2);
     assert.equal(executor.calls[1]?.proposal.kind, 'click');
@@ -3825,7 +3908,9 @@ describe('SafeAgentLoop false completion guard', () => {
       proposalStep(boundScroll('rev-docs', 'obs-dest'), destination),
       proposalStep(boundClick('rev-docs', 'target-2', 'obs-scrolled'), scrolled),
       answerStep('Clicked Get Started.', scrolled, 'task-complete'),
-      answerStep('The later click could not be verified.', scrolled, 'cannot-complete'),
+      answerStep('The later click could not be verified.', scrolled, 'cannot-complete', {
+        cannotCompleteReason: 'completion-not-verifiable',
+      }),
     ]);
     const executor = new FakeV3Executor([
       succeeded(destination),
@@ -3838,7 +3923,7 @@ describe('SafeAgentLoop false completion guard', () => {
     );
     assert.equal(result.status, 'completed');
     if (result.status === 'completed') {
-      assert.equal(result.answer.text, 'The later click could not be verified.');
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('completion-not-verifiable'));
     }
     assert.equal(executor.calls.filter((call) => call.proposal.kind === 'click').length, 2);
     assert.equal(executor.calls.filter((call) => call.proposal.kind === 'scroll').length, 1);
@@ -3894,7 +3979,9 @@ describe('SafeAgentLoop false completion guard', () => {
         continuation: 'complete-on-success',
         onSuccessText: 'Clicked B.',
       }),
-      answerStep('The second click had no effect.', destination, 'cannot-complete'),
+      answerStep('The second click had no effect.', destination, 'cannot-complete', {
+        cannotCompleteReason: 'completion-not-verifiable',
+      }),
     ]);
     const executor = new FakeV3Executor([succeeded(destination), succeeded(destination)]);
     const { coordinator, loop } = createLoop({ stepAgent, executor });
@@ -3903,7 +3990,7 @@ describe('SafeAgentLoop false completion guard', () => {
     );
     assert.equal(result.status, 'completed');
     if (result.status === 'completed') {
-      assert.equal(result.answer.text, 'The second click had no effect.');
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('completion-not-verifiable'));
       assert.notEqual(result.answer.text, 'Clicked B.');
       assert.notEqual(result.answer.text, 'Done.');
     }
@@ -3932,14 +4019,16 @@ describe('SafeAgentLoop false completion guard', () => {
 
     const secondAgent = new FakeStepAgent([
       answerStep('Clicked B.', source, 'task-complete'),
-      answerStep('Need a fresh action.', source, 'cannot-complete'),
+      answerStep('Need a fresh action.', source, 'cannot-complete', {
+        cannotCompleteReason: 'completion-not-verifiable',
+      }),
     ]);
     const secondExecutor = new FakeV3Executor([]);
     const second = createLoop({ stepAgent: secondAgent, executor: secondExecutor });
     const secondResult = await second.loop.run(refOf(start(second.coordinator, 'Click Get Started.')));
     assert.equal(secondResult.status, 'completed');
     if (secondResult.status === 'completed') {
-      assert.equal(secondResult.answer.text, 'Need a fresh action.');
+      assert.equal(secondResult.answer.text, trustedCannotCompleteCopy('completion-not-verifiable'));
     }
     assert.equal(secondExecutor.calls.length, 0);
   });
@@ -4067,5 +4156,173 @@ describe('SafeAgentLoop controller UI correlation', () => {
     assert.equal(conversationStore.get(TAB)?.turns.length, 1);
   });
 });
+
+describe('SafeAgentLoop cannot-complete trusted copy and target search gating', () => {
+  it('does not surface cannot-complete success-style model text', async () => {
+    const obs = observation();
+    const stepAgent = new FakeStepAgent([
+      answerStep('Länken WebdriverIO har klickats.', obs, 'cannot-complete', {
+        cannotCompleteReason: 'other',
+      }),
+    ]);
+    const { coordinator, loop } = createLoop({
+      stepAgent,
+      executor: new FakeV3Executor([]),
+    });
+    const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('other'));
+      assert.notEqual(result.answer.text, 'Länken WebdriverIO har klickats.');
+    }
+    assert.equal(stepAgent.calls.length, 1);
+  });
+
+  it('rejects premature target-not-found when more content remains below', async () => {
+    const nearTop = observation({
+      viewport: {
+        width: 400,
+        height: 300,
+        scrollX: 0,
+        scrollY: 0,
+        deviceScaleFactor: 1,
+        documentHeight: 2400,
+      },
+    });
+    const afterScroll = observation({
+      observationId: 'obs-scrolled',
+      viewport: {
+        ...nearTop.viewport,
+        scrollY: 300,
+      },
+    });
+    const dest = destObservation();
+    const stepAgent = new FakeStepAgent([
+      answerStep('Jag kan inte se WebDriverIO.', nearTop, 'cannot-complete', {
+        cannotCompleteReason: 'target-not-found',
+      }),
+      proposalStep(boundScroll(nearTop.document.revision, nearTop.observationId), nearTop),
+      proposalStep(boundClick(), afterScroll, {
+        continuation: 'complete-on-success',
+        onSuccessText: 'Clicked WebdriverIO.',
+      }),
+    ]);
+    const executor = new FakeV3Executor([succeeded(afterScroll), succeededPopup(dest)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Clicked WebdriverIO.');
+      assert.notEqual(result.answer.text, 'Jag kan inte se WebDriverIO.');
+      assert.equal(result.run.executionTabId, POPUP_DEST);
+    }
+    assert.equal(stepAgent.calls[1]?.options?.trustedProgress?.some(
+      (entry) => entry.kind === 'target-search-not-exhausted',
+    ), true);
+    assert.equal(executor.calls.length, 2);
+    assert.equal(executor.calls[0]?.proposal.kind, 'scroll');
+    assert.equal(executor.calls[1]?.proposal.kind, 'click');
+    assert.equal(stepAgent.calls.length, 3);
+  });
+
+  it('rejects target-not-found when context is truncated and discovery budget remains', async () => {
+    const obs = observation({
+      viewport: {
+        width: 400,
+        height: 300,
+        scrollX: 0,
+        scrollY: 50,
+        deviceScaleFactor: 1,
+        documentHeight: 2400,
+      },
+      stats: { ...observation().stats, truncated: true },
+    });
+    const stepAgent = new FakeStepAgent([
+      answerStep('Missing.', obs, 'cannot-complete', {
+        cannotCompleteReason: 'target-not-found',
+        truncatedContext: true,
+      }),
+      answerStep('Which button?', obs, 'needs-clarification'),
+    ]);
+    const { coordinator, loop } = createLoop({
+      stepAgent,
+      executor: new FakeV3Executor([]),
+    });
+    const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Which button?');
+    }
+    assert.equal(stepAgent.calls.length, 2);
+    assert.equal(
+      stepAgent.calls[1]?.options?.trustedProgress?.some(
+        (entry) => entry.kind === 'target-search-not-exhausted',
+      ),
+      true,
+    );
+  });
+
+  it('allows target-not-found at the document bottom', async () => {
+    const atBottom = observation({
+      viewport: {
+        width: 400,
+        height: 300,
+        scrollX: 0,
+        scrollY: 2100,
+        deviceScaleFactor: 1,
+        documentHeight: 2400,
+      },
+    });
+    const stepAgent = new FakeStepAgent([
+      answerStep('Jag kan inte se WebDriverIO.', atBottom, 'cannot-complete', {
+        cannotCompleteReason: 'target-not-found',
+      }),
+    ]);
+    const { coordinator, loop } = createLoop({
+      stepAgent,
+      executor: new FakeV3Executor([]),
+    });
+    const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('target-not-found'));
+      assert.notEqual(result.answer.text, 'Jag kan inte se WebDriverIO.');
+    }
+    assert.equal(stepAgent.calls.length, 1);
+  });
+
+  it('allows target-not-found after four discovery scrolls without a fifth dispatch', async () => {
+    const scrollYs = [0, 300, 600, 900];
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex <= 4) {
+        const current = electronTestingObservation(scrollYs[callIndex - 1], false);
+        return proposalStep(
+          boundScroll(current.document.revision, current.observationId),
+          current,
+        );
+      }
+      return answerStep('Missing.', electronTestingObservation(1200, false), 'cannot-complete', {
+        cannotCompleteReason: 'target-not-found',
+        truncatedContext: true,
+      });
+    });
+    const executor = new FakeV3Executor([
+      succeeded(electronTestingObservation(300, false)),
+      succeeded(electronTestingObservation(600, false)),
+      succeeded(electronTestingObservation(900, false)),
+      succeeded(electronTestingObservation(1200, false)),
+    ]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('target-not-found'));
+    }
+    assert.equal(executor.calls.length, 4);
+    assert.equal(executor.calls.filter((call) => call.proposal.kind === 'scroll').length, 4);
+    assert.equal(stepAgent.calls.length, 5);
+  });
+});
+
 
 

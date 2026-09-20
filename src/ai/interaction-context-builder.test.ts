@@ -636,7 +636,7 @@ describe('buildInteractiveModelMessages', () => {
     assert.equal(progressPart?.type, 'text');
     if (progressPart?.type === 'text') {
       assert.match(progressPart.text, /<TRUSTED_RUN_PROGRESS>/);
-      assert.match(progressPart.text, /previous navigation step is complete/);
+      assert.match(progressPart.text, /navigation step is complete/);
       assert.equal(progressPart.text.includes('I already opened that page.'), false);
     }
     const history = messages[2]?.content[0];
@@ -645,5 +645,100 @@ describe('buildInteractiveModelMessages', () => {
       assert.match(history.text, /<PRIOR_CONVERSATION>/);
       assert.match(history.text, /not evidence of current browser state/);
     }
+  });
+});
+
+describe('WebdriverIO context export regression', () => {
+  function fillerText(index: number): ObservationNode {
+    return node({
+      role: 'generic',
+      tag: 'p',
+      text: `Documentation paragraph ${index} about Electron automated testing. `.repeat(8),
+      interactive: false,
+      visible: true,
+      inViewport: index < 12,
+    });
+  }
+
+  function webdriverioLink(inViewport: boolean): ObservationNode {
+    return node({
+      targetId: 'target-webdriverio',
+      role: 'link',
+      tag: 'a',
+      name: 'WebdriverIO',
+      interactive: true,
+      visible: true,
+      inViewport,
+      bounds: inViewport
+        ? { x: 24, y: 180, width: 120, height: 20 }
+        : { x: 24, y: 980, width: 120, height: 20 },
+      attributes: { href: 'https://webdriver.io/' },
+    });
+  }
+
+  it('keeps a visible in-viewport WebdriverIO link under compaction pressure', () => {
+    const nodes: ObservationNode[] = [];
+    for (let index = 0; index < 80; index += 1) {
+      nodes.push(fillerText(index));
+    }
+    nodes.splice(10, 0, webdriverioLink(true));
+    const built = buildInteractiveModelPageContext(
+      observation(nodes, {
+        viewport: {
+          width: 800,
+          height: 600,
+          scrollX: 0,
+          scrollY: 0,
+          deviceScaleFactor: 1,
+          documentHeight: 4000,
+        },
+      }),
+    );
+    const link = built.context.nodes.find((item) => item.targetId === 'target-webdriverio');
+    assert.ok(link);
+    assert.equal(link?.interactive, true);
+    assert.equal(link?.name, 'WebdriverIO');
+    assert.equal(link?.href, 'https://webdriver.io/');
+    assert.equal(built.exportedTargetIds.has('target-webdriverio'), true);
+  });
+
+  it('exports WebdriverIO after a scroll brings it into the viewport', () => {
+    const below: ObservationNode[] = [];
+    for (let index = 0; index < 40; index += 1) {
+      below.push(fillerText(index));
+    }
+    below.push(webdriverioLink(false));
+    const initial = buildInteractiveModelPageContext(
+      observation(below, {
+        viewport: {
+          width: 400,
+          height: 300,
+          scrollX: 0,
+          scrollY: 0,
+          deviceScaleFactor: 1,
+          documentHeight: 2400,
+        },
+      }),
+    );
+    const afterScrollNodes = below.map((item) =>
+      item.targetId === 'target-webdriverio' ? webdriverioLink(true) : { ...item, inViewport: false },
+    );
+    const afterScroll = buildInteractiveModelPageContext(
+      observation(afterScrollNodes, {
+        viewport: {
+          width: 400,
+          height: 300,
+          scrollX: 0,
+          scrollY: 900,
+          deviceScaleFactor: 1,
+          documentHeight: 2400,
+        },
+      }),
+    );
+    const afterLink = afterScroll.context.nodes.find((item) => item.targetId === 'target-webdriverio');
+    assert.equal(afterScroll.exportedTargetIds.has('target-webdriverio'), true);
+    assert.equal(afterLink?.interactive, true);
+    assert.equal(afterLink?.href, 'https://webdriver.io/');
+    assert.ok(initial);
   });
 });

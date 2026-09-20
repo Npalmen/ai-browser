@@ -7,6 +7,7 @@ import {
   formatAgentLoopCompleteOnSuccessHonored,
   formatAgentLoopFalseCompletionReplan,
   formatAgentLoopModelStepFailed,
+  formatAgentLoopProposalReceived,
   formatAgentLoopTrustedActionSuccess,
   formatModelRequestFailed,
 } from './model-diagnostics';
@@ -113,9 +114,12 @@ describe('model diagnostics formatting', () => {
         navigations: 0,
         approvedExecutions: 0,
         latestSemanticFrontier: 'unverified',
+        discoveryScrolls: 0,
+        contextTruncated: false,
+        moreContentBelow: false,
         iteration: 1,
       }),
-      '[agent-loop] answer-received disposition=task-complete browserDispatches=1 verifiedEffects=0 navigations=0 approvedExecutions=0 latestSemanticFrontier=unverified iteration=1',
+      '[agent-loop] answer-received disposition=task-complete cannotCompleteReason=none browserDispatches=1 verifiedEffects=0 navigations=0 approvedExecutions=0 latestSemanticFrontier=unverified discoveryScrolls=0 contextTruncated=false moreContentBelow=false iteration=1',
     );
     assert.equal(
       formatAgentLoopFalseCompletionReplan(1),
@@ -142,6 +146,22 @@ describe('model diagnostics formatting', () => {
         reason: 'no-observable-effect',
       }),
       '[agent-loop] complete-on-success-deferred kind=click reason=no-observable-effect',
+    );
+    assert.equal(
+      formatAgentLoopProposalReceived({
+        kind: 'scroll',
+        continuation: 'continue',
+        iteration: 2,
+      }),
+      '[agent-loop] proposal-received kind=scroll continuation=continue iteration=2',
+    );
+    assert.doesNotMatch(
+      formatAgentLoopProposalReceived({
+        kind: 'click',
+        continuation: 'complete-on-success',
+        iteration: 1,
+      }),
+      /target-/i,
     );
   });
 });
