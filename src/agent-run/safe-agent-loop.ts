@@ -34,6 +34,18 @@ import type {
 import { ObservationError, type ObservationErrorCode } from '../shared/observation-types';
 import { MAX_VIEWPORT_DISCOVERY_SCROLLS } from '../shared/viewport-discovery-policy';
 import { fingerprintBoundProposal } from './bound-proposal-fingerprint';
+import {
+  createViewportDiscoveryState,
+  hasMoreContentBelow,
+  isTargetNotFoundCorrectionExhausted,
+  markStartingPosition,
+  recordTargetNotFoundCorrection,
+  resetConsecutiveViewportScrolls,
+  shouldRejectPrematureTargetNotFound,
+  syncBoundaryFlagsFromObservation,
+  updateViewportDiscoveryStateAfterScroll,
+  type ViewportDiscoveryState,
+} from './viewport-discovery-state';
 import type { AgentRunCoordinator } from './agent-run-coordinator';
 import type { AgentRunApprovalPort } from './approval-pause-port';
 import {
@@ -100,7 +112,6 @@ interface PostNavigationContinuation {
 }
 
 interface RunLocalBudgets {
-  consecutiveViewportScrolls: number;
   semanticActionAttempts: number;
 }
 
@@ -133,7 +144,6 @@ function createPostNavigationContinuation(): PostNavigationContinuation {
 
 function createRunLocalBudgets(): RunLocalBudgets {
   return {
-    consecutiveViewportScrolls: 0,
     semanticActionAttempts: 0,
   };
 }
@@ -235,6 +245,7 @@ export class SafeAgentLoop {
     const trustedProgress: TrustedRunProgressEntry[] = [];
     const continuation = createPostNavigationContinuation();
     const budgets = createRunLocalBudgets();
+    const discovery = createViewportDiscoveryState();
     const evidence = createTrustedRunActionEvidence();
     let modelIteration = 0;
     let falseCompletionReplanUsed = false;
@@ -313,6 +324,7 @@ export class SafeAgentLoop {
           pendingAnswerDeltas,
           options,
           budgets,
+          discovery,
           {
             iteration: modelStepIteration,
             postNavigation,
@@ -336,7 +348,7 @@ export class SafeAgentLoop {
       });
 
       if (isViewportDiscoveryScroll(step.proposal)) {
-        if (budgets.consecutiveViewportScrolls >= MAX_VIEWPORT_DISCOVERY_SCROLLS) {
+        if (discovery.consecutiveViewportScrolls >= MAX_VIEWPORT_DISCOVERY_SCROLLS) {
           return this.blockTerminal(ref, 'AGENT_LOOP_NO_PROGRESS');
         }
       } else if (budgets.semanticActionAttempts >= MAX_AGENT_LOOP_SEMANTIC_ACTIONS) {
@@ -389,6 +401,7 @@ export class SafeAgentLoop {
         options,
         continuation,
         budgets,
+        discovery,
         evidence,
       );
       if (actionOutcome !== undefined) {
@@ -412,6 +425,7 @@ export class SafeAgentLoop {
     pendingAnswerDeltas: readonly string[],
     options: SafeAgentLoopOptions,
     budgets: RunLocalBudgets,
+    discovery: ViewportDiscoveryState,
     context: {
       iteration: number;
       postNavigation: boolean;
@@ -421,6 +435,8 @@ export class SafeAgentLoop {
     | { kind: 'replan'; reason: 'false-completion' | 'target-search-not-exhausted' }
     | { kind: 'done'; result: SafeAgentLoopResult } {
     const disposition: AgentAnswerDisposition = step.disposition;
+    markStartingPosition(discovery, step.observation);
+    syncBoundaryFlagsFromObservation(discovery, step.observation);
     const moreContentBelow = hasMoreContentBelow(step.observation);
     logAgentLoopAnswerReceived({
       disposition,
@@ -430,9 +446,13 @@ export class SafeAgentLoop {
       navigations: evidence.verifiedNavigations,
       approvedExecutions: evidence.approvedExecutions,
       latestSemanticFrontier: evidence.latestSemanticFrontier,
-      discoveryScrolls: budgets.consecutiveViewportScrolls,
+      discoveryScrolls: discovery.consecutiveViewportScrolls,
       contextTruncated: step.truncatedContext,
       moreContentBelow,
+      reachedTop: discovery.reachedTop,
+      reachedBottom: discovery.reachedBottom,
+      discoveryDirection: discovery.lastDiscoveryDirection ?? 'none',
+      viewportProgressGeneration: discovery.viewportProgressGeneration,
       iteration: context.iteration,
     });
 
@@ -461,12 +481,25 @@ export class SafeAgentLoop {
     if (
       disposition === 'cannot-complete' &&
       step.cannotCompleteReason === 'target-not-found' &&
-      shouldRejectPrematureTargetNotFound(
-        step.observation,
-        step.truncatedContext,
-        budgets.consecutiveViewportScrolls,
-      )
+      shouldRejectPrematureTargetNotFound(step.observation, step.truncatedContext, discovery)
     ) {
+      if (isTargetNotFoundCorrectionExhausted(discovery)) {
+        return {
+          kind: 'done',
+          result: this.handleStepError(
+            ref,
+            new ModelError(
+              'MODEL_OUTPUT_INVALID',
+              'Unsupported repeated target-not-found without viewport discovery progress.',
+            ),
+            {
+              iteration: context.iteration,
+              postNavigation: context.postNavigation,
+            },
+          ),
+        };
+      }
+      recordTargetNotFoundCorrection(discovery);
       trustedProgress.push({ kind: 'target-search-not-exhausted' });
       return { kind: 'replan', reason: 'target-search-not-exhausted' };
     }
@@ -586,6 +619,7 @@ export class SafeAgentLoop {
     options: SafeAgentLoopOptions,
     continuation: PostNavigationContinuation,
     budgets: RunLocalBudgets,
+    discovery: ViewportDiscoveryState,
     evidence: TrustedRunActionEvidence,
   ): Promise<SafeAgentLoopResult | undefined> {
     if (result.status === 'succeeded') {
@@ -596,6 +630,7 @@ export class SafeAgentLoop {
         trustedProgress,
         continuation,
         budgets,
+        discovery,
         evidence,
         options,
       );
@@ -616,6 +651,7 @@ export class SafeAgentLoop {
     trustedProgress: TrustedRunProgressEntry[],
     continuation: PostNavigationContinuation,
     budgets: RunLocalBudgets,
+    discovery: ViewportDiscoveryState,
     evidence: TrustedRunActionEvidence,
     options: SafeAgentLoopOptions,
   ): SafeAgentLoopResult | undefined {
@@ -651,6 +687,7 @@ export class SafeAgentLoop {
       }
     }
 
+    markStartingPosition(discovery, step.observation);
     const effect = inspectTrustedActionEffect(step, postObservation, causalPopup === true);
     const fingerprint = fingerprintBoundProposal(step.proposal, step.observation);
 
@@ -672,11 +709,17 @@ export class SafeAgentLoop {
     pushTrustedSuccessProgress(trustedProgress, effect);
 
     if (effect.navigation) {
-      budgets.consecutiveViewportScrolls = 0;
+      resetConsecutiveViewportScrolls(discovery);
     } else if (isViewportDiscoveryScroll(step.proposal)) {
-      budgets.consecutiveViewportScrolls += 1;
+      updateViewportDiscoveryStateAfterScroll(
+        discovery,
+        step.proposal,
+        step.observation,
+        postObservation,
+      );
+      discovery.consecutiveViewportScrolls += 1;
     } else {
-      budgets.consecutiveViewportScrolls = 0;
+      resetConsecutiveViewportScrolls(discovery);
     }
 
     if (effect.navigation) {
@@ -1196,36 +1239,3 @@ function resolveActAnswerText(
   return step.text;
 }
 
-function shouldRejectPrematureTargetNotFound(
-  observation: PageObservation,
-  truncatedContext: boolean,
-  discoveryScrolls: number,
-): boolean {
-  if (discoveryScrolls >= MAX_VIEWPORT_DISCOVERY_SCROLLS) {
-    return false;
-  }
-  if (hasMoreContentBelow(observation)) {
-    return true;
-  }
-  if (truncatedContext && !isAtOrPastDocumentBottom(observation.viewport)) {
-    return true;
-  }
-  return false;
-}
-
-function hasMoreContentBelow(observation: PageObservation): boolean {
-  const documentHeight = observation.viewport.documentHeight;
-  if (documentHeight === undefined) {
-    return false;
-  }
-  return observation.viewport.scrollY + observation.viewport.height < documentHeight;
-}
-
-function isAtOrPastDocumentBottom(
-  viewport: PageObservation['viewport'],
-): boolean {
-  if (viewport.documentHeight === undefined) {
-    return false;
-  }
-  return viewport.scrollY + viewport.height >= viewport.documentHeight;
-}

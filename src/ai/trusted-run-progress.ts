@@ -88,8 +88,8 @@ function summarizeTrustedProgressEntry(
   if (entry.kind === 'target-search-not-exhausted') {
     return [
       'The requested target has not been proven absent.',
-      'Additional page content may remain uninspected.',
-      'Continue bounded target discovery using viewport scrolling.',
+      'Re-check the currently exported actionable targets first.',
+      'If the target is not present and uninspected page content remains, continue bounded viewport discovery.',
       'Do not claim the target is missing yet.',
     ].join(' ');
   }

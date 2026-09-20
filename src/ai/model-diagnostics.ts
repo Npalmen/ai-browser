@@ -149,6 +149,8 @@ function sanitizeAllowlisted(value: string, allowed: Set<string>, fallback: stri
   return allowed.has(value) ? value : fallback;
 }
 
+const SAFE_DISCOVERY_DIRECTIONS = new Set(['up', 'down', 'none']);
+
 export function formatAgentLoopAnswerReceived(diagnostics: {
   readonly disposition: string;
   readonly cannotCompleteReason?: string;
@@ -160,6 +162,10 @@ export function formatAgentLoopAnswerReceived(diagnostics: {
   readonly discoveryScrolls: number;
   readonly contextTruncated: boolean;
   readonly moreContentBelow: boolean;
+  readonly reachedTop?: boolean;
+  readonly reachedBottom?: boolean;
+  readonly discoveryDirection?: string;
+  readonly viewportProgressGeneration?: number;
   readonly iteration: number;
 }): string {
   return [
@@ -174,6 +180,10 @@ export function formatAgentLoopAnswerReceived(diagnostics: {
     `discoveryScrolls=${Math.max(0, Math.floor(diagnostics.discoveryScrolls))}`,
     `contextTruncated=${diagnostics.contextTruncated === true}`,
     `moreContentBelow=${diagnostics.moreContentBelow === true}`,
+    `reachedTop=${diagnostics.reachedTop === true}`,
+    `reachedBottom=${diagnostics.reachedBottom === true}`,
+    `discoveryDirection=${sanitizeAllowlisted(diagnostics.discoveryDirection ?? 'none', SAFE_DISCOVERY_DIRECTIONS, 'none')}`,
+    `viewportProgressGeneration=${Math.max(0, Math.floor(diagnostics.viewportProgressGeneration ?? 0))}`,
     `iteration=${Math.max(0, Math.floor(diagnostics.iteration))}`,
   ].join(' ');
 }

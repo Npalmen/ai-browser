@@ -119,7 +119,7 @@ describe('model diagnostics formatting', () => {
         moreContentBelow: false,
         iteration: 1,
       }),
-      '[agent-loop] answer-received disposition=task-complete cannotCompleteReason=none browserDispatches=1 verifiedEffects=0 navigations=0 approvedExecutions=0 latestSemanticFrontier=unverified discoveryScrolls=0 contextTruncated=false moreContentBelow=false iteration=1',
+      '[agent-loop] answer-received disposition=task-complete cannotCompleteReason=none browserDispatches=1 verifiedEffects=0 navigations=0 approvedExecutions=0 latestSemanticFrontier=unverified discoveryScrolls=0 contextTruncated=false moreContentBelow=false reachedTop=false reachedBottom=false discoveryDirection=none viewportProgressGeneration=0 iteration=1',
     );
     assert.equal(
       formatAgentLoopFalseCompletionReplan(1),

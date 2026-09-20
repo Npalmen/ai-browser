@@ -101,7 +101,8 @@ describe('trusted run progress', () => {
     const serialized = serializeTrustedRunProgress([{ kind: 'target-search-not-exhausted' }]);
     assert.ok(serialized);
     assert.match(serialized, /has not been proven absent/);
-    assert.match(serialized, /Continue bounded target discovery using viewport scrolling/);
+    assert.match(serialized, /Re-check the currently exported actionable targets first/);
+    assert.match(serialized, /continue bounded viewport discovery/);
     assert.match(serialized, /Do not claim the target is missing yet/);
     assert.doesNotMatch(serialized, /targetId/i);
     assert.doesNotMatch(serialized, /https?:\/\//);

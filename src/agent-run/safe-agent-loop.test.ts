@@ -145,11 +145,12 @@ function boundScroll(
   observationId: string,
   amountPx = 300,
   tabId: TabId = TAB,
+  direction: 'up' | 'down' = 'down',
 ): BoundInteractionProposal {
   return {
     kind: 'scroll',
     mode: 'viewport',
-    direction: 'down',
+    direction,
     amountPx,
     tabId,
     observationId,
@@ -2154,10 +2155,13 @@ describe('SafeAgentLoop offscreen target discovery', () => {
           atBottom,
         );
       }
-      return answerStep('Could not find WebDriverIO.', atBottom, 'cannot-complete', {
-        cannotCompleteReason: 'target-not-found',
-        truncatedContext: true,
-      });
+      if (callIndex === 2) {
+        return answerStep('Could not find WebDriverIO.', atBottom, 'cannot-complete', {
+          cannotCompleteReason: 'target-not-found',
+          truncatedContext: true,
+        });
+      }
+      return answerStep('Which link should I use?', atBottom, 'needs-clarification');
     });
     const executor = new FakeV3Executor([succeeded(atBottom)]);
     const { coordinator, loop } = createLoop({ stepAgent, executor });
@@ -2165,6 +2169,12 @@ describe('SafeAgentLoop offscreen target discovery', () => {
     assert.equal(result.status, 'completed');
     assert.equal(executor.calls.length, 1);
     assert.equal(executor.calls[0]?.proposal.kind, 'scroll');
+    assert.equal(
+      stepAgent.calls[2]?.options?.trustedProgress?.some(
+        (entry) => entry.kind === 'target-search-not-exhausted',
+      ),
+      true,
+    );
   });
 
   it('allows two identical viewport scrolls on the same revision from different scrollY values', async () => {
@@ -4262,33 +4272,252 @@ describe('SafeAgentLoop cannot-complete trusted copy and target search gating', 
     );
   });
 
-  it('allows target-not-found at the document bottom', async () => {
-    const atBottom = observation({
-      viewport: {
-        width: 400,
-        height: 300,
-        scrollX: 0,
-        scrollY: 2100,
-        deviceScaleFactor: 1,
-        documentHeight: 2400,
-      },
-    });
-    const stepAgent = new FakeStepAgent([
-      answerStep('Jag kan inte se WebDriverIO.', atBottom, 'cannot-complete', {
+  it('allows target-not-found at the top after bounded upward discovery from the bottom', async () => {
+    const atBottom = electronTestingObservation(2100, false);
+    const atTop = electronTestingObservation(0, false);
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex === 1) {
+        return answerStep('Jag kan inte se WebDriverIO.', atBottom, 'cannot-complete', {
+          cannotCompleteReason: 'target-not-found',
+        });
+      }
+      if (callIndex === 2) {
+        return proposalStep(
+          boundScroll(atBottom.document.revision, atBottom.observationId, 300, TAB, 'up'),
+          atBottom,
+        );
+      }
+      return answerStep('Jag kan inte se WebDriverIO.', atTop, 'cannot-complete', {
         cannotCompleteReason: 'target-not-found',
-      }),
-    ]);
-    const { coordinator, loop } = createLoop({
-      stepAgent,
-      executor: new FakeV3Executor([]),
+        truncatedContext: true,
+      });
     });
+    const executor = new FakeV3Executor([succeeded(atTop)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
     const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
     assert.equal(result.status, 'completed');
     if (result.status === 'completed') {
       assert.equal(result.answer.text, trustedCannotCompleteCopy('target-not-found'));
       assert.notEqual(result.answer.text, 'Jag kan inte se WebDriverIO.');
     }
-    assert.equal(stepAgent.calls.length, 1);
+    assert.equal(stepAgent.calls.length, 3);
+    assert.equal(executor.calls.length, 1);
+    assert.equal(executor.calls[0]?.proposal.kind, 'scroll');
+    if (executor.calls[0]?.proposal.kind === 'scroll' && executor.calls[0].proposal.mode === 'viewport') {
+      assert.equal(executor.calls[0].proposal.direction, 'up');
+    }
+  });
+
+  it('rejects target-not-found near bottom when content remains above and no upward discovery ran', async () => {
+    const atBottom = electronTestingObservation(2100, false);
+    const stepAgent = new FakeStepAgent([
+      answerStep('Missing.', atBottom, 'cannot-complete', {
+        cannotCompleteReason: 'target-not-found',
+        truncatedContext: true,
+      }),
+      answerStep('Which link?', atBottom, 'needs-clarification'),
+    ]);
+    const executor = new FakeV3Executor([]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Which link?');
+    }
+    assert.equal(stepAgent.calls.length, 2);
+    assert.equal(
+      stepAgent.calls[1]?.options?.trustedProgress?.some(
+        (entry) => entry.kind === 'target-search-not-exhausted',
+      ),
+      true,
+    );
+    assert.equal(executor.calls.length, 0);
+  });
+
+  it('rejects target-not-found at bottom after downward-only discovery when upward content was never inspected', async () => {
+    const atBottom = electronTestingObservation(2100, false);
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex === 1) {
+        return proposalStep(
+          boundScroll(atBottom.document.revision, atBottom.observationId),
+          atBottom,
+        );
+      }
+      if (callIndex === 2) {
+        return answerStep('Missing.', atBottom, 'cannot-complete', {
+          cannotCompleteReason: 'target-not-found',
+          truncatedContext: true,
+        });
+      }
+      return answerStep('Which link?', atBottom, 'needs-clarification');
+    });
+    const executor = new FakeV3Executor([succeeded(atBottom)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Which link?');
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(stepAgent.calls.length, 3);
+    assert.equal(
+      stepAgent.calls[2]?.options?.trustedProgress?.some(
+        (entry) => entry.kind === 'target-search-not-exhausted',
+      ),
+      true,
+    );
+  });
+
+  it('allows repeated upward scrolling until top is recognized on one revision', async () => {
+    const scrollYs = [900, 500, 100, 0];
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex <= 3) {
+        const current = electronTestingObservation(scrollYs[callIndex - 1], false);
+        return proposalStep(
+          boundScroll(current.document.revision, current.observationId, 300, TAB, 'up'),
+          current,
+        );
+      }
+      return answerStep('Missing.', electronTestingObservation(0, false), 'cannot-complete', {
+        cannotCompleteReason: 'target-not-found',
+        truncatedContext: true,
+      });
+    });
+    const executor = new FakeV3Executor([
+      succeeded(electronTestingObservation(500, false)),
+      succeeded(electronTestingObservation(100, false)),
+      succeeded(electronTestingObservation(0, false)),
+    ]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, trustedCannotCompleteCopy('target-not-found'));
+    }
+    assert.equal(executor.calls.length, 3);
+    assert.equal(
+      executor.calls.every(
+        (call) =>
+          call.proposal.kind === 'scroll' &&
+          call.proposal.mode === 'viewport' &&
+          call.proposal.direction === 'up',
+      ),
+      true,
+    );
+  });
+
+  it('fails safely on repeated target-not-found at the same viewport without intervening scroll', async () => {
+    const atBottom = electronTestingObservation(2100, false);
+    const stepAgent = new FakeStepAgent([
+      answerStep('Missing.', atBottom, 'cannot-complete', {
+        cannotCompleteReason: 'target-not-found',
+        truncatedContext: true,
+      }),
+      answerStep('Still missing.', atBottom, 'cannot-complete', {
+        cannotCompleteReason: 'target-not-found',
+        truncatedContext: true,
+      }),
+    ]);
+    const executor = new FakeV3Executor([]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'MODEL_FAILED');
+      assert.equal(result.run.modelErrorCode, 'MODEL_OUTPUT_INVALID');
+    }
+    assert.equal(stepAgent.calls.length, 2);
+    assert.equal(executor.calls.length, 0);
+  });
+
+  it('allows another target-not-found correction after trusted viewport progress', async () => {
+    const atBottom = electronTestingObservation(2100, false);
+    const partialUp = electronTestingObservation(1800, false);
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex === 1) {
+        return answerStep('Missing.', atBottom, 'cannot-complete', {
+          cannotCompleteReason: 'target-not-found',
+          truncatedContext: true,
+        });
+      }
+      if (callIndex === 2) {
+        return proposalStep(
+          boundScroll(atBottom.document.revision, atBottom.observationId, 300, TAB, 'up'),
+          atBottom,
+        );
+      }
+      if (callIndex === 3) {
+        return answerStep('Missing again.', partialUp, 'cannot-complete', {
+          cannotCompleteReason: 'target-not-found',
+          truncatedContext: true,
+        });
+      }
+      return answerStep('Which link?', partialUp, 'needs-clarification');
+    });
+    const executor = new FakeV3Executor([succeeded(partialUp)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Which link?');
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(stepAgent.calls.length, 4);
+    assert.equal(
+      stepAgent.calls[1]?.options?.trustedProgress?.some(
+        (entry) => entry.kind === 'target-search-not-exhausted',
+      ),
+      true,
+    );
+    assert.equal(
+      stepAgent.calls[3]?.options?.trustedProgress?.some(
+        (entry) => entry.kind === 'target-search-not-exhausted',
+      ),
+      true,
+    );
+  });
+
+  it('re-checks exported targets after corrective replan without unnecessary scroll', async () => {
+    const page = electronTestingObservation(0, true);
+    page.viewport = {
+      width: 800,
+      height: 600,
+      scrollX: 0,
+      scrollY: 0,
+      deviceScaleFactor: 1,
+      documentHeight: 2400,
+    };
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex === 1) {
+        return answerStep('Missing.', page, 'cannot-complete', {
+          cannotCompleteReason: 'target-not-found',
+        });
+      }
+      return proposalStep(
+        boundClick(page.document.revision, WEBDRIVERIO_TARGET, page.observationId),
+        page,
+        {
+          continuation: 'complete-on-success',
+          onSuccessText: 'Opened WebDriverIO.',
+        },
+      );
+    });
+    const executor = new FakeV3Executor([succeededPopup(destObservation())]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'completed');
+    assert.equal(executor.calls.length, 1);
+    assert.equal(executor.calls[0]?.proposal.kind, 'click');
+    assert.equal(
+      stepAgent.calls[1]?.options?.trustedProgress?.some(
+        (entry) => entry.kind === 'target-search-not-exhausted',
+      ),
+      true,
+    );
+    const serialized = serializeTrustedRunProgress(
+      stepAgent.calls[1]?.options?.trustedProgress,
+    );
+    assert.match(serialized ?? '', /Re-check the currently exported actionable targets first/);
   });
 
   it('allows target-not-found after four discovery scrolls without a fifth dispatch', async () => {
