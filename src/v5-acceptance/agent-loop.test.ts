@@ -80,7 +80,12 @@ describe('V5 agent loop acceptance', () => {
       runtime: stepScriptRuntime([
         () => ({ kind: 'interaction', proposal: { kind: 'click', targetId: 'target-next' } }),
         () => ({ kind: 'interaction', proposal: { kind: 'click', targetId: 'target-b' } }),
-        () => ({ kind: 'answer', text: 'Navigation done.', referencedTargets: [] }),
+        () => ({
+          kind: 'answer',
+          disposition: 'informational',
+          text: 'Navigation done.',
+          referencedTargets: [],
+        }),
       ]),
       observation: [pageA, pageB],
     });
@@ -127,7 +132,12 @@ describe('V5 agent loop acceptance', () => {
     const runtime = stepScriptRuntime([
       () => ({ kind: 'interaction', proposal: { kind: 'click', targetId: 'target-a' } }),
       () => ({ kind: 'interaction', proposal: { kind: 'click', targetId: 'target-b' } }),
-      () => ({ kind: 'answer', text: 'Task complete.', referencedTargets: [] }),
+      () => ({
+        kind: 'answer',
+        disposition: 'informational',
+        text: 'Task complete.',
+        referencedTargets: [],
+      }),
     ]);
     const chain = createV5ProductChain({
       adapter,
@@ -591,7 +601,12 @@ describe('V5 agent loop acceptance', () => {
       targetRegistry: registry,
       runtime: stepScriptRuntime([
         () => ({ kind: 'interaction', proposal: { kind: 'click', targetId: 'target-a' } }),
-        () => ({ kind: 'answer', text: 'done', referencedTargets: [] }),
+        () => ({
+          kind: 'answer',
+          disposition: 'informational',
+          text: 'done',
+          referencedTargets: [],
+        }),
       ]),
       observation: page,
     });

@@ -2824,7 +2824,7 @@ describe('SafeAgentLoop false completion guard', () => {
     await waitUntil(() => stepAgent.calls.length >= 2);
     assert.equal(coordinator.getRun(run.runId)?.state, 'running');
     assert.equal(deltas.join('').includes(FALSE_CLICK_TEXT), false);
-    assert.equal(stepAgent.calls[1]?.options?.trustedProgress?.[0]?.kind, 'no-browser-action-yet');
+    assert.equal(stepAgent.calls[1]?.options?.trustedProgress?.[0]?.kind, 'no-verified-task-effect-yet');
     hold.resolve(answerStep('Could not find WebDriverIO.', obs, 'cannot-complete'));
     const result = await pending;
     assert.equal(result.status, 'completed');
@@ -3131,6 +3131,312 @@ describe('SafeAgentLoop false completion guard', () => {
     }
     assert.equal(executor.calls.length, 1);
     assert.equal(stepAgent.calls.length, 2);
+  });
+
+  it('does not complete from task-complete after a dispatch-only click', async () => {
+    const page = observation();
+    const hold = new Deferred<InteractiveStepResult>();
+    const deltas: string[] = [];
+    const stepAgent = new FakeStepAgent(async (_request, options, callIndex) => {
+      if (callIndex === 1) {
+        return proposalStep(boundClick(), page);
+      }
+      if (callIndex === 2) {
+        options?.onAnswerTextDelta?.(FALSE_CLICK_TEXT);
+        return answerStep(FALSE_CLICK_TEXT, page, 'task-complete');
+      }
+      return hold.promise;
+    });
+    const executor = new FakeV3Executor([succeeded(page)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const run = start(coordinator, 'klicka på WebDriverIO');
+    const pending = loop.run(refOf(run), {
+      onAnswerTextDelta: (text) => {
+        deltas.push(text);
+      },
+    });
+    await waitUntil(() => stepAgent.calls.length >= 3);
+    assert.equal(coordinator.getRun(run.runId)?.state, 'running');
+    assert.equal(deltas.join('').includes(FALSE_CLICK_TEXT), false);
+    assert.equal(
+      stepAgent.calls[1]?.options?.trustedProgress?.some(
+        (entry) => entry.kind === 'safe-interaction-dispatched',
+      ),
+      true,
+    );
+    assert.equal(
+      stepAgent.calls[2]?.options?.trustedProgress?.some(
+        (entry) => entry.kind === 'no-verified-task-effect-yet',
+      ),
+      true,
+    );
+    hold.resolve(answerStep('The click could not be verified.', page, 'cannot-complete'));
+    const result = await pending;
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'The click could not be verified.');
+      assert.notEqual(result.answer.text, FALSE_CLICK_TEXT);
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(executor.calls[0]?.proposal.kind, 'click');
+  });
+
+  it('fails bounded when task-complete is repeated after a dispatch-only click', async () => {
+    const page = observation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), page),
+      answerStep(FALSE_CLICK_TEXT, page, 'task-complete'),
+      answerStep(FALSE_CLICK_TEXT, page, 'task-complete'),
+    ]);
+    const executor = new FakeV3Executor([succeeded(page)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'MODEL_FAILED');
+      assert.equal(result.run.modelErrorCode, 'MODEL_OUTPUT_INVALID');
+      assert.notEqual(result.run.state, 'completed');
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(stepAgent.calls.length, 3);
+  });
+
+  it('allows task-complete after a verified URL navigation', async () => {
+    const source = observation();
+    const destination = observation({
+      observationId: 'obs-dest',
+      document: {
+        ...source.document,
+        revision: 'rev-docs',
+        url: 'https://webdriver.io/',
+      },
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), source),
+      answerStep(FALSE_CLICK_TEXT, destination, 'task-complete'),
+    ]);
+    const executor = new FakeV3Executor([succeeded(destination)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, FALSE_CLICK_TEXT);
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(stepAgent.calls.length, 2);
+    assert.equal(stepAgent.calls[1]?.options?.trustedProgress?.[0]?.kind, 'safe-navigation-succeeded');
+  });
+
+  it('allows task-complete after a verified local observable effect', async () => {
+    const before = observation({
+      nodes: [
+        node({
+          targetId: 'target-1',
+          role: 'checkbox',
+          name: 'Agree',
+          tag: 'input',
+          interactive: true,
+          states: { checked: false },
+        }),
+      ],
+    });
+    const after = observation({
+      observationId: 'obs-checked',
+      nodes: [
+        node({
+          targetId: 'target-1',
+          role: 'checkbox',
+          name: 'Agree',
+          tag: 'input',
+          interactive: true,
+          states: { checked: true },
+        }),
+      ],
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), before),
+      answerStep('Checked the box.', after, 'task-complete'),
+    ]);
+    const executor = new FakeV3Executor([succeeded(after)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Check the box.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Checked the box.');
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(
+      stepAgent.calls[1]?.options?.trustedProgress?.some(
+        (entry) => entry.kind === 'safe-interaction-succeeded',
+      ),
+      true,
+    );
+  });
+
+  it('treats a non-click document revision change as a verified page effect, not navigation', async () => {
+    const before = observation({
+      nodes: [
+        node({
+          targetId: 'target-1',
+          role: 'textbox',
+          name: 'Search',
+          tag: 'input',
+          interactive: true,
+          value: '',
+        }),
+      ],
+    });
+    const after = observation({
+      observationId: 'obs-typed',
+      document: { ...before.document, revision: 'rev-typed' },
+      nodes: [
+        node({
+          targetId: 'target-1',
+          role: 'textbox',
+          name: 'Search',
+          tag: 'input',
+          interactive: true,
+          value: 'hello',
+        }),
+      ],
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundType(), before),
+      answerStep('Typed the query.', after, 'task-complete'),
+    ]);
+    const executor = new FakeV3Executor([succeeded(after)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Type hello.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Typed the query.');
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(stepAgent.calls[1]?.options?.trustedProgress?.[0]?.kind, 'safe-interaction-succeeded');
+    assert.notEqual(
+      stepAgent.calls[1]?.options?.trustedProgress?.[0]?.kind,
+      'safe-navigation-succeeded',
+    );
+  });
+
+  it('counts a click document revision change as verified navigation', async () => {
+    const source = observation();
+    const after = observation({
+      observationId: 'obs-rev',
+      document: { ...source.document, revision: 'rev-after' },
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), source),
+      answerStep('Moved in the document.', after, 'task-complete'),
+    ]);
+    const executor = new FakeV3Executor([succeeded(after)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click next.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Moved in the document.');
+    }
+    assert.equal(stepAgent.calls[1]?.options?.trustedProgress?.[0]?.kind, 'safe-navigation-succeeded');
+  });
+
+  it('allows task-complete after trusted V4 execute with no observable page change', async () => {
+    const obs = observation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), obs),
+      answerStep('Submitted.', obs, 'task-complete'),
+    ]);
+    const executor = new FakeV3Executor([denied('DEFERRED_TO_EXECUTE')]);
+    const coordinator = new AgentRunCoordinator();
+    const approvalPort = new FakeApprovalPort(coordinator);
+    const loop = new SafeAgentLoop({
+      coordinator,
+      stepAgent,
+      interactionExecutor: executor,
+      approvalPort,
+    });
+    const run = start(coordinator, 'Submit the form.');
+    const pending = loop.run(refOf(run));
+    await waitUntil(() => coordinator.getRun(run.runId)?.state === 'awaiting-approval');
+    completeApprovedExecution(coordinator, approvalPort.lastApprovalId ?? '');
+    const result = await pending;
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Submitted.');
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(stepAgent.calls.length, 2);
+    assert.equal(stepAgent.calls[1]?.options?.trustedProgress?.[0]?.kind, 'approved-execution-succeeded');
+    assert.equal(
+      stepAgent.calls[1]?.options?.trustedProgress?.some(
+        (entry) => entry.kind === 'safe-interaction-dispatched',
+      ),
+      false,
+    );
+  });
+
+  it('does not treat a V3 dispatch-only click as V4 approved execution evidence', async () => {
+    const page = observation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), page),
+      answerStep(FALSE_CLICK_TEXT, page, 'task-complete'),
+      answerStep('Could not verify the click.', page, 'cannot-complete'),
+    ]);
+    const executor = new FakeV3Executor([succeeded(page)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Could not verify the click.');
+      assert.notEqual(result.answer.text, FALSE_CLICK_TEXT);
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(
+      JSON.stringify(stepAgent.calls[1]?.options?.trustedProgress ?? []).includes(
+        'approved-execution-succeeded',
+      ),
+      false,
+    );
+    assert.equal(
+      stepAgent.calls[1]?.options?.trustedProgress?.some(
+        (entry) => entry.kind === 'safe-interaction-dispatched',
+      ),
+      true,
+    );
+  });
+
+  it('does not carry dispatch-only evidence into a later run', async () => {
+    const page = observation();
+    const firstAgent = new FakeStepAgent([
+      proposalStep(boundClick(), page),
+      answerStep('Still on the page.', page, 'cannot-complete'),
+    ]);
+    const firstExecutor = new FakeV3Executor([succeeded(page)]);
+    const first = createLoop({ stepAgent: firstAgent, executor: firstExecutor });
+    const firstResult = await first.loop.run(refOf(start(first.coordinator, 'klicka på WebDriverIO')));
+    assert.equal(firstResult.status, 'completed');
+    assert.equal(firstExecutor.calls.length, 1);
+
+    const secondAgent = new FakeStepAgent([
+      answerStep(FALSE_CLICK_TEXT, page, 'task-complete'),
+      answerStep('Need a fresh click.', page, 'cannot-complete'),
+    ]);
+    const secondExecutor = new FakeV3Executor([]);
+    const second = createLoop({ stepAgent: secondAgent, executor: secondExecutor });
+    const secondResult = await second.loop.run(
+      refOf(start(second.coordinator, 'klicka på WebDriverIO')),
+    );
+    assert.equal(secondResult.status, 'completed');
+    if (secondResult.status === 'completed') {
+      assert.equal(secondResult.answer.text, 'Need a fresh click.');
+      assert.notEqual(secondResult.answer.text, FALSE_CLICK_TEXT);
+    }
+    assert.equal(secondExecutor.calls.length, 0);
+    assert.equal(
+      secondAgent.calls[1]?.options?.trustedProgress?.some(
+        (entry) => entry.kind === 'no-verified-task-effect-yet',
+      ),
+      true,
+    );
   });
 });
 

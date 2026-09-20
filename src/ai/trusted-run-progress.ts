@@ -34,7 +34,7 @@ export type TrustedRunProgressEntry =
       readonly actionKind: TrustedRunProgressActionKind;
     }
   | {
-      readonly kind: 'no-browser-action-yet';
+      readonly kind: 'no-verified-task-effect-yet';
     };
 
 const TRUSTED_PROGRESS_DISCLAIMER = [
@@ -82,11 +82,11 @@ function summarizeTrustedProgressEntry(
   entry: TrustedRunProgressEntry,
   options: TrustedProgressSummaryOptions = { isLatestNavigationSuccess: false },
 ): string {
-  if (entry.kind === 'no-browser-action-yet') {
+  if (entry.kind === 'no-verified-task-effect-yet') {
     return [
-      'No browser action has successfully executed in this current task.',
-      'Do not claim that a click, navigation, typing, selection, submission, or other browser action occurred.',
-      'Either propose the required interaction, explain that it cannot be performed, or ask for clarification.',
+      'A browser primitive may have been dispatched, but no trusted observable task effect has been verified in this current task.',
+      'Do not claim that the requested browser action completed.',
+      'Re-evaluate current state and either propose the necessary next interaction, explain that completion cannot be verified, or request clarification.',
     ].join(' ');
   }
 

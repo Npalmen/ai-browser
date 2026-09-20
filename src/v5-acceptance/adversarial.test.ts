@@ -87,7 +87,12 @@ describe('V5 adversarial acceptance', () => {
       runtime: stepScriptRuntime([
         () => ({ kind: 'interaction', proposal: { kind: 'click', targetId: 'target-repeat' } }),
         () => ({ kind: 'interaction', proposal: { kind: 'click', targetId: 'target-repeat-b' } }),
-        () => ({ kind: 'answer', text: 'done', referencedTargets: [] }),
+        () => ({
+          kind: 'answer',
+          disposition: 'informational',
+          text: 'done',
+          referencedTargets: [],
+        }),
       ]),
       observation: [pageA, pageB],
     });

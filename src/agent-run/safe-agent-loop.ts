@@ -103,9 +103,10 @@ interface RunLocalBudgets {
 }
 
 interface TrustedRunActionEvidence {
-  successfulBrowserActions: number;
-  successfulSemanticActions: number;
-  successfulNavigations: number;
+  successfulBrowserDispatches: number;
+  verifiedObservableEffects: number;
+  verifiedNavigations: number;
+  approvedExecutions: number;
   lastTrustedEffect: TrustedActionEffect | undefined;
 }
 
@@ -134,29 +135,41 @@ function createRunLocalBudgets(): RunLocalBudgets {
 
 function createTrustedRunActionEvidence(): TrustedRunActionEvidence {
   return {
-    successfulBrowserActions: 0,
-    successfulSemanticActions: 0,
-    successfulNavigations: 0,
+    successfulBrowserDispatches: 0,
+    verifiedObservableEffects: 0,
+    verifiedNavigations: 0,
+    approvedExecutions: 0,
     lastTrustedEffect: undefined,
   };
 }
 
 function hasTrustedTaskCompletionEvidence(evidence: TrustedRunActionEvidence): boolean {
-  return evidence.successfulSemanticActions > 0 || evidence.successfulNavigations > 0;
+  return (
+    evidence.verifiedNavigations > 0 ||
+    evidence.verifiedObservableEffects > 0 ||
+    evidence.approvedExecutions > 0
+  );
 }
 
 function recordTrustedActionEvidence(
   evidence: TrustedRunActionEvidence,
   effect: TrustedActionEffect,
 ): void {
-  evidence.successfulBrowserActions += 1;
-  if (effect.actionKind !== 'scroll') {
-    evidence.successfulSemanticActions += 1;
-  }
+  evidence.successfulBrowserDispatches += 1;
   if (effect.navigation) {
-    evidence.successfulNavigations += 1;
+    evidence.verifiedNavigations += 1;
+  } else if (
+    effect.actionKind !== 'scroll' &&
+    (effect.pageChanged || effect.observableStateChanged)
+  ) {
+    evidence.verifiedObservableEffects += 1;
   }
   evidence.lastTrustedEffect = effect;
+}
+
+function recordApprovedExecutionEvidence(evidence: TrustedRunActionEvidence): void {
+  evidence.successfulBrowserDispatches += 1;
+  evidence.approvedExecutions += 1;
 }
 
 function isViewportDiscoveryScroll(proposal: BoundInteractionProposal): boolean {
@@ -385,7 +398,10 @@ export class SafeAgentLoop {
     const disposition: AgentAnswerDisposition = step.disposition;
     logAgentLoopAnswerReceived({
       disposition,
-      trustedActions: evidence.successfulSemanticActions + evidence.successfulNavigations,
+      browserDispatches: evidence.successfulBrowserDispatches,
+      verifiedEffects: evidence.verifiedObservableEffects,
+      navigations: evidence.verifiedNavigations,
+      approvedExecutions: evidence.approvedExecutions,
       iteration: context.iteration,
     });
 
@@ -407,7 +423,7 @@ export class SafeAgentLoop {
         };
       }
       logAgentLoopFalseCompletionReplan(context.iteration);
-      trustedProgress.push({ kind: 'no-browser-action-yet' });
+      trustedProgress.push({ kind: 'no-verified-task-effect-yet' });
       return { kind: 'replan' };
     }
 
@@ -788,8 +804,7 @@ export class SafeAgentLoop {
         trustedProgress.push({
           kind: 'approved-execution-succeeded',
         });
-        evidence.successfulBrowserActions += 1;
-        evidence.successfulSemanticActions += 1;
+        recordApprovedExecutionEvidence(evidence);
         logAgentLoopTrustedActionSuccess({
           kind: 'execute',
           navigated: false,

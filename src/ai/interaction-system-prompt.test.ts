@@ -44,5 +44,13 @@ describe('INTERACTION_SYSTEM_PROMPT precedence', () => {
     assert.match(INTERACTION_SYSTEM_PROMPT, /current page observation is the current browser state/);
     assert.match(INTERACTION_SYSTEM_PROMPT, /disposition must be informational/);
     assert.match(INTERACTION_SYSTEM_PROMPT, /task-complete is not proof/);
+    assert.match(
+      INTERACTION_SYSTEM_PROMPT,
+      /Never use informational, cannot-complete, or needs-clarification to claim/,
+    );
+    assert.match(
+      INTERACTION_SYSTEM_PROMPT,
+      /dispatched primitive without a verified observable effect is not completion evidence/,
+    );
   });
 });

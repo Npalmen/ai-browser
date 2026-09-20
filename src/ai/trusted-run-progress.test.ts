@@ -97,11 +97,15 @@ describe('trusted run progress', () => {
     }
   });
 
-  it('serializes no-browser-action-yet without page content or target ids', () => {
-    const serialized = serializeTrustedRunProgress([{ kind: 'no-browser-action-yet' }]);
+  it('serializes no-verified-task-effect-yet without page content or target ids', () => {
+    const serialized = serializeTrustedRunProgress([{ kind: 'no-verified-task-effect-yet' }]);
     assert.ok(serialized);
-    assert.match(serialized, /No browser action has successfully executed in this current task/);
-    assert.match(serialized, /Do not claim that a click, navigation, typing, selection, submission/);
+    assert.match(
+      serialized,
+      /A browser primitive may have been dispatched, but no trusted observable task effect has been verified/,
+    );
+    assert.match(serialized, /Do not claim that the requested browser action completed/);
+    assert.match(serialized, /completion cannot be verified/);
     assert.doesNotMatch(serialized, /targetId/i);
     assert.doesNotMatch(serialized, /https?:\/\//);
     assert.doesNotMatch(serialized, /WebDriverIO/);

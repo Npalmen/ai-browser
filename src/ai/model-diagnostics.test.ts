@@ -108,10 +108,13 @@ describe('model diagnostics formatting', () => {
     assert.equal(
       formatAgentLoopAnswerReceived({
         disposition: 'task-complete',
-        trustedActions: 0,
+        browserDispatches: 1,
+        verifiedEffects: 0,
+        navigations: 0,
+        approvedExecutions: 0,
         iteration: 1,
       }),
-      '[agent-loop] answer-received disposition=task-complete trustedActions=0 iteration=1',
+      '[agent-loop] answer-received disposition=task-complete browserDispatches=1 verifiedEffects=0 navigations=0 approvedExecutions=0 iteration=1',
     );
     assert.equal(
       formatAgentLoopFalseCompletionReplan(1),

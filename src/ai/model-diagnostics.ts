@@ -142,13 +142,19 @@ function sanitizeAllowlisted(value: string, allowed: Set<string>, fallback: stri
 
 export function formatAgentLoopAnswerReceived(diagnostics: {
   readonly disposition: string;
-  readonly trustedActions: number;
+  readonly browserDispatches: number;
+  readonly verifiedEffects: number;
+  readonly navigations: number;
+  readonly approvedExecutions: number;
   readonly iteration: number;
 }): string {
   return [
     '[agent-loop] answer-received',
     `disposition=${sanitizeAllowlisted(diagnostics.disposition, SAFE_ANSWER_DISPOSITIONS, 'unknown')}`,
-    `trustedActions=${Math.max(0, Math.floor(diagnostics.trustedActions))}`,
+    `browserDispatches=${Math.max(0, Math.floor(diagnostics.browserDispatches))}`,
+    `verifiedEffects=${Math.max(0, Math.floor(diagnostics.verifiedEffects))}`,
+    `navigations=${Math.max(0, Math.floor(diagnostics.navigations))}`,
+    `approvedExecutions=${Math.max(0, Math.floor(diagnostics.approvedExecutions))}`,
     `iteration=${Math.max(0, Math.floor(diagnostics.iteration))}`,
   ].join(' ');
 }
