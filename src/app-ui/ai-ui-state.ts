@@ -383,7 +383,7 @@ function applyAskProgress(tab: TabAiUiState, event: Exclude<AiAnswerEvent, { typ
     updated = {
       ...entry,
       status: 'unknown',
-      text: 'The last approved action may have occurred. The task was stopped to avoid repeating it.',
+      text: 'The last action may have occurred. The task was stopped to avoid repeating it.',
     };
   }
 

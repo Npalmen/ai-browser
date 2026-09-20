@@ -56,6 +56,9 @@ const INTERACTION_SAFE_CODES = new Set<AiSafeErrorCode>([
   'REQUEST_CANCELLED',
   'TAB_NOT_FOUND',
   'PAGE_NOT_READY',
+  'PAGE_CHANGED_DURING_OBSERVATION',
+  'OBSERVATION_IN_PROGRESS',
+  'OBSERVATION_FAILED',
 ]);
 
 export function aiSafeError(code: AiSafeErrorCode): AiSafeError {

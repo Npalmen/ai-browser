@@ -240,6 +240,9 @@ function summarizeInteractionResult(proposalKind: string, result: InteractionRes
   if (result.status === 'denied') {
     return `[interaction ${proposalKind} denied]`;
   }
+  if (result.status === 'execution-state-unknown') {
+    return `[interaction ${proposalKind} execution-state-unknown]`;
+  }
   return `[interaction ${proposalKind} failed]`;
 }
 

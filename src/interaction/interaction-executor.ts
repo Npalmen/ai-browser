@@ -6,7 +6,7 @@ import type {
   AdapterTargetRef,
 } from '../browser/interaction-adapter-types';
 import type { PageState } from '../shared/browser-types';
-import { InteractionError } from '../shared/interaction-errors';
+import { InteractionError, type InteractionErrorCode } from '../shared/interaction-errors';
 import type {
   BoundInteractionProposal,
   InteractionGrant,
@@ -14,9 +14,18 @@ import type {
   InteractionPolicyDenyDecision,
   InteractionResult,
 } from '../shared/interaction-types';
-import type { ObservationNode, PageObservation } from '../shared/observation-types';
+import {
+  ObservationError,
+  type ObservationNode,
+  type PageObservation,
+} from '../shared/observation-types';
 import type { TargetRegistry } from '../observation/target-registry';
-import { buildInteractionAuditEvent, type InteractionAuditSink } from './interaction-audit';
+import {
+  buildInteractionAuditEvent,
+  type InteractionAuditFailureStage,
+  type InteractionAuditResultStatus,
+  type InteractionAuditSink,
+} from './interaction-audit';
 import {
   assertGrantMatchesProposal,
   isAllowPolicyDecision,
@@ -25,12 +34,17 @@ import {
 import { classifyInteraction } from './interaction-policy';
 import { resolveInteractionTarget, type ResolvedInteractionTarget } from './target-resolver';
 
+const POST_NAVIGATION_OBSERVATION_ATTEMPTS = 3;
+const POST_NAVIGATION_LOADING_POLLS = 20;
+const POST_NAVIGATION_RETRY_DELAY_MS = 50;
+
 export interface InteractionExecutorDependencies {
   adapter: BrowserAdapter;
   targetRegistry: TargetRegistry;
   audit: InteractionAuditSink;
   generateActionId?: () => string;
   now?: () => number;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
 export interface ExecuteInteractionInput {
@@ -122,75 +136,174 @@ export class InteractionExecutor {
       stage.adapterPrimitiveInvoked = true;
       await this.dispatchGrantedAction(grant, proposal, observation, policyContext);
 
-      try {
-        const freshObservation = await this.deps.adapter.observePage(proposal.tabId);
-        const pageState = await this.deps.adapter.getPageState(proposal.tabId);
-
-        this.appendAudit({
-          actionId,
-          timestamp,
-          proposal,
-          stage,
-          resultStatus: 'succeeded',
-          documentRevisionAfter: freshObservation.document.revision,
-        });
-
-        return {
-          actionId,
-          status: 'succeeded',
-          pageState,
-          observation: freshObservation,
-        };
-      } catch (error: unknown) {
-        const pageState = await this.safePageState(proposal.tabId);
-        const errorCode = mapExecutionError(error);
-
-        this.appendAudit({
-          actionId,
-          timestamp,
-          proposal,
-          stage,
-          resultStatus: 'failed',
-          errorCode,
-        });
-
-        return {
-          actionId,
-          status: 'failed',
-          pageState,
-          errorCode,
-        };
-      }
+      return await this.collectPostActionResult({
+        actionId,
+        timestamp,
+        proposal,
+        stage,
+        signal,
+      });
     } catch (error: unknown) {
       if (stage.adapterPrimitiveInvoked && stage.grant && stage.decision && isAllowPolicyDecision(stage.decision)) {
-        const pageState = await this.safePageState(proposal.tabId);
-        const errorCode = mapExecutionError(error);
-
-        this.appendAudit({
+        return this.finishAfterPrimitive({
           actionId,
           timestamp,
           proposal,
           stage,
-          resultStatus: 'failed',
-          errorCode,
+          error,
+          failureStage: 'adapter-primitive',
         });
-
-        return {
-          actionId,
-          status: 'failed',
-          pageState,
-          errorCode,
-        };
       }
 
+      const errorCode = mapExecutionError(error);
       return this.finishExecutionFailed({
         actionId,
         timestamp,
         proposal,
         error,
         stage,
+        failureStage: isTargetResolutionFailure(errorCode) ? 'target-resolution' : undefined,
       });
     }
+  }
+
+  private async collectPostActionResult(input: {
+    actionId: string;
+    timestamp: number;
+    proposal: BoundInteractionProposal;
+    stage: ExecutionStageState;
+    signal?: AbortSignal;
+  }): Promise<InteractionResult> {
+    const navigationClick = isNavigationClick(input.proposal, input.stage);
+
+    try {
+      if (navigationClick) {
+        await this.waitWhilePageLoading(input.proposal.tabId, input.signal);
+      }
+
+      const { observation, pageState } = await this.observeAfterAction({
+        tabId: input.proposal.tabId,
+        signal: input.signal,
+        retryTransient: navigationClick,
+      });
+
+      this.appendAudit({
+        actionId: input.actionId,
+        timestamp: input.timestamp,
+        proposal: input.proposal,
+        stage: input.stage,
+        resultStatus: 'succeeded',
+        documentRevisionAfter: observation.document.revision,
+      });
+
+      return {
+        actionId: input.actionId,
+        status: 'succeeded',
+        pageState,
+        observation,
+      };
+    } catch (error: unknown) {
+      return this.finishAfterPrimitive({
+        actionId: input.actionId,
+        timestamp: input.timestamp,
+        proposal: input.proposal,
+        stage: input.stage,
+        error,
+        failureStage: 'post-action-observation',
+        treatAsUnknown: navigationClick,
+      });
+    }
+  }
+
+  private async observeAfterAction(input: {
+    tabId: string;
+    signal?: AbortSignal;
+    retryTransient: boolean;
+  }): Promise<{ observation: PageObservation; pageState: PageState }> {
+    const attempts = input.retryTransient ? POST_NAVIGATION_OBSERVATION_ATTEMPTS : 1;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      this.assertNotCancelled(input.signal);
+      try {
+        const observation = await this.deps.adapter.observePage(input.tabId);
+        const pageState = await this.deps.adapter.getPageState(input.tabId);
+        if (
+          input.retryTransient &&
+          observation.document.loading &&
+          attempt < attempts
+        ) {
+          await this.sleep(POST_NAVIGATION_RETRY_DELAY_MS, input.signal);
+          continue;
+        }
+        return { observation, pageState };
+      } catch (error: unknown) {
+        lastError = error;
+        if (
+          !input.retryTransient ||
+          !isTransientPostNavigationObservationError(error) ||
+          attempt >= attempts
+        ) {
+          throw error;
+        }
+        await this.sleep(POST_NAVIGATION_RETRY_DELAY_MS, input.signal);
+      }
+    }
+
+    throw lastError ?? new InteractionError('INTERACTION_FAILED', 'Post-action observation failed.');
+  }
+
+  private async waitWhilePageLoading(tabId: string, signal?: AbortSignal): Promise<void> {
+    for (let poll = 0; poll < POST_NAVIGATION_LOADING_POLLS; poll += 1) {
+      this.assertNotCancelled(signal);
+      const pageState = await this.safePageState(tabId);
+      if (!pageState.loading) {
+        return;
+      }
+      await this.sleep(POST_NAVIGATION_RETRY_DELAY_MS, signal);
+    }
+  }
+
+  private async finishAfterPrimitive(input: {
+    actionId: string;
+    timestamp: number;
+    proposal: BoundInteractionProposal;
+    stage: ExecutionStageState;
+    error: unknown;
+    failureStage: InteractionAuditFailureStage;
+    treatAsUnknown?: boolean;
+  }): Promise<InteractionResult> {
+    const pageState = await this.safePageState(input.proposal.tabId);
+    const errorCode = mapExecutionError(input.error);
+    const unknown =
+      input.treatAsUnknown === true && errorCode !== 'REQUEST_CANCELLED';
+    const resultStatus: InteractionAuditResultStatus = unknown ? 'execution-state-unknown' : 'failed';
+    const reportedStage: InteractionAuditFailureStage = unknown
+      ? 'execution-state-unknown'
+      : input.failureStage;
+
+    logInteractionDiagnostic(
+      unknown ? 'execution-state-unknown' : input.failureStage,
+      errorCode,
+      input.stage,
+    );
+
+    this.appendAudit({
+      actionId: input.actionId,
+      timestamp: input.timestamp,
+      proposal: input.proposal,
+      stage: input.stage,
+      resultStatus,
+      errorCode,
+      failureStage: reportedStage,
+    });
+
+    return {
+      actionId: input.actionId,
+      status: unknown ? 'execution-state-unknown' : 'failed',
+      pageState,
+      errorCode,
+    };
   }
 
   private async dispatchGrantedAction(
@@ -325,6 +438,12 @@ export class InteractionExecutor {
       },
       resultStatus: 'denied',
       errorCode: input.decision.errorCode,
+      failureStage: 'policy',
+    });
+
+    logInteractionDiagnostic('policy', input.decision.errorCode, {
+      adapterPrimitiveInvoked: false,
+      decision: input.decision,
     });
 
     return {
@@ -342,9 +461,14 @@ export class InteractionExecutor {
     error?: unknown;
     errorCode?: InteractionResult['errorCode'];
     stage: ExecutionStageState;
+    failureStage?: InteractionAuditFailureStage;
   }): Promise<InteractionResult> {
     const pageState = await this.safePageState(input.proposal.tabId);
     const errorCode = input.errorCode ?? mapExecutionError(input.error);
+
+    if (input.failureStage) {
+      logInteractionDiagnostic(input.failureStage, errorCode, input.stage);
+    }
 
     this.appendAudit({
       actionId: input.actionId,
@@ -353,6 +477,7 @@ export class InteractionExecutor {
       stage: input.stage,
       resultStatus: 'failed',
       errorCode,
+      failureStage: input.failureStage,
     });
 
     return {
@@ -368,8 +493,9 @@ export class InteractionExecutor {
     timestamp: number;
     proposal: BoundInteractionProposal;
     stage: ExecutionStageState;
-    resultStatus: 'succeeded' | 'failed' | 'denied';
+    resultStatus: InteractionAuditResultStatus;
     errorCode?: InteractionResult['errorCode'];
+    failureStage?: InteractionAuditFailureStage;
     documentRevisionAfter?: string;
   }): void {
     const allowDecision =
@@ -386,6 +512,7 @@ export class InteractionExecutor {
         adapterPrimitiveInvoked: input.stage.adapterPrimitiveInvoked,
         resultStatus: input.resultStatus,
         errorCode: input.errorCode,
+        failureStage: input.failureStage,
         documentRevisionAfter: input.documentRevisionAfter,
       }),
     );
@@ -411,6 +538,11 @@ export class InteractionExecutor {
       throw new InteractionError('REQUEST_CANCELLED', 'Interaction request was cancelled.');
     }
   }
+
+  private async sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    const impl = this.deps.sleep ?? defaultSleep;
+    await impl(ms, signal);
+  }
 }
 
 function toAdapterTargetRef(resolved: ResolvedInteractionTarget): AdapterTargetRef {
@@ -435,10 +567,97 @@ function toObservedBounds(node: ObservationNode): AdapterObservedBounds | undefi
   };
 }
 
-function mapExecutionError(error: unknown): InteractionResult['errorCode'] {
+function mapExecutionError(error: unknown): InteractionErrorCode {
   if (error instanceof InteractionError) {
     return error.code;
   }
+  if (error instanceof ObservationError) {
+    return mapObservationError(error.code);
+  }
 
   return 'INTERACTION_FAILED';
+}
+
+function mapObservationError(code: ObservationError['code']): InteractionErrorCode {
+  switch (code) {
+    case 'PAGE_NOT_READY':
+      return 'PAGE_NOT_READY';
+    case 'TAB_NOT_FOUND':
+      return 'TAB_NOT_FOUND';
+    case 'PAGE_CHANGED_DURING_OBSERVATION':
+      return 'PAGE_CHANGED_DURING_OBSERVATION';
+    case 'OBSERVATION_IN_PROGRESS':
+      return 'OBSERVATION_IN_PROGRESS';
+    case 'OBSERVATION_FAILED':
+    case 'CDP_UNAVAILABLE':
+      return 'OBSERVATION_FAILED';
+    default:
+      return 'INTERACTION_FAILED';
+  }
+}
+
+function isTransientPostNavigationObservationError(error: unknown): boolean {
+  if (error instanceof ObservationError) {
+    return (
+      error.code === 'PAGE_NOT_READY' ||
+      error.code === 'PAGE_CHANGED_DURING_OBSERVATION' ||
+      error.code === 'OBSERVATION_IN_PROGRESS' ||
+      error.code === 'CDP_UNAVAILABLE'
+    );
+  }
+  if (error instanceof InteractionError) {
+    return error.code === 'PAGE_NOT_READY' || error.code === 'PAGE_CHANGED_DURING_OBSERVATION';
+  }
+  return false;
+}
+
+function isNavigationClick(proposal: BoundInteractionProposal, stage: ExecutionStageState): boolean {
+  return proposal.kind === 'click' && stage.decision?.outcome === 'ALLOW_NAVIGATE';
+}
+
+function isTargetResolutionFailure(errorCode: InteractionErrorCode): boolean {
+  return (
+    errorCode === 'TARGET_STALE' ||
+    errorCode === 'TARGET_NOT_FOUND' ||
+    errorCode === 'TARGET_NOT_EXPORTED' ||
+    errorCode === 'PAGE_CHANGED' ||
+    errorCode === 'UNSUPPORTED_FRAME'
+  );
+}
+
+function logInteractionDiagnostic(
+  stage: InteractionAuditFailureStage,
+  errorCode: InteractionErrorCode,
+  stageState: Pick<ExecutionStageState, 'adapterPrimitiveInvoked' | 'decision'>,
+): void {
+  const authority =
+    stageState.decision && isAllowPolicyDecision(stageState.decision)
+      ? stageState.decision.authority
+      : 'none';
+  console.log(
+    `[interaction] ${stage} errorCode=${errorCode} adapterPrimitiveInvoked=${stageState.adapterPrimitiveInvoked} authority=${authority}`,
+  );
+}
+
+function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      cleanup();
+      reject(new InteractionError('REQUEST_CANCELLED', 'Interaction request was cancelled.'));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    if (signal?.aborted) {
+      cleanup();
+      reject(new InteractionError('REQUEST_CANCELLED', 'Interaction request was cancelled.'));
+      return;
+    }
+    signal?.addEventListener('abort', onAbort);
+  });
 }

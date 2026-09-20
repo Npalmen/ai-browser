@@ -40,6 +40,12 @@ describe('trusted run progress', () => {
       serialized,
       /The previously presented consequential click was approved and executed successfully\./,
     );
+    assert.match(
+      serializeTrustedRunProgress([
+        { kind: 'target-selection-denied', actionKind: 'click' },
+      ]) ?? '',
+      /choose an exported link/,
+    );
   });
 
   it('omits page-change claims when approved-execution pageChanged is unknown', () => {

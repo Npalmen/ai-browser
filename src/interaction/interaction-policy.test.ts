@@ -104,6 +104,42 @@ describe('classifyInteraction click', () => {
     assert.equal(decision.outcome, 'ALLOW_NAVIGATE');
   });
 
+  it('denies non-link containers even when they look like search results', () => {
+    const decision = classifyInteraction({
+      proposal: boundClick(),
+      observation: observation(),
+      target: {
+        node: node({
+          role: 'article',
+          tag: 'article',
+          name: 'Electron browser automation',
+        }),
+      },
+    });
+
+    assert.equal(decision.outcome, 'DENY');
+    if (decision.outcome === 'DENY') {
+      assert.equal(decision.errorCode, 'INTERACTION_DENIED');
+    }
+  });
+
+  it('defers suspicious navigation hrefs to approval', () => {
+    const decision = classifyInteraction({
+      proposal: boundClick(),
+      observation: observation(),
+      target: {
+        node: node({
+          role: 'link',
+          tag: 'a',
+          name: 'Checkout',
+          attributes: { href: 'https://example.com/checkout' },
+        }),
+      },
+    });
+
+    assert.equal(decision.outcome, 'DEFER_EXECUTE');
+  });
+
   it('allows role=tab without consequential semantics', () => {
     const decision = classifyInteraction({
       proposal: boundClick(),

@@ -14,6 +14,10 @@ export type TrustedRunProgressEntry =
   | {
       readonly kind: 'approved-execution-succeeded';
       readonly pageChanged?: boolean;
+    }
+  | {
+      readonly kind: 'target-selection-denied';
+      readonly actionKind: TrustedRunProgressActionKind;
     };
 
 const TRUSTED_PROGRESS_DISCLAIMER = [
@@ -40,6 +44,14 @@ export function serializeTrustedRunProgress(
 }
 
 function summarizeTrustedProgressEntry(entry: TrustedRunProgressEntry): string {
+  if (entry.kind === 'target-selection-denied') {
+    return [
+      `The previous ${entry.actionKind} was denied because the selected target was not an allowed actionable control.`,
+      'If the user asked to open or visit a page, choose an exported link (tag a or role link), not a surrounding container.',
+      'This does not grant permission for any future action.',
+    ].join(' ');
+  }
+
   if (entry.kind === 'approved-execution-succeeded') {
     return entry.pageChanged === true
       ? 'The previously presented consequential click was approved and executed successfully and the page changed.'

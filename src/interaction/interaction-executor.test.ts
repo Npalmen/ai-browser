@@ -9,6 +9,7 @@ import type { PageState } from '../shared/browser-types';
 import { InteractionError } from '../shared/interaction-errors';
 import type { BoundInteractionProposal } from '../shared/interaction-types';
 import type { ObservationNode, PageObservation } from '../shared/observation-types';
+import { ObservationError } from '../shared/observation-types';
 import { InMemoryInteractionAuditSink } from './interaction-audit';
 import { InteractionExecutor } from './interaction-executor';
 
@@ -156,6 +157,7 @@ function createExecutor(adapter: BrowserAdapter, registry = new TargetRegistry()
     audit,
     generateActionId: () => 'action-1',
     now: () => 1,
+    sleep: async () => undefined,
   });
   return { executor, audit, registry };
 }
@@ -446,6 +448,104 @@ describe('InteractionExecutor', () => {
     assert.equal(result.status, 'succeeded');
     assert.equal(counts.click, 1);
     assert.equal(counts.observePage, 1);
+  });
+
+  it('retries transient post-navigation observation without retrying the click', async () => {
+    let observeAttempts = 0;
+    const { adapter, counts } = createFakeAdapter({
+      observePage: async () => {
+        observeAttempts += 1;
+        if (observeAttempts === 1) {
+          throw new ObservationError('PAGE_CHANGED_DURING_OBSERVATION', 'document replaced');
+        }
+        return observation(
+          [
+            node({
+              role: 'link',
+              tag: 'a',
+              targetId: 'target-2',
+              name: 'Article',
+              attributes: { href: 'https://example.com/article' },
+            }),
+          ],
+          'rev-2',
+        );
+      },
+    });
+    const { executor, audit, registry } = createExecutor(adapter);
+    registry.replaceObservation('tab-1', 'obs-1', [record('target-1', 1)]);
+
+    const result = await executor.execute({
+      proposal: {
+        kind: 'click',
+        targetId: 'target-1',
+        tabId: 'tab-1',
+        observationId: 'obs-1',
+        documentRevision: 'rev-1',
+      },
+      observation: observation([
+        node({
+          role: 'link',
+          tag: 'a',
+          targetId: 'target-1',
+          name: 'Article',
+          attributes: { href: 'https://example.com/article' },
+        }),
+      ]),
+    });
+
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.observation?.document.revision, 'rev-2');
+    assert.equal(counts.click, 1);
+    assert.equal(counts.observePage, 2);
+
+    const event = lastAuditEvent(audit);
+    assert.equal(event.policyOutcome, 'ALLOW_NAVIGATE');
+    assert.equal(event.adapterPrimitiveInvoked, true);
+    assert.equal(event.resultStatus, 'succeeded');
+  });
+
+  it('reports execution-state-unknown when a navigation click cannot be proven after dispatch', async () => {
+    const { adapter, counts } = createFakeAdapter({
+      observePage: async () => {
+        throw new ObservationError('PAGE_NOT_READY', 'loader transition');
+      },
+    });
+    const { executor, audit, registry } = createExecutor(adapter);
+    registry.replaceObservation('tab-1', 'obs-1', [record('target-1', 1)]);
+
+    const result = await executor.execute({
+      proposal: {
+        kind: 'click',
+        targetId: 'target-1',
+        tabId: 'tab-1',
+        observationId: 'obs-1',
+        documentRevision: 'rev-1',
+      },
+      observation: observation([
+        node({
+          role: 'link',
+          tag: 'a',
+          targetId: 'target-1',
+          name: 'Article',
+          attributes: { href: 'https://example.com/article' },
+        }),
+      ]),
+    });
+
+    assert.equal(result.status, 'execution-state-unknown');
+    assert.equal(result.errorCode, 'PAGE_NOT_READY');
+    assert.equal(result.observation, undefined);
+    assert.equal(counts.click, 1);
+    assert.equal(counts.observePage, 3);
+
+    const event = lastAuditEvent(audit);
+    assert.equal(event.policyOutcome, 'ALLOW_NAVIGATE');
+    assert.equal(event.grantIssued, true);
+    assert.equal(event.adapterPrimitiveInvoked, true);
+    assert.equal(event.resultStatus, 'execution-state-unknown');
+    assert.equal(event.failureStage, 'execution-state-unknown');
+    assert.equal(event.errorCode, 'PAGE_NOT_READY');
   });
 
   it('executes viewport scroll with NAVIGATE authority and re-observes', async () => {

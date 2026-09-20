@@ -23,6 +23,7 @@ export interface InteractiveModelNativeOption {
 
 export interface InteractiveModelPageNode extends ModelPageNode {
   nativeOptions?: InteractiveModelNativeOption[];
+  href?: string;
 }
 
 export interface InteractiveModelPageContext extends ModelPageContext {
@@ -45,7 +46,7 @@ export function buildInteractiveModelPageContext(
   const observationByTargetId = indexObservationNodes(observation.nodes);
 
   let nodes: InteractiveModelPageNode[] = base.context.nodes.map((node) =>
-    enrichNodeWithNativeOptions(
+    enrichInteractiveNode(
       node,
       node.targetId === undefined ? undefined : observationByTargetId.get(node.targetId),
     ),
@@ -158,6 +159,36 @@ function indexObservationNodes(nodes: ObservationNode[]): Map<TargetId, Observat
     }
   }
   return byTargetId;
+}
+
+function enrichInteractiveNode(
+  node: ModelPageNode,
+  observationNode?: ObservationNode,
+): InteractiveModelPageNode {
+  const withOptions = enrichNodeWithNativeOptions(node, observationNode);
+  const href = safeExportedHref(observationNode);
+  if (!href) {
+    return withOptions;
+  }
+  return { ...withOptions, href };
+}
+
+const UNSUPPORTED_EXPORTED_HREF_SCHEMES = /^(javascript|data|file|mailto|tel|blob|about):/i;
+const MAX_EXPORTED_HREF_CHARS = 500;
+
+function safeExportedHref(node?: ObservationNode): string | undefined {
+  if (!node) {
+    return undefined;
+  }
+  const role = node.role.toLowerCase();
+  if (node.tag !== 'a' && role !== 'link') {
+    return undefined;
+  }
+  const href = node.attributes?.href?.trim();
+  if (!href || UNSUPPORTED_EXPORTED_HREF_SCHEMES.test(href)) {
+    return undefined;
+  }
+  return href.length > MAX_EXPORTED_HREF_CHARS ? href.slice(0, MAX_EXPORTED_HREF_CHARS) : href;
 }
 
 function enrichNodeWithNativeOptions(

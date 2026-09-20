@@ -544,7 +544,7 @@ describe('V5 AgentRun UI events', () => {
     assert.equal(assistants(state)[0]?.status, 'unknown');
     assert.match(
       assistants(state)[0]?.text ?? '',
-      /The last approved action may have occurred/,
+      /The last action may have occurred/,
     );
     assert.equal(JSON.stringify(assistants(state)).includes('Retry'), false);
     assert.equal(tab(state).activeAskId, null);

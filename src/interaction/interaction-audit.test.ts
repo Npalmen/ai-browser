@@ -116,6 +116,35 @@ describe('interaction audit', () => {
           actionId: 'action-1',
           timestamp: 1,
           proposal: clickProposal,
+          policyOutcome: 'ALLOW_NAVIGATE',
+          grantIssued: true,
+          grantedAuthority: 'NAVIGATE',
+          adapterPrimitiveInvoked: false,
+          resultStatus: 'execution-state-unknown',
+        }),
+      /execution-state-unknown requires adapterPrimitiveInvoked/,
+    );
+
+    assert.throws(
+      () =>
+        validateInteractionAuditEventInput({
+          actionId: 'action-1',
+          timestamp: 1,
+          proposal: clickProposal,
+          policyOutcome: 'DEFER_EXECUTE',
+          grantIssued: true,
+          adapterPrimitiveInvoked: false,
+          resultStatus: 'denied',
+        }),
+      /grantIssued/,
+    );
+
+    assert.throws(
+      () =>
+        validateInteractionAuditEventInput({
+          actionId: 'action-1',
+          timestamp: 1,
+          proposal: clickProposal,
           policyOutcome: 'DEFER_EXECUTE',
           grantIssued: false,
           adapterPrimitiveInvoked: true,

@@ -275,6 +275,9 @@ export class SafeAgentLoop {
     if (result.status === 'denied') {
       return this.handleDeniedAction(ref, step, result.errorCode, trustedProgress, options);
     }
+    if (result.status === 'execution-state-unknown') {
+      return this.unknownTerminal(ref);
+    }
     return this.handleFailedAction(ref, result.errorCode);
   }
 
@@ -321,6 +324,12 @@ export class SafeAgentLoop {
     if (errorCode === 'DEFERRED_TO_EXECUTE') {
       return this.handleDeferredExecute(ref, step, trustedProgress, options);
     }
+    if (errorCode === 'UNSUPPORTED_TARGET' && step.proposal.kind !== 'click') {
+      return this.blockTerminal(ref, 'UNSUPPORTED_ACTION');
+    }
+    if (isReplannableTargetSelectionDenial(errorCode, step.proposal.kind)) {
+      return this.continueAfterTargetSelectionDenial(ref, step, trustedProgress);
+    }
     if (errorCode === 'UNSUPPORTED_TARGET') {
       return this.blockTerminal(ref, 'UNSUPPORTED_ACTION');
     }
@@ -328,6 +337,27 @@ export class SafeAgentLoop {
       return this.blockTerminal(ref, 'POLICY_BLOCKED');
     }
     return this.blockTerminal(ref, 'POLICY_BLOCKED');
+  }
+
+  private continueAfterTargetSelectionDenial(
+    ref: AgentRunRef,
+    step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'proposal' }>,
+    trustedProgress: TrustedRunProgressEntry[],
+  ): SafeAgentLoopResult | undefined {
+    const recordedFingerprint = this.coordinator.recordSuccessfulActionFingerprint(
+      ref,
+      fingerprintBoundProposal(step.proposal),
+    );
+    const fingerprintStop = this.terminalFromMutation(recordedFingerprint);
+    if (fingerprintStop !== undefined) {
+      return fingerprintStop;
+    }
+
+    trustedProgress.push({
+      kind: 'target-selection-denied',
+      actionKind: step.proposal.kind,
+    });
+    return undefined;
   }
 
   private async handleDeferredExecute(
@@ -505,6 +535,14 @@ export class SafeAgentLoop {
     return this.terminalFromMutation(failed) ?? { status: 'ignored' };
   }
 
+  private unknownTerminal(ref: AgentRunRef): SafeAgentLoopResult {
+    if (!this.coordinator.isCurrentRun(ref)) {
+      return { status: 'ignored' };
+    }
+    const unknown = this.coordinator.markExecutionStateUnknown(ref);
+    return this.terminalFromMutation(unknown) ?? { status: 'ignored' };
+  }
+
   private terminalFromMutation(
     result: AgentRunMutationResult,
   ): SafeAgentLoopResult | undefined {
@@ -524,6 +562,20 @@ export class SafeAgentLoop {
     }
     return snapshot;
   }
+}
+
+function isReplannableTargetSelectionDenial(
+  errorCode: InteractionErrorCode | undefined,
+  proposalKind: BoundInteractionProposal['kind'],
+): boolean {
+  if (proposalKind !== 'click') {
+    return false;
+  }
+  return (
+    errorCode === 'INTERACTION_DENIED' ||
+    errorCode === 'UNSUPPORTED_TARGET' ||
+    errorCode === 'TARGET_NOT_INTERACTIVE'
+  );
 }
 
 function isPolicyDenial(errorCode?: InteractionErrorCode): boolean {

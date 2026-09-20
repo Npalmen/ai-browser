@@ -385,22 +385,54 @@ describe('SafeAgentLoop integration', () => {
 });
 
 describe('SafeAgentLoop termination', () => {
-  it('blocks on V3 DENY without another model step', async () => {
+  it('replans after a click target-selection DENY and does not execute the denied action', async () => {
+    const obs = observation();
+    const deniedTarget = boundClick('rev-a', 'container-1');
+    const linkTarget = boundClick('rev-a', 'link-1');
+    const { coordinator, loop, stepAgent, executor } = (() => {
+      const stepAgent = new FakeStepAgent([
+        proposalStep(deniedTarget, obs),
+        proposalStep(linkTarget, obs),
+        answerStep('Opened', obs),
+      ]);
+      const executor = new FakeV3Executor([
+        denied('INTERACTION_DENIED'),
+        succeeded(observation({ document: { ...obs.document, revision: 'rev-b' } })),
+      ]);
+      return { ...createLoop({ stepAgent, executor }), stepAgent, executor };
+    })();
+    const result = await loop.run(refOf(start(coordinator)));
+    assert.equal(result.status, 'completed');
+    assert.equal(executor.calls.length, 2);
+    assert.equal(executor.calls[0]?.proposal.kind, 'click');
+    assert.equal(executor.calls[1]?.proposal.kind, 'click');
+    if (executor.calls[0]?.proposal.kind === 'click') {
+      assert.equal(executor.calls[0].proposal.targetId, 'container-1');
+    }
+    if (executor.calls[1]?.proposal.kind === 'click') {
+      assert.equal(executor.calls[1].proposal.targetId, 'link-1');
+    }
+    assert.equal(stepAgent.calls.length, 3);
+    assert.equal(stepAgent.calls[1]?.options?.trustedProgress?.[0]?.kind, 'target-selection-denied');
+  });
+
+  it('blocks repeated target-selection denials via no-progress protection', async () => {
+    const obs = observation();
     const { coordinator, loop } = createLoop({
-      stepAgent: new FakeStepAgent([proposalStep(boundClick(), observation())]),
+      stepAgent: new FakeStepAgent([
+        proposalStep(boundClick(), obs),
+        proposalStep(boundClick(), obs),
+      ]),
       executor: new FakeV3Executor([denied('INTERACTION_DENIED')]),
     });
-    const run = start(coordinator);
-    const result = await loop.run(refOf(run));
+    const result = await loop.run(refOf(start(coordinator)));
     assert.equal(result.status, 'terminal');
     if (result.status === 'terminal') {
-      assert.equal(result.run.state, 'blocked');
-      assert.equal(result.run.terminalReason, 'POLICY_BLOCKED');
-      assert.equal(result.run.actionAttemptCount, 1);
+      assert.equal(result.run.terminalReason, 'AGENT_LOOP_NO_PROGRESS');
     }
   });
 
-  it('blocks sensitive typing without approval', async () => {
+  it('does not replan TARGET_SENSITIVE or DEFER_EXECUTE as a target-selection miss', async () => {
     const { coordinator, loop } = createLoop({
       stepAgent: new FakeStepAgent([proposalStep(boundClick(), observation())]),
       executor: new FakeV3Executor([denied('TARGET_SENSITIVE')]),
@@ -436,6 +468,26 @@ describe('SafeAgentLoop termination', () => {
     if (result.status === 'terminal') {
       assert.equal(result.run.state, 'failed');
       assert.equal(result.run.terminalReason, 'ACTION_FAILED');
+    }
+  });
+
+  it('stops as execution-state-unknown after an ambiguous navigation click', async () => {
+    const { coordinator, loop } = createLoop({
+      stepAgent: new FakeStepAgent([proposalStep(boundClick(), observation())]),
+      executor: new FakeV3Executor([
+        {
+          actionId: 'action-1',
+          status: 'execution-state-unknown',
+          pageState: pageState(),
+          errorCode: 'PAGE_NOT_READY',
+        },
+      ]),
+    });
+    const result = await loop.run(refOf(start(coordinator)));
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.state, 'execution-state-unknown');
+      assert.equal(result.run.terminalReason, 'EXECUTION_STATE_UNKNOWN');
     }
   });
 
@@ -1029,15 +1081,15 @@ describe('SafeAgentLoop approval pause and resume', () => {
     const approvalPort = new FakeApprovalPort(coordinator);
     const denyLoop = new SafeAgentLoop({
       coordinator,
-      stepAgent: new FakeStepAgent([proposalStep(boundClick(), observation())]),
+      stepAgent: new FakeStepAgent([
+        proposalStep(boundClick(), observation()),
+        answerStep('stopped', observation()),
+      ]),
       interactionExecutor: new FakeV3Executor([denied('INTERACTION_DENIED')]),
       approvalPort,
     });
     const denyResult = await denyLoop.run(refOf(start(coordinator)));
-    assert.equal(denyResult.status, 'terminal');
-    if (denyResult.status === 'terminal') {
-      assert.equal(denyResult.run.terminalReason, 'POLICY_BLOCKED');
-    }
+    assert.equal(denyResult.status, 'completed');
     assert.equal(approvalPort.calls.length, 0);
 
     const selectPort = new FakeApprovalPort(coordinator);

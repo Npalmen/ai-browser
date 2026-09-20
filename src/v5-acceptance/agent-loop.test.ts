@@ -218,7 +218,7 @@ describe('V5 agent loop acceptance', () => {
     }
   });
 
-  it('blocks on V3 DENY without approval or continuation', async () => {
+  it('does not execute a V3 DENY click and stops without approval', async () => {
     const page = observation(
       [
         node({
@@ -253,7 +253,7 @@ describe('V5 agent loop acceptance', () => {
     assert.equal(result.status, 'terminal');
     if (result.status === 'terminal') {
       assert.equal(result.run.state, 'blocked');
-      assert.equal(result.run.terminalReason, 'POLICY_BLOCKED');
+      assert.equal(result.run.terminalReason, 'AGENT_LOOP_NO_PROGRESS');
     }
     assert.equal(counts.click, 0);
     assert.equal(chain.approvalEvents.some((e) => e.type === 'approval-required'), false);

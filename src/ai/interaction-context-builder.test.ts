@@ -114,6 +114,43 @@ describe('buildInteractiveModelPageContext', () => {
     assert.equal(built.exportedTargetIds.has('option-2'), true);
   });
 
+  it('exports http(s) href only on actual link targets', () => {
+    const built = buildInteractiveModelPageContext(
+      observation([
+        node({
+          targetId: 'result-card',
+          role: 'article',
+          tag: 'article',
+          name: 'Electron browser automation',
+          interactive: true,
+        }),
+        node({
+          targetId: 'result-link',
+          role: 'link',
+          tag: 'a',
+          name: 'Electron browser automation',
+          interactive: true,
+          attributes: { href: 'https://example.com/electron-browser-automation' },
+        }),
+        node({
+          targetId: 'js-link',
+          role: 'link',
+          tag: 'a',
+          name: 'Ignore',
+          interactive: true,
+          attributes: { href: 'javascript:void(0)' },
+        }),
+      ]),
+    );
+
+    const card = built.context.nodes.find((item) => item.targetId === 'result-card');
+    const link = built.context.nodes.find((item) => item.targetId === 'result-link');
+    const jsLink = built.context.nodes.find((item) => item.targetId === 'js-link');
+    assert.equal(card?.href, undefined);
+    assert.equal(link?.href, 'https://example.com/electron-browser-automation');
+    assert.equal(jsLink?.href, undefined);
+  });
+
   it('omits dropped native option target IDs from exportedTargetIds under budget pressure', () => {
     const options = Array.from({ length: 40 }, (_, index) => ({
       targetId: `option-${index}`,
@@ -264,10 +301,63 @@ describe('buildInteractiveModelMessages', () => {
     if (system?.type === 'text') {
       assert.equal(system.text, INTERACTION_SYSTEM_PROMPT);
       assert.notEqual(system.text, READ_ONLY_SYSTEM_PROMPT);
+      assert.match(system.text, /click the exported link target itself/);
     }
     assert.equal(messages.length, 3);
     assert.equal(messages[1]?.role, 'user');
     assert.equal(messages[2]?.role, 'user');
+  });
+
+  it('gives equivalent navigation instructions the same link-preferring prompt and href context', () => {
+    const page = observation([
+      node({
+        targetId: 'result-card',
+        role: 'article',
+        tag: 'article',
+        name: 'First result',
+        interactive: true,
+      }),
+      node({
+        targetId: 'result-link',
+        role: 'link',
+        tag: 'a',
+        name: 'First result',
+        interactive: true,
+        attributes: { href: 'https://example.com/first' },
+      }),
+    ]);
+    const built = buildInteractiveModelPageContext(page);
+    const exportDecision = decideModelExport({
+      privacy: 'remoteAllowed',
+      needsVision: false,
+      allowScreenshotExport: false,
+      profile: {
+        capabilities: { text: true, vision: false, structuredOutput: true, reasoning: false },
+      },
+      hasScreenshot: false,
+    });
+
+    const first = buildInteractiveModelMessages({
+      instruction: 'Öppna det första organiska sökresultatet.',
+      serializedPageContext: built.serialized,
+      exportDecision,
+    });
+    const second = buildInteractiveModelMessages({
+      instruction: 'gå in på den första sidan',
+      serializedPageContext: built.serialized,
+      exportDecision,
+    });
+
+    const firstSystem = first[0]?.content[0];
+    const secondSystem = second[0]?.content[0];
+    assert.equal(firstSystem?.type, 'text');
+    assert.equal(secondSystem?.type, 'text');
+    if (firstSystem?.type === 'text' && secondSystem?.type === 'text') {
+      assert.equal(firstSystem.text, secondSystem.text);
+      assert.match(firstSystem.text, /exported link target/);
+    }
+    assert.equal(built.context.nodes.find((item) => item.targetId === 'result-link')?.href, 'https://example.com/first');
+    assert.equal(built.context.nodes.find((item) => item.targetId === 'result-card')?.href, undefined);
   });
 
   it('places trusted progress in a system message outside UNTRUSTED_PAGE_CONTENT', () => {

@@ -113,7 +113,7 @@ export interface InteractionGrant {
 
 export interface InteractionResult {
   actionId: string;
-  status: 'succeeded' | 'failed' | 'denied';
+  status: 'succeeded' | 'failed' | 'denied' | 'execution-state-unknown';
   pageState: PageState;
   observation?: PageObservation;
   errorCode?: InteractionErrorCode;

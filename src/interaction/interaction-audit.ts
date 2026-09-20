@@ -7,7 +7,19 @@ import type {
 import type { TabId } from '../shared/browser-types';
 import type { DocumentRevision, ObservationId, TargetId } from '../shared/observation-types';
 
-export type InteractionAuditResultStatus = 'succeeded' | 'failed' | 'denied';
+export type InteractionAuditResultStatus =
+  | 'succeeded'
+  | 'failed'
+  | 'denied'
+  | 'execution-state-unknown';
+
+export type InteractionAuditFailureStage =
+  | 'policy'
+  | 'target-resolution'
+  | 'adapter-primitive'
+  | 'post-action-observation'
+  | 'navigation-settle'
+  | 'execution-state-unknown';
 
 export interface InteractionAuditEvent {
   actionId: string;
@@ -24,6 +36,7 @@ export interface InteractionAuditEvent {
   adapterPrimitiveInvoked: boolean;
   resultStatus: InteractionAuditResultStatus;
   errorCode?: InteractionErrorCode;
+  failureStage?: InteractionAuditFailureStage;
   documentRevisionAfter?: DocumentRevision;
 }
 
@@ -59,6 +72,7 @@ export interface BuildInteractionAuditEventInput {
   policyOutcome?: InteractionPolicyOutcome;
   grantedAuthority?: InteractionAuthority;
   errorCode?: InteractionErrorCode;
+  failureStage?: InteractionAuditFailureStage;
   documentRevisionAfter?: DocumentRevision;
 }
 
@@ -81,6 +95,7 @@ export function buildInteractionAuditEvent(input: BuildInteractionAuditEventInpu
     adapterPrimitiveInvoked: input.adapterPrimitiveInvoked,
     resultStatus: input.resultStatus,
     errorCode: input.errorCode,
+    failureStage: input.failureStage,
     documentRevisionAfter: input.documentRevisionAfter,
     ...targetIds,
   };
@@ -115,6 +130,10 @@ export function validateInteractionAuditEventInput(input: BuildInteractionAuditE
 
   if (input.resultStatus === 'denied' && input.policyOutcome !== 'DENY' && input.policyOutcome !== 'DEFER_EXECUTE') {
     throw new Error('Audit event resultStatus denied requires a policy deny or defer outcome.');
+  }
+
+  if (input.resultStatus === 'execution-state-unknown' && input.adapterPrimitiveInvoked !== true) {
+    throw new Error('Audit event resultStatus execution-state-unknown requires adapterPrimitiveInvoked.');
   }
 }
 
