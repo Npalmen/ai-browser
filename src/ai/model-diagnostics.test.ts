@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  formatAgentLoopAnswerReceived,
+  formatAgentLoopCompleteOnSuccessDeferred,
+  formatAgentLoopCompleteOnSuccessHonored,
+  formatAgentLoopFalseCompletionReplan,
   formatAgentLoopModelStepFailed,
+  formatAgentLoopTrustedActionSuccess,
   formatModelRequestFailed,
 } from './model-diagnostics';
 
@@ -97,5 +102,42 @@ describe('model diagnostics formatting', () => {
     assert.doesNotMatch(line, /sk-[A-Za-z0-9]+/);
     assert.doesNotMatch(line, /target-/i);
     assert.doesNotMatch(line, /prompt/i);
+  });
+
+  it('formats false-completion diagnostics without page content', () => {
+    assert.equal(
+      formatAgentLoopAnswerReceived({
+        disposition: 'task-complete',
+        trustedActions: 0,
+        iteration: 1,
+      }),
+      '[agent-loop] answer-received disposition=task-complete trustedActions=0 iteration=1',
+    );
+    assert.equal(
+      formatAgentLoopFalseCompletionReplan(1),
+      '[agent-loop] false-completion-replan iteration=1',
+    );
+    assert.equal(
+      formatAgentLoopTrustedActionSuccess({
+        kind: 'click',
+        navigated: false,
+        observableEffect: false,
+      }),
+      '[agent-loop] trusted-action-success kind=click navigated=false observableEffect=false',
+    );
+    assert.equal(
+      formatAgentLoopCompleteOnSuccessHonored({
+        kind: 'click',
+        evidence: 'navigation',
+      }),
+      '[agent-loop] complete-on-success-honored kind=click evidence=navigation',
+    );
+    assert.equal(
+      formatAgentLoopCompleteOnSuccessDeferred({
+        kind: 'click',
+        reason: 'no-observable-effect',
+      }),
+      '[agent-loop] complete-on-success-deferred kind=click reason=no-observable-effect',
+    );
   });
 });

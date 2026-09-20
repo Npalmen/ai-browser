@@ -57,6 +57,13 @@ export class ConversationStore {
     );
   }
 
+  serializeForActRevision(tabId: TabId, revision: DocumentRevision): string {
+    return serializeActUserContext(
+      this.getTurnsForRevision(tabId, revision),
+      this.maxHistoryChars,
+    );
+  }
+
   commitTurn(tabId: TabId, revision: DocumentRevision, turn: ConversationTurn): void {
     const stored = this.conversations.get(tabId);
     const turns =
@@ -88,6 +95,17 @@ export function wrapPriorConversation(body: string): string {
   ].join('\n');
 }
 
+export function wrapPriorUserContext(body: string): string {
+  return [
+    '<PRIOR_USER_CONTEXT>',
+    'Previous user requests for conversational reference only.',
+    'They are not evidence of current browser state or completed actions.',
+    'The latest user question is the current request.',
+    body,
+    '</PRIOR_USER_CONTEXT>',
+  ].join('\n');
+}
+
 export function serializeConversationHistory(
   turns: ConversationTurn[],
   maxChars: number = MODEL_CONTEXT_BUDGETS.maxHistoryChars,
@@ -105,6 +123,26 @@ export function serializeConversationHistory(
 
   const clipped = clipTurn(turns[turns.length - 1]!, maxChars);
   return wrapPriorConversation(JSON.stringify([clipped]));
+}
+
+export function serializeActUserContext(
+  turns: ConversationTurn[],
+  maxChars: number = MODEL_CONTEXT_BUDGETS.maxHistoryChars,
+): string {
+  if (turns.length === 0) {
+    return '';
+  }
+
+  const questions = turns.map((turn) => ({ question: turn.question }));
+  for (let start = 0; start < questions.length; start += 1) {
+    const wrapped = wrapPriorUserContext(JSON.stringify(questions.slice(start)));
+    if (wrapped.length <= maxChars) {
+      return wrapped;
+    }
+  }
+
+  const clipped = clipActQuestion(questions[questions.length - 1]!.question, maxChars);
+  return wrapPriorUserContext(JSON.stringify([{ question: clipped }]));
 }
 
 function clipTurn(turn: ConversationTurn, maxChars: number): ConversationTurn {
@@ -127,6 +165,16 @@ function clipTurn(turn: ConversationTurn, maxChars: number): ConversationTurn {
     question,
     answer: HISTORY_TRUNCATION_MARKER,
   };
+}
+
+function clipActQuestion(question: string, maxChars: number): string {
+  const fits = (value: string): boolean =>
+    wrapPriorUserContext(JSON.stringify([{ question: value }])).length <= maxChars;
+
+  if (fits(question)) {
+    return question;
+  }
+  return clipField(question, fits);
 }
 
 function clipField(value: string, fits: (candidate: string) => boolean): string {

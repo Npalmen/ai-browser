@@ -9,8 +9,17 @@ import type { TargetId } from '../shared/observation-types';
 import { parseModelInteractionProposal } from '../interaction/proposal-validator';
 import { ModelError } from './model-errors';
 
+export const AGENT_ANSWER_DISPOSITIONS = [
+  'informational',
+  'cannot-complete',
+  'needs-clarification',
+  'task-complete',
+] as const;
+export type AgentAnswerDisposition = (typeof AGENT_ANSWER_DISPOSITIONS)[number];
+
 export interface AgentModelAnswerOutput {
   kind: 'answer';
+  disposition?: AgentAnswerDisposition;
   text: string;
   referencedTargets: TargetId[];
 }
@@ -104,13 +113,14 @@ export const AGENT_MODEL_OUTPUT_JSON_SCHEMA = {
       additionalProperties: false,
       properties: {
         kind: { const: 'answer' },
+        disposition: { type: 'string', enum: [...AGENT_ANSWER_DISPOSITIONS] },
         text: { type: 'string' },
         referencedTargets: {
           type: 'array',
           items: { type: 'string' },
         },
       },
-      required: ['kind', 'text', 'referencedTargets'],
+      required: ['kind', 'disposition', 'text', 'referencedTargets'],
     },
     {
       type: 'object',
@@ -160,7 +170,7 @@ function parseAgentModelOutputInternal(input: unknown): AgentModelOutput {
 }
 
 function parseAnswerOutput(record: Record<string, unknown>): AgentModelAnswerOutput {
-  assertAllowedKeys(record, new Set(['kind', 'text', 'referencedTargets']));
+  assertAllowedKeys(record, new Set(['kind', 'disposition', 'text', 'referencedTargets']));
 
   if (typeof record.text !== 'string') {
     throw new ModelError('MODEL_OUTPUT_INVALID', 'Answer text must be a string.');
@@ -175,9 +185,28 @@ function parseAnswerOutput(record: Record<string, unknown>): AgentModelAnswerOut
 
   return {
     kind: 'answer',
+    disposition: parseAnswerDisposition(record.disposition),
     text: record.text,
     referencedTargets: record.referencedTargets,
   };
+}
+
+function parseAnswerDisposition(value: unknown): AgentAnswerDisposition {
+  if (value === undefined) {
+    return 'task-complete';
+  }
+  if (
+    value !== 'informational' &&
+    value !== 'cannot-complete' &&
+    value !== 'needs-clarification' &&
+    value !== 'task-complete'
+  ) {
+    throw new ModelError(
+      'MODEL_OUTPUT_INVALID',
+      'Answer disposition must be informational, cannot-complete, needs-clarification, or task-complete.',
+    );
+  }
+  return value;
 }
 
 function parseInteractionOutput(record: Record<string, unknown>): AgentModelInteractionOutput {

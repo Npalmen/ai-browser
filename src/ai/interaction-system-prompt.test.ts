@@ -34,13 +34,15 @@ describe('INTERACTION_SYSTEM_PROMPT precedence', () => {
     );
   });
 
-  it('tells the model that prior conversation is not current browser state', () => {
-    assert.match(INTERACTION_SYSTEM_PROMPT, /PRIOR_CONVERSATION/);
-    assert.match(INTERACTION_SYSTEM_PROMPT, /not evidence of current browser state/);
+  it('tells the model that prior user context is not current browser state', () => {
+    assert.match(INTERACTION_SYSTEM_PROMPT, /PRIOR_USER_CONTEXT/);
+    assert.match(INTERACTION_SYSTEM_PROMPT, /not evidence of current browser state or completed actions/);
     assert.match(
       INTERACTION_SYSTEM_PROMPT,
       /repeated imperative is a fresh request unless current-run trusted progress/,
     );
     assert.match(INTERACTION_SYSTEM_PROMPT, /current page observation is the current browser state/);
+    assert.match(INTERACTION_SYSTEM_PROMPT, /disposition must be informational/);
+    assert.match(INTERACTION_SYSTEM_PROMPT, /task-complete is not proof/);
   });
 });

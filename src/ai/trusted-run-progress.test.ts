@@ -97,6 +97,38 @@ describe('trusted run progress', () => {
     }
   });
 
+  it('serializes no-browser-action-yet without page content or target ids', () => {
+    const serialized = serializeTrustedRunProgress([{ kind: 'no-browser-action-yet' }]);
+    assert.ok(serialized);
+    assert.match(serialized, /No browser action has successfully executed in this current task/);
+    assert.match(serialized, /Do not claim that a click, navigation, typing, selection, submission/);
+    assert.doesNotMatch(serialized, /targetId/i);
+    assert.doesNotMatch(serialized, /https?:\/\//);
+    assert.doesNotMatch(serialized, /WebDriverIO/);
+  });
+
+  it('distinguishes dispatched actions from confirmed observable effects', () => {
+    const serialized = serializeTrustedRunProgress([
+      {
+        kind: 'safe-interaction-dispatched',
+        actionKind: 'click',
+        pageChanged: false,
+        navigation: false,
+        observableStateChanged: false,
+      },
+      {
+        kind: 'safe-interaction-succeeded',
+        actionKind: 'click',
+        pageChanged: false,
+        observableStateChanged: true,
+      },
+    ]);
+    assert.ok(serialized);
+    assert.match(serialized, /was dispatched/);
+    assert.match(serialized, /No confirmed observable page effect or navigation has been verified/);
+    assert.match(serialized, /confirmed observable effect/);
+  });
+
   it('serializes safe-navigation-succeeded as a completed current-run navigation step', () => {
     const serialized = serializeTrustedRunProgress([
       { kind: 'safe-navigation-succeeded', pageChanged: true, sameDocument: false },

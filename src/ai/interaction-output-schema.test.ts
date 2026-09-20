@@ -13,15 +13,57 @@ describe('parseAgentModelOutput', () => {
   it('parses a valid answer output', () => {
     const parsed = parseAgentModelOutput({
       kind: 'answer',
+      disposition: 'informational',
       text: 'Hello',
       referencedTargets: ['target-1'],
     });
 
     assert.equal(parsed.kind, 'answer');
     if (parsed.kind === 'answer') {
+      assert.equal(parsed.disposition, 'informational');
       assert.equal(parsed.text, 'Hello');
       assert.deepEqual(parsed.referencedTargets, ['target-1']);
     }
+  });
+
+  it('defaults missing answer disposition to task-complete', () => {
+    const parsed = parseAgentModelOutput({
+      kind: 'answer',
+      text: 'Jag klickade på WebDriverIO.',
+      referencedTargets: [],
+    });
+    assert.equal(parsed.kind, 'answer');
+    if (parsed.kind === 'answer') {
+      assert.equal(parsed.disposition, 'task-complete');
+    }
+  });
+
+  it('parses cannot-complete and needs-clarification dispositions', () => {
+    for (const disposition of ['cannot-complete', 'needs-clarification', 'task-complete'] as const) {
+      const parsed = parseAgentModelOutput({
+        kind: 'answer',
+        disposition,
+        text: 'x',
+        referencedTargets: [],
+      });
+      assert.equal(parsed.kind, 'answer');
+      if (parsed.kind === 'answer') {
+        assert.equal(parsed.disposition, disposition);
+      }
+    }
+  });
+
+  it('rejects invalid answer dispositions', () => {
+    assert.throws(
+      () =>
+        parseAgentModelOutput({
+          kind: 'answer',
+          disposition: 'clicked',
+          text: 'x',
+          referencedTargets: [],
+        }),
+      isModelOutputInvalid,
+    );
   });
 
   it('parses a valid interaction click proposal', () => {

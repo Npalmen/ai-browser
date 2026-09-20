@@ -4,7 +4,12 @@ import {
   estimateInteractiveModelInputTokens,
   type BuiltInteractiveModelPageContext,
 } from './interaction-context-builder';
-import { parseAgentModelOutput, type AgentModelOutput, type AgentTaskContinuation } from './interaction-output-schema';
+import {
+  parseAgentModelOutput,
+  type AgentAnswerDisposition,
+  type AgentModelOutput,
+  type AgentTaskContinuation,
+} from './interaction-output-schema';
 import type { InteractionModelRuntime } from './interaction-model-runtime';
 import { decideModelExport } from './export-policy';
 import { MODEL_CATALOG, getModelProfile, type ModelCatalog } from './model-catalog';
@@ -78,6 +83,7 @@ export interface InteractiveStepOptions {
 export type InteractiveStepResult =
   | {
       readonly kind: 'answer';
+      readonly disposition: AgentAnswerDisposition;
       readonly text: string;
       readonly referencedTargets: readonly TargetId[];
       readonly alias: ModelAlias;
@@ -160,6 +166,7 @@ export class InteractiveStepAgent {
     if (output.kind === 'answer') {
       return {
         kind: 'answer',
+        disposition: output.disposition ?? 'task-complete',
         text: output.text,
         referencedTargets: filterReferencedTargets(
           output.referencedTargets,

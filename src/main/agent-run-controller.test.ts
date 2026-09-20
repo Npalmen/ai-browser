@@ -622,6 +622,10 @@ describe('AgentRunController', () => {
       harness.loop.lastOptions?.priorConversationForRevision?.(TAB, 'rev-old') ?? '',
       /old q/,
     );
+    const prior =
+      harness.loop.lastOptions?.priorConversationForRevision?.(TAB, 'rev-old') ?? '';
+    assert.match(prior, /<PRIOR_USER_CONTEXT>/);
+    assert.equal(prior.includes('old a'), false);
     hold.resolve({ status: 'ignored' });
     if (started.status === 'started') {
       await started.completion;

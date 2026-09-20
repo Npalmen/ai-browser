@@ -10,6 +10,15 @@ export type TrustedRunProgressEntry =
       readonly kind: 'safe-interaction-succeeded';
       readonly actionKind: TrustedRunProgressActionKind;
       readonly pageChanged: boolean;
+      readonly navigation?: boolean;
+      readonly observableStateChanged?: boolean;
+    }
+  | {
+      readonly kind: 'safe-interaction-dispatched';
+      readonly actionKind: TrustedRunProgressActionKind;
+      readonly pageChanged: boolean;
+      readonly navigation: boolean;
+      readonly observableStateChanged: boolean;
     }
   | {
       readonly kind: 'safe-navigation-succeeded';
@@ -23,6 +32,9 @@ export type TrustedRunProgressEntry =
   | {
       readonly kind: 'target-selection-denied';
       readonly actionKind: TrustedRunProgressActionKind;
+    }
+  | {
+      readonly kind: 'no-browser-action-yet';
     };
 
 const TRUSTED_PROGRESS_DISCLAIMER = [
@@ -70,6 +82,14 @@ function summarizeTrustedProgressEntry(
   entry: TrustedRunProgressEntry,
   options: TrustedProgressSummaryOptions = { isLatestNavigationSuccess: false },
 ): string {
+  if (entry.kind === 'no-browser-action-yet') {
+    return [
+      'No browser action has successfully executed in this current task.',
+      'Do not claim that a click, navigation, typing, selection, submission, or other browser action occurred.',
+      'Either propose the required interaction, explain that it cannot be performed, or ask for clarification.',
+    ].join(' ');
+  }
+
   if (entry.kind === 'target-selection-denied') {
     return [
       `The previous ${entry.actionKind} was denied because the selected target was not an allowed actionable control.`,
@@ -106,6 +126,18 @@ function summarizeTrustedProgressEntry(
     return entry.pageChanged === true
       ? 'The previously presented consequential click was approved and executed successfully and the page changed.'
       : 'The previously presented consequential click was approved and executed successfully.';
+  }
+
+  if (entry.kind === 'safe-interaction-dispatched') {
+    return [
+      `A trusted local ${entry.actionKind} was dispatched.`,
+      'No confirmed observable page effect or navigation has been verified.',
+      'This does not grant permission for any future action.',
+    ].join(' ');
+  }
+
+  if (entry.kind === 'safe-interaction-succeeded' && entry.observableStateChanged === true) {
+    return `A trusted local ${entry.actionKind} succeeded with a confirmed observable effect.`;
   }
 
   if (entry.actionKind === 'click' && entry.pageChanged) {

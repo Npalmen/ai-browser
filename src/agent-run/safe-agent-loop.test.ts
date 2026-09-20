@@ -5,7 +5,8 @@ import { describe, it, mock } from 'node:test';
 
 import { InteractiveStepAgent } from '../ai/interactive-step-agent';
 import type { InteractionModelRuntime } from '../ai/interaction-model-runtime';
-import type { AgentModelOutput } from '../ai/interaction-output-schema';
+import type { AgentAnswerDisposition, AgentModelOutput } from '../ai/interaction-output-schema';
+import { ConversationStore } from '../ai/conversation-store';
 import { MODEL_CATALOG } from '../ai/model-catalog';
 import { ModelError } from '../ai/model-errors';
 import type { AgentTaskContinuation } from '../ai/interaction-output-schema';
@@ -146,6 +147,22 @@ function boundScroll(
     direction: 'down',
     amountPx,
     tabId,
+    observationId,
+    documentRevision: revision,
+  };
+}
+
+function boundType(
+  revision = 'rev-a',
+  targetId = 'target-1',
+  observationId = 'obs-1',
+  text = 'hello',
+): BoundInteractionProposal {
+  return {
+    kind: 'type',
+    targetId,
+    text,
+    tabId: TAB,
     observationId,
     documentRevision: revision,
   };
@@ -367,9 +384,14 @@ function proposalStep(
   };
 }
 
-function answerStep(text: string, obs: PageObservation): InteractiveStepResult {
+function answerStep(
+  text: string,
+  obs: PageObservation,
+  disposition: AgentAnswerDisposition = 'informational',
+): InteractiveStepResult {
   return {
     kind: 'answer',
+    disposition,
     text,
     referencedTargets: [],
     alias: 'page-standard',
@@ -1299,7 +1321,12 @@ describe('SafeAgentLoop provider fallback logical count', () => {
           throw new ModelError('MODEL_UNAVAILABLE', 'unavailable');
         }
         return {
-          output: { kind: 'answer', text: 'Fallback answer', referencedTargets: [] },
+          output: {
+            kind: 'answer',
+            disposition: 'informational',
+            text: 'Fallback answer',
+            referencedTargets: [],
+          },
           resolvedProviderModelId: 'test/fallback',
           latencyMs: 1,
         };
@@ -1348,7 +1375,7 @@ describe('SafeAgentLoop trusted progress privacy', () => {
     const { coordinator, loop } = createLoop({ stepAgent, executor });
     await loop.run(refOf(start(coordinator)));
     const progressText = JSON.stringify(stepAgent.calls[1]?.options?.trustedProgress ?? []);
-    assert.match(progressText, /safe-interaction-succeeded/);
+    assert.match(progressText, /safe-interaction-(succeeded|dispatched)/);
     for (const needle of [
       'targetId-CANARY',
       'approvalId-CANARY',
@@ -2436,10 +2463,14 @@ describe('SafeAgentLoop complete-on-success', () => {
 
   it('uses generic Done. text when onSuccessText is omitted', async () => {
     const obs = observation();
+    const after = observation({
+      observationId: 'obs-after',
+      document: { ...obs.document, revision: 'rev-after' },
+    });
     const stepAgent = new FakeStepAgent([
       proposalStep(boundClick(), obs, { continuation: 'complete-on-success' }),
     ]);
-    const executor = new FakeV3Executor([succeeded(obs)]);
+    const executor = new FakeV3Executor([succeeded(after)]);
     const { coordinator, loop } = createLoop({ stepAgent, executor });
     const result = await loop.run(refOf(start(coordinator, 'Click save.')));
     assert.equal(result.status, 'completed');
@@ -2765,6 +2796,341 @@ describe('SafeAgentLoop supported small-viewport budget', () => {
       assert.equal(result.run.actionAttemptCount, MAX_AGENT_LOOP_ACTION_ATTEMPTS);
     }
     assert.equal(executor.calls.length, MAX_AGENT_LOOP_ACTION_ATTEMPTS);
+  });
+});
+
+describe('SafeAgentLoop false completion guard', () => {
+  const FALSE_CLICK_TEXT = 'Jag klickade på WebDriverIO.';
+
+  it('does not complete from a first-step task-complete with no trusted action', async () => {
+    const obs = observation();
+    const hold = new Deferred<InteractiveStepResult>();
+    const deltas: string[] = [];
+    const stepAgent = new FakeStepAgent(async (_request, options, callIndex) => {
+      if (callIndex === 1) {
+        options?.onAnswerTextDelta?.(FALSE_CLICK_TEXT);
+        return answerStep(FALSE_CLICK_TEXT, obs, 'task-complete');
+      }
+      return hold.promise;
+    });
+    const executor = new FakeV3Executor([]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const run = start(coordinator, 'klicka på WebDriverIO');
+    const pending = loop.run(refOf(run), {
+      onAnswerTextDelta: (text) => {
+        deltas.push(text);
+      },
+    });
+    await waitUntil(() => stepAgent.calls.length >= 2);
+    assert.equal(coordinator.getRun(run.runId)?.state, 'running');
+    assert.equal(deltas.join('').includes(FALSE_CLICK_TEXT), false);
+    assert.equal(stepAgent.calls[1]?.options?.trustedProgress?.[0]?.kind, 'no-browser-action-yet');
+    hold.resolve(answerStep('Could not find WebDriverIO.', obs, 'cannot-complete'));
+    const result = await pending;
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Could not find WebDriverIO.');
+      assert.notEqual(result.answer.text, FALSE_CLICK_TEXT);
+    }
+    assert.equal(executor.calls.length, 0);
+  });
+
+  it('replans once then completes after a trusted navigation click', async () => {
+    const source = observation();
+    const destination = observation({
+      observationId: 'obs-dest',
+      document: {
+        ...source.document,
+        revision: 'rev-docs',
+        url: 'https://webdriver.io/',
+      },
+    });
+    const stepAgent = new FakeStepAgent([
+      answerStep(FALSE_CLICK_TEXT, source, 'task-complete'),
+      proposalStep(boundClick(), source, {
+        continuation: 'complete-on-success',
+        onSuccessText: 'Opened WebDriverIO.',
+      }),
+    ]);
+    const executor = new FakeV3Executor([succeeded(destination)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Opened WebDriverIO.');
+      assert.notEqual(result.answer.text, FALSE_CLICK_TEXT);
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(executor.calls[0]?.proposal.kind, 'click');
+    assert.equal(stepAgent.calls.length, 2);
+  });
+
+  it('fails bounded when task-complete is repeated with zero action evidence', async () => {
+    const obs = observation();
+    const stepAgent = new FakeStepAgent([
+      answerStep(FALSE_CLICK_TEXT, obs, 'task-complete'),
+      answerStep(FALSE_CLICK_TEXT, obs, 'task-complete'),
+    ]);
+    const executor = new FakeV3Executor([]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'MODEL_FAILED');
+      assert.equal(result.run.modelErrorCode, 'MODEL_OUTPUT_INVALID');
+      assert.notEqual(result.run.state, 'completed');
+    }
+    assert.equal(executor.calls.length, 0);
+    assert.equal(stepAgent.calls.length, 2);
+  });
+
+  it('omits historical assistant execution claims from Act model input', async () => {
+    const store = new ConversationStore();
+    store.commitTurn(TAB, 'rev-a', {
+      question: 'klicka på WebDriverIO',
+      answer: FALSE_CLICK_TEXT,
+    });
+    const captured: string[] = [];
+    const source = observation();
+    const destination = observation({
+      observationId: 'obs-dest',
+      document: {
+        ...source.document,
+        revision: 'rev-docs',
+        url: 'https://webdriver.io/',
+      },
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), source, { continuation: 'complete-on-success' }),
+    ]);
+    const executor = new FakeV3Executor([succeeded(destination)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')), {
+      priorConversationForRevision: (tabId, revision) => {
+        const serialized = store.serializeForActRevision(tabId, revision);
+        captured.push(serialized);
+        return serialized;
+      },
+    });
+    assert.equal(result.status, 'completed');
+    assert.equal(captured.length, 1);
+    assert.match(captured[0] ?? '', /<PRIOR_USER_CONTEXT>/);
+    assert.match(captured[0] ?? '', /klicka på WebDriverIO/);
+    assert.equal((captured[0] ?? '').includes(FALSE_CLICK_TEXT), false);
+    assert.equal((captured[0] ?? '').includes('Jag klickade'), false);
+  });
+
+  it('treats a repeated imperative as a fresh request on the same source page', async () => {
+    const store = new ConversationStore();
+    store.commitTurn(TAB, 'rev-a', {
+      question: 'klicka på WebDriverIO',
+      answer: FALSE_CLICK_TEXT,
+    });
+    const source = observation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), source, { continuation: 'complete-on-success' }),
+      answerStep('Still on the search page.', source, 'cannot-complete'),
+    ]);
+    const executor = new FakeV3Executor([succeeded(source)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')), {
+      priorConversationForRevision: (tabId, revision) =>
+        store.serializeForActRevision(tabId, revision),
+    });
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Still on the search page.');
+      assert.notEqual(result.answer.text, FALSE_CLICK_TEXT);
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(stepAgent.calls[0]?.request.instruction, 'klicka på WebDriverIO');
+    assert.equal(
+      stepAgent.calls[1]?.options?.trustedProgress?.some(
+        (entry) => entry.kind === 'safe-interaction-dispatched',
+      ),
+      true,
+    );
+  });
+
+  it('honors complete-on-success after a verified URL navigation', async () => {
+    const source = observation();
+    const destination = observation({
+      observationId: 'obs-dest',
+      document: {
+        ...source.document,
+        revision: 'rev-docs',
+        url: 'https://webdriver.io/',
+      },
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), source, {
+        continuation: 'complete-on-success',
+        onSuccessText: 'Opened WebDriverIO.',
+      }),
+    ]);
+    const executor = new FakeV3Executor([succeeded(destination)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Opened WebDriverIO.');
+    }
+    assert.equal(stepAgent.calls.length, 1);
+    assert.equal(executor.calls.length, 1);
+  });
+
+  it('does not honor complete-on-success when a click has no navigation or effect', async () => {
+    const page = observation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), page, {
+        continuation: 'complete-on-success',
+        onSuccessText: FALSE_CLICK_TEXT,
+      }),
+      answerStep('The page did not change.', page, 'cannot-complete'),
+    ]);
+    const executor = new FakeV3Executor([succeeded(page)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'The page did not change.');
+      assert.notEqual(result.answer.text, FALSE_CLICK_TEXT);
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(stepAgent.calls.length, 2);
+  });
+
+  it('honors complete-on-success for a local toggle with an observable state change', async () => {
+    const before = observation({
+      nodes: [
+        node({
+          targetId: 'target-1',
+          role: 'checkbox',
+          name: 'Agree',
+          tag: 'input',
+          interactive: true,
+          states: { checked: false },
+        }),
+      ],
+    });
+    const after = observation({
+      observationId: 'obs-checked',
+      nodes: [
+        node({
+          targetId: 'target-1',
+          role: 'checkbox',
+          name: 'Agree',
+          tag: 'input',
+          interactive: true,
+          states: { checked: true },
+        }),
+      ],
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), before, {
+        continuation: 'complete-on-success',
+        onSuccessText: 'Checked the box.',
+      }),
+    ]);
+    const executor = new FakeV3Executor([succeeded(after)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Check the box.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Checked the box.');
+    }
+    assert.equal(stepAgent.calls.length, 1);
+    assert.equal(executor.calls.length, 1);
+  });
+
+  it('does not honor complete-on-success for a local click with no observable effect', async () => {
+    const page = observation({
+      nodes: [
+        node({
+          targetId: 'target-1',
+          role: 'button',
+          name: 'Expand',
+          tag: 'button',
+          interactive: true,
+          states: { expanded: false },
+        }),
+      ],
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), page, { continuation: 'complete-on-success' }),
+      answerStep('Nothing changed.', page, 'informational'),
+    ]);
+    const executor = new FakeV3Executor([succeeded(page)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Expand details.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Nothing changed.');
+      assert.notEqual(result.answer.text, 'Done.');
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(stepAgent.calls.length, 2);
+  });
+
+  it('allows an informational answer without a browser action', async () => {
+    const obs = observation();
+    const stepAgent = new FakeStepAgent([
+      answerStep('The heading is Example page.', obs, 'informational'),
+    ]);
+    const executor = new FakeV3Executor([]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'What is the heading?')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'The heading is Example page.');
+    }
+    assert.equal(executor.calls.length, 0);
+    assert.equal(stepAgent.calls.length, 1);
+  });
+
+  it('allows cannot-complete and needs-clarification without a browser action', async () => {
+    for (const disposition of ['cannot-complete', 'needs-clarification'] as const) {
+      const obs = observation();
+      const stepAgent = new FakeStepAgent([
+        answerStep(`Need to stop: ${disposition}`, obs, disposition),
+      ]);
+      const executor = new FakeV3Executor([]);
+      const { coordinator, loop } = createLoop({ stepAgent, executor });
+      const result = await loop.run(refOf(start(coordinator, 'klicka på WebDriverIO')));
+      assert.equal(result.status, 'completed');
+      if (result.status === 'completed') {
+        assert.equal(result.answer.text, `Need to stop: ${disposition}`);
+      }
+      assert.equal(executor.calls.length, 0);
+    }
+  });
+
+  it('does not complete-on-success from a type dispatch when the value is not observable', async () => {
+    const field = observation({
+      nodes: [
+        node({
+          targetId: 'target-1',
+          role: 'textbox',
+          name: 'Password',
+          tag: 'input',
+          interactive: true,
+          states: { secret: true },
+        }),
+      ],
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundType(), field, { continuation: 'complete-on-success' }),
+      answerStep('Typed, but the value is not visible.', field, 'informational'),
+    ]);
+    const executor = new FakeV3Executor([succeeded(field)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Type the password.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Typed, but the value is not visible.');
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(stepAgent.calls.length, 2);
   });
 });
 

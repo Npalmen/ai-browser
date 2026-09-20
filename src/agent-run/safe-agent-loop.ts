@@ -1,16 +1,34 @@
 import type { InteractiveStepAgent, InteractiveStepRequest } from '../ai/interactive-step-agent';
-import { DEFAULT_TASK_COMPLETION_TEXT } from '../ai/interaction-output-schema';
-import { logAgentLoopModelStepFailed } from '../ai/model-diagnostics';
+import {
+  DEFAULT_TASK_COMPLETION_TEXT,
+  type AgentAnswerDisposition,
+} from '../ai/interaction-output-schema';
+import {
+  logAgentLoopAnswerReceived,
+  logAgentLoopCompleteOnSuccessDeferred,
+  logAgentLoopCompleteOnSuccessHonored,
+  logAgentLoopFalseCompletionReplan,
+  logAgentLoopModelStepFailed,
+  logAgentLoopTrustedActionSuccess,
+} from '../ai/model-diagnostics';
 import { ModelError, type ModelErrorCode } from '../ai/model-errors';
 import type { ModelAlias, ModelPrivacyRequirement, TaskClass } from '../ai/model-types';
-import type { TrustedRunProgressEntry } from '../ai/trusted-run-progress';
+import type {
+  TrustedRunProgressActionKind,
+  TrustedRunProgressEntry,
+} from '../ai/trusted-run-progress';
 import { InteractionError, type InteractionErrorCode } from '../shared/interaction-errors';
 import type { TabId } from '../shared/browser-types';
 import type {
   BoundInteractionProposal,
   InteractionResult,
 } from '../shared/interaction-types';
-import type { DocumentRevision, PageObservation, TargetId } from '../shared/observation-types';
+import type {
+  DocumentRevision,
+  ObservationNode,
+  PageObservation,
+  TargetId,
+} from '../shared/observation-types';
 import { ObservationError, type ObservationErrorCode } from '../shared/observation-types';
 import { MAX_VIEWPORT_DISCOVERY_SCROLLS } from '../shared/viewport-discovery-policy';
 import { fingerprintBoundProposal } from './bound-proposal-fingerprint';
@@ -84,6 +102,22 @@ interface RunLocalBudgets {
   semanticActionAttempts: number;
 }
 
+interface TrustedRunActionEvidence {
+  successfulBrowserActions: number;
+  successfulSemanticActions: number;
+  successfulNavigations: number;
+  lastTrustedEffect: TrustedActionEffect | undefined;
+}
+
+interface TrustedActionEffect {
+  readonly actionKind: TrustedRunProgressActionKind;
+  readonly pageChanged: boolean;
+  readonly navigation: boolean;
+  readonly observableStateChanged: boolean;
+  readonly causalPopup: boolean;
+  readonly sameDocument: boolean;
+}
+
 function createPostNavigationContinuation(): PostNavigationContinuation {
   return {
     trustedObservation: undefined,
@@ -98,14 +132,57 @@ function createRunLocalBudgets(): RunLocalBudgets {
   };
 }
 
+function createTrustedRunActionEvidence(): TrustedRunActionEvidence {
+  return {
+    successfulBrowserActions: 0,
+    successfulSemanticActions: 0,
+    successfulNavigations: 0,
+    lastTrustedEffect: undefined,
+  };
+}
+
+function hasTrustedTaskCompletionEvidence(evidence: TrustedRunActionEvidence): boolean {
+  return evidence.successfulSemanticActions > 0 || evidence.successfulNavigations > 0;
+}
+
+function recordTrustedActionEvidence(
+  evidence: TrustedRunActionEvidence,
+  effect: TrustedActionEffect,
+): void {
+  evidence.successfulBrowserActions += 1;
+  if (effect.actionKind !== 'scroll') {
+    evidence.successfulSemanticActions += 1;
+  }
+  if (effect.navigation) {
+    evidence.successfulNavigations += 1;
+  }
+  evidence.lastTrustedEffect = effect;
+}
+
 function isViewportDiscoveryScroll(proposal: BoundInteractionProposal): boolean {
   return proposal.kind === 'scroll' && proposal.mode === 'viewport';
 }
 
 function shouldCompleteOnTrustedSuccess(
   step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'proposal' }>,
+  effect: TrustedActionEffect,
 ): boolean {
-  return step.continuation === 'complete-on-success' && step.proposal.kind !== 'scroll';
+  if (step.continuation !== 'complete-on-success' || step.proposal.kind === 'scroll') {
+    return false;
+  }
+  return effect.navigation || effect.pageChanged || effect.observableStateChanged;
+}
+
+function completeOnSuccessEvidenceLabel(
+  effect: TrustedActionEffect,
+): 'navigation' | 'page-change' | 'observable-effect' {
+  if (effect.navigation) {
+    return 'navigation';
+  }
+  if (effect.pageChanged) {
+    return 'page-change';
+  }
+  return 'observable-effect';
 }
 
 export class SafeAgentLoop {
@@ -130,7 +207,9 @@ export class SafeAgentLoop {
     const trustedProgress: TrustedRunProgressEntry[] = [];
     const continuation = createPostNavigationContinuation();
     const budgets = createRunLocalBudgets();
+    const evidence = createTrustedRunActionEvidence();
     let modelIteration = 0;
+    let falseCompletionReplanUsed = false;
 
     while (true) {
       const current = this.requireCurrentRun(ref);
@@ -159,12 +238,15 @@ export class SafeAgentLoop {
       const postNavigation =
         continuation.trustedObservation !== undefined ||
         continuation.observationRetriesRemaining > 0;
+      const pendingAnswerDeltas: string[] = [];
       try {
         const trustedObservation = continuation.trustedObservation;
         continuation.trustedObservation = undefined;
         step = await this.stepAgent.step(this.buildStepRequest(liveRun, options), {
           signal: options.signal,
-          onAnswerTextDelta: options.onAnswerTextDelta,
+          onAnswerTextDelta: (text) => {
+            pendingAnswerDeltas.push(text);
+          },
           trustedProgress: trustedProgress.length > 0 ? trustedProgress : undefined,
           priorConversationForRevision:
             modelIteration === 0 ? options.priorConversationForRevision : undefined,
@@ -195,24 +277,25 @@ export class SafeAgentLoop {
       modelIteration += 1;
 
       if (step.kind === 'answer') {
-        const completed = this.coordinator.markCompleted(ref);
-        if (completed.status === 'ignored') {
-          return { status: 'ignored' };
-        }
-        if (completed.snapshot.state !== 'completed') {
-          return { status: 'terminal', run: completed.snapshot };
-        }
-        return {
-          status: 'completed',
-          run: completed.snapshot,
-          answer: {
-            text: step.text,
-            referencedTargets: step.referencedTargets,
-            alias: step.alias,
-            truncatedContext: step.truncatedContext,
-            documentRevision: step.observation.document.revision,
+        const answerOutcome = this.handleAnswerStep(
+          ref,
+          step,
+          evidence,
+          trustedProgress,
+          pendingAnswerDeltas,
+          options,
+          {
+            iteration: modelStepIteration,
+            postNavigation,
+            falseCompletionReplanUsed,
           },
-        };
+        );
+        if (answerOutcome.kind === 'replan') {
+          falseCompletionReplanUsed = true;
+          this.notifyContinuing(ref, options);
+          continue;
+        }
+        return answerOutcome.result;
       }
 
       if (isViewportDiscoveryScroll(step.proposal)) {
@@ -269,6 +352,7 @@ export class SafeAgentLoop {
         options,
         continuation,
         budgets,
+        evidence,
       );
       if (actionOutcome !== undefined) {
         return actionOutcome;
@@ -281,6 +365,77 @@ export class SafeAgentLoop {
 
       this.notifyContinuing(ref, options);
     }
+  }
+
+  private handleAnswerStep(
+    ref: AgentRunRef,
+    step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'answer' }>,
+    evidence: TrustedRunActionEvidence,
+    trustedProgress: TrustedRunProgressEntry[],
+    pendingAnswerDeltas: readonly string[],
+    options: SafeAgentLoopOptions,
+    context: {
+      iteration: number;
+      postNavigation: boolean;
+      falseCompletionReplanUsed: boolean;
+    },
+  ):
+    | { kind: 'replan' }
+    | { kind: 'done'; result: SafeAgentLoopResult } {
+    const disposition: AgentAnswerDisposition = step.disposition;
+    logAgentLoopAnswerReceived({
+      disposition,
+      trustedActions: evidence.successfulSemanticActions + evidence.successfulNavigations,
+      iteration: context.iteration,
+    });
+
+    if (disposition === 'task-complete' && !hasTrustedTaskCompletionEvidence(evidence)) {
+      if (context.falseCompletionReplanUsed) {
+        return {
+          kind: 'done',
+          result: this.handleStepError(
+            ref,
+            new ModelError(
+              'MODEL_OUTPUT_INVALID',
+              'Unsupported task-complete without trusted browser action evidence.',
+            ),
+            {
+              iteration: context.iteration,
+              postNavigation: context.postNavigation,
+            },
+          ),
+        };
+      }
+      logAgentLoopFalseCompletionReplan(context.iteration);
+      trustedProgress.push({ kind: 'no-browser-action-yet' });
+      return { kind: 'replan' };
+    }
+
+    for (const delta of pendingAnswerDeltas) {
+      options.onAnswerTextDelta?.(delta);
+    }
+
+    const completed = this.coordinator.markCompleted(ref);
+    if (completed.status === 'ignored') {
+      return { kind: 'done', result: { status: 'ignored' } };
+    }
+    if (completed.snapshot.state !== 'completed') {
+      return { kind: 'done', result: { status: 'terminal', run: completed.snapshot } };
+    }
+    return {
+      kind: 'done',
+      result: {
+        status: 'completed',
+        run: completed.snapshot,
+        answer: {
+          text: step.text,
+          referencedTargets: step.referencedTargets,
+          alias: step.alias,
+          truncatedContext: step.truncatedContext,
+          documentRevision: step.observation.document.revision,
+        },
+      },
+    };
   }
 
   private buildStepRequest(
@@ -368,6 +523,7 @@ export class SafeAgentLoop {
     options: SafeAgentLoopOptions,
     continuation: PostNavigationContinuation,
     budgets: RunLocalBudgets,
+    evidence: TrustedRunActionEvidence,
   ): Promise<SafeAgentLoopResult | undefined> {
     if (result.status === 'succeeded') {
       return this.handleSucceededAction(
@@ -377,10 +533,11 @@ export class SafeAgentLoop {
         trustedProgress,
         continuation,
         budgets,
+        evidence,
       );
     }
     if (result.status === 'denied') {
-      return this.handleDeniedAction(ref, step, result.errorCode, trustedProgress, options);
+      return this.handleDeniedAction(ref, step, result.errorCode, trustedProgress, options, evidence);
     }
     if (result.status === 'execution-state-unknown') {
       return this.unknownTerminal(ref);
@@ -395,6 +552,7 @@ export class SafeAgentLoop {
     trustedProgress: TrustedRunProgressEntry[],
     continuation: PostNavigationContinuation,
     budgets: RunLocalBudgets,
+    evidence: TrustedRunActionEvidence,
   ): SafeAgentLoopResult | undefined {
     const postObservation = result.observation;
     const live = this.coordinator.getRun(ref.runId);
@@ -428,12 +586,7 @@ export class SafeAgentLoop {
       }
     }
 
-    const revisionChanged =
-      postObservation.document.revision !== step.observation.document.revision;
-    const urlChanged = postObservation.document.url !== step.observation.document.url;
-    const navigated =
-      causalPopup === true ||
-      (step.proposal.kind === 'click' && (revisionChanged || urlChanged));
+    const effect = inspectTrustedActionEffect(step, postObservation, causalPopup === true);
     const fingerprint = fingerprintBoundProposal(step.proposal, step.observation);
 
     const recordedFingerprint = this.coordinator.recordSuccessfulActionFingerprint(
@@ -445,40 +598,46 @@ export class SafeAgentLoop {
       return fingerprintStop;
     }
 
-    if (navigated) {
-      trustedProgress.push({
-        kind: 'safe-navigation-succeeded',
-        pageChanged: true,
-        sameDocument: causalPopup !== true && !revisionChanged,
-      });
+    recordTrustedActionEvidence(evidence, effect);
+    logAgentLoopTrustedActionSuccess({
+      kind: effect.actionKind,
+      navigated: effect.navigation,
+      observableEffect: effect.observableStateChanged,
+    });
+    pushTrustedSuccessProgress(trustedProgress, effect);
+
+    if (effect.navigation) {
       budgets.consecutiveViewportScrolls = 0;
     } else if (isViewportDiscoveryScroll(step.proposal)) {
       budgets.consecutiveViewportScrolls += 1;
-      trustedProgress.push({
-        kind: 'safe-interaction-succeeded',
-        actionKind: step.proposal.kind,
-        pageChanged: revisionChanged,
-      });
     } else {
       budgets.consecutiveViewportScrolls = 0;
-      trustedProgress.push({
-        kind: 'safe-interaction-succeeded',
-        actionKind: step.proposal.kind,
-        pageChanged: revisionChanged,
-      });
     }
 
-    if (navigated) {
+    if (effect.navigation) {
       continuation.observationRetriesRemaining = 1;
       continuation.trustedObservation =
-        causalPopup === true || urlChanged ? postObservation : undefined;
+        causalPopup === true ||
+        postObservation.document.url !== step.observation.document.url
+          ? postObservation
+          : undefined;
     } else {
       continuation.observationRetriesRemaining = 0;
       continuation.trustedObservation = undefined;
     }
 
-    if (shouldCompleteOnTrustedSuccess(step)) {
+    if (shouldCompleteOnTrustedSuccess(step, effect)) {
+      logAgentLoopCompleteOnSuccessHonored({
+        kind: effect.actionKind,
+        evidence: completeOnSuccessEvidenceLabel(effect),
+      });
       return this.completeAfterTrustedSuccess(ref, step, postObservation);
+    }
+    if (step.continuation === 'complete-on-success' && step.proposal.kind !== 'scroll') {
+      logAgentLoopCompleteOnSuccessDeferred({
+        kind: effect.actionKind,
+        reason: 'no-observable-effect',
+      });
     }
 
     return undefined;
@@ -490,9 +649,10 @@ export class SafeAgentLoop {
     errorCode: InteractionErrorCode | undefined,
     trustedProgress: TrustedRunProgressEntry[],
     options: SafeAgentLoopOptions,
+    evidence: TrustedRunActionEvidence,
   ): Promise<SafeAgentLoopResult | undefined> {
     if (errorCode === 'DEFERRED_TO_EXECUTE') {
-      return this.handleDeferredExecute(ref, step, trustedProgress, options);
+      return this.handleDeferredExecute(ref, step, trustedProgress, options, evidence);
     }
     if (errorCode === 'UNSUPPORTED_TARGET' && step.proposal.kind !== 'click') {
       return this.blockTerminal(ref, 'UNSUPPORTED_ACTION');
@@ -535,6 +695,7 @@ export class SafeAgentLoop {
     step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'proposal' }>,
     trustedProgress: TrustedRunProgressEntry[],
     options: SafeAgentLoopOptions,
+    evidence: TrustedRunActionEvidence,
   ): Promise<SafeAgentLoopResult | undefined> {
     const signal = options.signal;
     if (this.approvalPort === undefined || step.proposal.kind !== 'click') {
@@ -569,6 +730,7 @@ export class SafeAgentLoop {
         step,
         prepared.approvalId,
         trustedProgress,
+        evidence,
         signal,
       );
     }
@@ -594,6 +756,7 @@ export class SafeAgentLoop {
     step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'proposal' }>,
     approvalId: string,
     trustedProgress: TrustedRunProgressEntry[],
+    evidence: TrustedRunActionEvidence,
     signal?: AbortSignal,
   ): Promise<SafeAgentLoopResult | undefined> {
     const onAbort = () => {
@@ -625,7 +788,18 @@ export class SafeAgentLoop {
         trustedProgress.push({
           kind: 'approved-execution-succeeded',
         });
-        if (shouldCompleteOnTrustedSuccess(step)) {
+        evidence.successfulBrowserActions += 1;
+        evidence.successfulSemanticActions += 1;
+        logAgentLoopTrustedActionSuccess({
+          kind: 'execute',
+          navigated: false,
+          observableEffect: false,
+        });
+        if (step.continuation === 'complete-on-success' && step.proposal.kind !== 'scroll') {
+          logAgentLoopCompleteOnSuccessHonored({
+            kind: 'execute',
+            evidence: 'approved-execution',
+          });
           const observation = step.observation;
           return this.completeAfterTrustedSuccess(ref, step, observation);
         }
@@ -830,4 +1004,113 @@ function isInteractionStale(errorCode?: InteractionErrorCode): boolean {
 
 function isObservationStale(errorCode: ObservationErrorCode): boolean {
   return errorCode === 'PAGE_CHANGED_DURING_OBSERVATION' || errorCode === 'TAB_NOT_FOUND';
+}
+
+function inspectTrustedActionEffect(
+  step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'proposal' }>,
+  postObservation: PageObservation,
+  causalPopup: boolean,
+): TrustedActionEffect {
+  const pre = step.observation;
+  const pageChanged = postObservation.document.revision !== pre.document.revision;
+  const urlChanged = postObservation.document.url !== pre.document.url;
+  const navigation =
+    causalPopup ||
+    urlChanged ||
+    (step.proposal.kind === 'click' && pageChanged);
+  const observableStateChanged = hasObservableTargetStateChange(pre, postObservation, step.proposal);
+
+  return {
+    actionKind: step.proposal.kind,
+    pageChanged,
+    navigation,
+    observableStateChanged,
+    causalPopup,
+    sameDocument: !causalPopup && !pageChanged,
+  };
+}
+
+function pushTrustedSuccessProgress(
+  trustedProgress: TrustedRunProgressEntry[],
+  effect: TrustedActionEffect,
+): void {
+  if (effect.navigation) {
+    trustedProgress.push({
+      kind: 'safe-navigation-succeeded',
+      pageChanged: true,
+      sameDocument: effect.sameDocument,
+    });
+    return;
+  }
+
+  if (effect.actionKind === 'scroll' || effect.observableStateChanged || effect.pageChanged) {
+    trustedProgress.push({
+      kind: 'safe-interaction-succeeded',
+      actionKind: effect.actionKind,
+      pageChanged: effect.pageChanged,
+      navigation: false,
+      observableStateChanged: effect.observableStateChanged,
+    });
+    return;
+  }
+
+  trustedProgress.push({
+    kind: 'safe-interaction-dispatched',
+    actionKind: effect.actionKind,
+    pageChanged: false,
+    navigation: false,
+    observableStateChanged: false,
+  });
+}
+
+function hasObservableTargetStateChange(
+  pre: PageObservation,
+  post: PageObservation,
+  proposal: BoundInteractionProposal,
+): boolean {
+  if (proposal.kind === 'scroll' || !('targetId' in proposal)) {
+    return false;
+  }
+
+  const before = findNodeByTargetId(pre, proposal.targetId);
+  const after = findNodeByTargetId(post, proposal.targetId);
+  if (before === undefined || after === undefined) {
+    return false;
+  }
+  if (before.states?.secret === true || after.states?.secret === true) {
+    return false;
+  }
+  if (before.states?.checked !== after.states?.checked) {
+    return true;
+  }
+  if (before.states?.expanded !== after.states?.expanded) {
+    return true;
+  }
+  if (before.states?.selected !== after.states?.selected) {
+    return true;
+  }
+  if (proposal.kind === 'type' && before.value !== after.value) {
+    return true;
+  }
+  if (proposal.kind === 'select') {
+    if (before.value !== after.value) {
+      return true;
+    }
+    return selectedNativeOptionKey(before) !== selectedNativeOptionKey(after);
+  }
+  return false;
+}
+
+function findNodeByTargetId(
+  observation: PageObservation,
+  targetId: TargetId,
+): ObservationNode | undefined {
+  return observation.nodes.find((node) => node.targetId === targetId);
+}
+
+function selectedNativeOptionKey(node: ObservationNode): string {
+  return (node.nativeOptions ?? [])
+    .filter((option) => option.selected === true)
+    .map((option) => option.targetId)
+    .join(',');
 }

@@ -6,6 +6,7 @@ import {
   ConversationStore,
   HISTORY_TRUNCATION_MARKER,
   MAX_CONVERSATION_TURNS,
+  serializeActUserContext,
   serializeConversationHistory,
 } from './conversation-store';
 
@@ -101,5 +102,34 @@ describe('serializeConversationHistory', () => {
 
   it('returns empty text when there are no turns', () => {
     assert.equal(serializeConversationHistory([]), '');
+  });
+});
+
+describe('serializeActUserContext', () => {
+  it('includes previous user requests and omits assistant execution claims', () => {
+    const wrapped = serializeActUserContext([
+      {
+        question: 'klicka på WebDriverIO',
+        answer: 'Jag klickade på WebDriverIO.',
+      },
+    ]);
+    assert.match(wrapped, /^<PRIOR_USER_CONTEXT>/);
+    assert.match(wrapped, /<\/PRIOR_USER_CONTEXT>$/);
+    assert.match(wrapped, /klicka på WebDriverIO/);
+    assert.match(wrapped, /conversational reference only/i);
+    assert.match(wrapped, /not evidence of current browser state or completed actions/i);
+    assert.equal(wrapped.includes('Jag klickade på WebDriverIO.'), false);
+    assert.equal(wrapped.includes('PRIOR_CONVERSATION'), false);
+  });
+
+  it('serializeForActRevision matches serializeActUserContext', () => {
+    const store = new ConversationStore();
+    store.commitTurn('tab-1', 'rev-a', {
+      question: 'klicka på WebDriverIO',
+      answer: 'Jag klickade på WebDriverIO.',
+    });
+    const serialized = store.serializeForActRevision('tab-1', 'rev-a');
+    assert.match(serialized, /klicka på WebDriverIO/);
+    assert.equal(serialized.includes('Jag klickade på WebDriverIO.'), false);
   });
 });

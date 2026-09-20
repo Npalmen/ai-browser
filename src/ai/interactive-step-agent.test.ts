@@ -188,11 +188,31 @@ describe('InteractiveStepAgent answer', () => {
     assert.equal(result.kind, 'answer');
     if (result.kind === 'answer') {
       assert.equal(result.text, 'The page has a save button.');
+      assert.equal(result.disposition, 'task-complete');
       assert.deepEqual([...result.referencedTargets], ['target-1']);
       assert.equal(result.observation.observationId, 'obs-1');
     }
     assert.equal(pages.calls.length, 1);
     assert.equal(runtime.requests.length, 1);
+  });
+
+  it('passes explicit answer dispositions through unchanged', async () => {
+    const runtime = new FakeInteractionRuntime({
+      kind: 'answer',
+      disposition: 'cannot-complete',
+      text: 'The requested control is not on this page.',
+      referencedTargets: [],
+    });
+    const { agent } = stepAgentOf({ runtime });
+    const result = await agent.step({
+      tabId: TAB,
+      instruction: 'Click WebDriverIO',
+    });
+    assert.equal(result.kind, 'answer');
+    if (result.kind === 'answer') {
+      assert.equal(result.disposition, 'cannot-complete');
+      assert.equal(result.text, 'The requested control is not on this page.');
+    }
   });
 });
 

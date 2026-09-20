@@ -421,6 +421,7 @@ export function clickRuntime(name: string): V5AcceptanceModelRuntime {
 export function answerRuntime(text: string): V5AcceptanceModelRuntime {
   return new V5AcceptanceModelRuntime(() => ({
     kind: 'answer',
+    disposition: 'informational',
     text,
     referencedTargets: [],
   }), text);

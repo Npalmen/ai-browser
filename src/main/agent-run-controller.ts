@@ -94,7 +94,7 @@ export class AgentRunController {
         });
       },
       priorConversationForRevision: (historyTabId, revision) =>
-        this.conversationStore.serializeForRevision(historyTabId, revision),
+        this.conversationStore.serializeForActRevision(historyTabId, revision),
       onContinuing: (current) => {
         this.aliasProductToExecutionTab(product, current);
         this.emitRunLifecycle(product, current, 'agent-run-progress');

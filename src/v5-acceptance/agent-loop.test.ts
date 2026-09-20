@@ -604,9 +604,21 @@ describe('V5 agent loop acceptance', () => {
     const second = chain.runtime.requests[1];
     assert.ok(first);
     assert.ok(second);
-    const firstText = JSON.stringify(first.messages);
-    const secondText = JSON.stringify(second.messages);
-    assert.match(firstText, /old answer/);
-    assert.equal(secondText.includes('old answer'), false);
+    const firstHistory = (first.messages ?? [])
+      .flatMap((message) => message.content)
+      .filter((part) => part.type === 'text')
+      .map((part) => (part.type === 'text' ? part.text : ''))
+      .join('\n');
+    const secondHistory = (second.messages ?? [])
+      .flatMap((message) => message.content)
+      .filter((part) => part.type === 'text')
+      .map((part) => (part.type === 'text' ? part.text : ''))
+      .join('\n');
+    assert.match(firstHistory, /<PRIOR_USER_CONTEXT>/);
+    assert.match(firstHistory, /"question":"old"/);
+    assert.equal(firstHistory.includes('old answer'), false);
+    assert.equal(secondHistory.includes('old answer'), false);
+    assert.equal(secondHistory.includes('<PRIOR_USER_CONTEXT>'), false);
+    assert.equal(secondHistory.includes('"question":"old"'), false);
   });
 });
