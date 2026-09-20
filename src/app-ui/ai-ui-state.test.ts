@@ -625,4 +625,32 @@ describe('V5 AgentRun UI events', () => {
     assert.equal(tab(state).entries.length, 0);
     assert.equal(tab(state).activeAskId, null);
   });
+
+  it('keeps the same logical AgentRun visible after a causal popup tab switch', () => {
+    const createId = ids();
+    const dest = 'tab-popup';
+    let state: AiUiState = {};
+    state = appendUserQuestion(state, TAB, 'Open WebDriverIO', SUB_A, createId);
+    state = applyAiAnswerEvent(state, runStarted(), createId);
+    state = applyAiAnswerEvent(
+      state,
+      {
+        type: 'agent-run-progress',
+        askId: ASK_A,
+        runId: RUN_A,
+        tabId: dest,
+        modelStepCount: 1,
+        actionAttemptCount: 1,
+        approvalCount: 0,
+      },
+      createId,
+    );
+    assert.equal(assistants(state, dest).length, 1);
+    assert.equal(assistants(state, dest)[0]?.status, 'working');
+    assert.equal(tab(state, dest).latestRunId, RUN_A);
+    assert.equal(tab(state, dest).latestAskId, ASK_A);
+    assert.equal(tab(state, dest).activeAskId, ASK_A);
+    assert.equal(assistants(state, TAB).length, 1);
+    assert.equal(tab(state, TAB).latestRunId, RUN_A);
+  });
 });

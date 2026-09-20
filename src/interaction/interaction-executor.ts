@@ -9,6 +9,7 @@ import {
   getNavigationLifecycle,
   navigationWaitToError,
   type NavigationMarker,
+  type NavigationWaitResult,
 } from '../browser/navigation-lifecycle';
 import type { PageState } from '../shared/browser-types';
 import { InteractionError, type InteractionErrorCode } from '../shared/interaction-errors';
@@ -195,16 +196,18 @@ export class InteractionExecutor {
     const navigationClick = isNavigationClick(input.proposal, input.stage);
 
     try {
+      let navigationWait: NavigationWaitResult | undefined;
       if (navigationClick) {
-        await this.waitForNavigationTransition({
+        navigationWait = await this.waitForNavigationTransition({
           tabId: input.proposal.tabId,
           marker: input.navigationMarker,
           signal: input.signal,
         });
       }
 
+      const observeTabId = causalPopupDestinationTabId(navigationWait, input.proposal.tabId);
       const { observation, pageState } = await this.observeAfterAction({
-        tabId: input.proposal.tabId,
+        tabId: observeTabId,
         signal: input.signal,
         retryTransient: navigationClick,
       });
@@ -223,6 +226,17 @@ export class InteractionExecutor {
         status: 'succeeded',
         pageState,
         observation,
+        ...(observeTabId !== input.proposal.tabId &&
+        navigationWait?.status === 'settled' &&
+        navigationWait.kind === 'popup'
+          ? {
+              navigation: {
+                kind: 'popup' as const,
+                sourceTabId: navigationWait.sourceTabId,
+                destinationTabId: navigationWait.destinationTabId,
+              },
+            }
+          : {}),
       };
     } catch (error: unknown) {
       return this.finishAfterPrimitive({
@@ -281,10 +295,10 @@ export class InteractionExecutor {
     tabId: string;
     marker: NavigationMarker | undefined;
     signal?: AbortSignal;
-  }): Promise<void> {
+  }): Promise<NavigationWaitResult | undefined> {
     const lifecycle = getNavigationLifecycle(this.deps.adapter);
     if (!lifecycle || input.marker === undefined) {
-      return;
+      return undefined;
     }
 
     this.assertNotCancelled(input.signal);
@@ -294,13 +308,20 @@ export class InteractionExecutor {
     });
 
     if (result.status === 'settled') {
-      console.log(
-        `[interaction] navigation-transition-observed kind=${result.kind} generation=${result.generation}`,
-      );
-      console.log(
-        `[interaction] navigation-settle-completed kind=${result.kind} generation=${result.generation}`,
-      );
-      return;
+      if (result.kind === 'popup') {
+        console.log(
+          `[interaction] navigation-transition-observed kind=popup causal=${result.causedByAgentInputDispatch}`,
+        );
+        console.log('[interaction] navigation-settle-completed kind=popup');
+      } else {
+        console.log(
+          `[interaction] navigation-transition-observed kind=${result.kind} generation=${result.generation}`,
+        );
+        console.log(
+          `[interaction] navigation-settle-completed kind=${result.kind} generation=${result.generation}`,
+        );
+      }
+      return result;
     }
 
     if (result.status === 'timeout') {
@@ -659,6 +680,23 @@ function isTransientPostNavigationObservationError(error: unknown): boolean {
 
 function isNavigationClick(proposal: BoundInteractionProposal, stage: ExecutionStageState): boolean {
   return proposal.kind === 'click' && stage.decision?.outcome === 'ALLOW_NAVIGATE';
+}
+
+function causalPopupDestinationTabId(
+  wait: NavigationWaitResult | undefined,
+  sourceTabId: string,
+): string {
+  if (
+    wait?.status === 'settled' &&
+    wait.kind === 'popup' &&
+    wait.causedByAgentInputDispatch === true &&
+    wait.sourceTabId === sourceTabId &&
+    wait.destinationTabId !== sourceTabId &&
+    wait.destinationTabId.trim() !== ''
+  ) {
+    return wait.destinationTabId;
+  }
+  return sourceTabId;
 }
 
 function isTargetResolutionFailure(errorCode: InteractionErrorCode): boolean {

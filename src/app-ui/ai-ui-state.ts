@@ -132,7 +132,13 @@ export function applyAiAnswerEvent(
     return withTab(state, event.tabId, clearTabConversation(tabOf(state, event.tabId)));
   }
 
-  const tab = tabOf(state, event.tabId);
+  let tab = tabOf(state, event.tabId);
+  if ('runId' in event && tab.latestRunId !== event.runId) {
+    const source = findTabStateForRun(state, event.tabId, event.runId, event.askId);
+    if (source !== undefined && tab.latestAskId === null) {
+      tab = cloneTabAiState(source);
+    }
+  }
   if (tab.staleAskIds.has(event.askId)) {
     return state;
   }
@@ -435,6 +441,32 @@ function withTab(state: AiUiState, tabId: TabId, tab: TabAiUiState): AiUiState {
   return {
     ...state,
     [tabId]: tab,
+  };
+}
+
+function findTabStateForRun(
+  state: AiUiState,
+  excludeTabId: TabId,
+  runId: string,
+  askId: string,
+): TabAiUiState | undefined {
+  for (const [tabId, tab] of Object.entries(state)) {
+    if (tabId === excludeTabId) {
+      continue;
+    }
+    if (tab.latestRunId === runId && tab.latestAskId === askId) {
+      return tab;
+    }
+  }
+  return undefined;
+}
+
+function cloneTabAiState(tab: TabAiUiState): TabAiUiState {
+  return {
+    ...tab,
+    entries: tab.entries.map((entry) => ({ ...entry })),
+    staleAskIds: new Set(tab.staleAskIds),
+    staleSubmissionIds: new Set(tab.staleSubmissionIds),
   };
 }
 

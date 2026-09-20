@@ -1709,3 +1709,199 @@ describe('SafeAgentLoop approval pause and resume', () => {
 function assertIgnoredOutcome(result: { status: string }): void {
   assert.equal(result.status, 'ignored');
 }
+
+const POPUP_DEST: TabId = 'tab-popup-dest';
+
+function destObservation(): PageObservation {
+  return observation({
+    tabId: POPUP_DEST,
+    observationId: 'obs-dest',
+    document: {
+      ...observation().document,
+      revision: 'rev-dest',
+      url: 'https://webdriver.io/',
+      title: 'WebdriverIO',
+    },
+    nodes: [
+      node({
+        targetId: 'target-dest',
+        role: 'link',
+        name: 'Get Started',
+        tag: 'a',
+        interactive: true,
+      }),
+    ],
+  });
+}
+
+function succeededPopup(dest: PageObservation): InteractionResult {
+  return {
+    ...succeeded(dest),
+    navigation: {
+      kind: 'popup',
+      sourceTabId: TAB,
+      destinationTabId: dest.tabId,
+    },
+  };
+}
+
+describe('SafeAgentLoop causal popup continuation', () => {
+  it('completes a popup-only task with one click and destination continuation', async () => {
+    const source = observation();
+    const dest = destObservation();
+    const stepAgent = new FakeStepAgent(async (request, options, callIndex) => {
+      if (callIndex === 1) {
+        assert.equal(request.tabId, TAB);
+        return proposalStep(boundClick(), source);
+      }
+      assert.equal(request.tabId, POPUP_DEST);
+      assert.equal(options?.trustedObservation?.tabId, POPUP_DEST);
+      const progress = options?.trustedProgress ?? [];
+      assert.equal(progress.some((entry) => entry.kind === 'safe-navigation-succeeded'), true);
+      return answerStep('Opened.', dest);
+    });
+    const executor = new FakeV3Executor([succeededPopup(dest)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Open WebDriverIO.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Opened.');
+      assert.equal(result.run.executionTabId, POPUP_DEST);
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(executor.calls[0]?.proposal.tabId, TAB);
+    assert.equal(coordinator.getActiveRunForTab(TAB), undefined);
+  });
+
+  it('continues a later action against the destination tab and does not re-click the source', async () => {
+    const source = observation();
+    const dest = destObservation();
+    const destAfter = observation({
+      ...dest,
+      observationId: 'obs-dest-2',
+      document: { ...dest.document, revision: 'rev-dest-2' },
+    });
+    const stepAgent = new FakeStepAgent(async (request, _options, callIndex) => {
+      if (callIndex === 1) {
+        assert.equal(request.tabId, TAB);
+        return proposalStep(boundClick(), source);
+      }
+      if (callIndex === 2) {
+        assert.equal(request.tabId, POPUP_DEST);
+        return proposalStep(boundClick('rev-dest', 'target-dest', 'obs-dest', POPUP_DEST), dest);
+      }
+      return answerStep('Done.', destAfter);
+    });
+    const executor = new FakeV3Executor([succeededPopup(dest), succeeded(destAfter)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(
+      refOf(start(coordinator, 'Open WebDriverIO and then click Get Started.')),
+    );
+    assert.equal(result.status, 'completed');
+    assert.equal(executor.calls.length, 2);
+    assert.equal(executor.calls[0]?.proposal.tabId, TAB);
+    assert.equal(executor.calls[1]?.proposal.tabId, POPUP_DEST);
+    assert.equal(executor.calls[1]?.proposal.kind, 'click');
+    if (executor.calls[1]?.proposal.kind === 'click') {
+      assert.equal(executor.calls[1].proposal.targetId, 'target-dest');
+    }
+  });
+
+  it('does not adopt a non-causal destination observation', async () => {
+    const source = observation();
+    const dest = destObservation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), source),
+      answerStep('Opened.', source),
+    ]);
+    const executor = new FakeV3Executor([
+      succeeded(dest),
+    ]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator)));
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'ACTION_FAILED');
+      assert.equal(result.run.executionTabId, undefined);
+    }
+  });
+
+  it('blocks a repeat origin popup click after causal adoption', async () => {
+    const source = observation();
+    const dest = destObservation();
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex === 1) {
+        return proposalStep(boundClick(), source);
+      }
+      return proposalStep(boundClick(), source);
+    });
+    const executor = new FakeV3Executor([succeededPopup(dest)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator)));
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'AGENT_LOOP_NO_PROGRESS');
+    }
+    assert.equal(executor.calls.length, 1);
+  });
+
+  it('terminates when the adopted destination tab is closed', async () => {
+    const source = observation();
+    const dest = destObservation();
+    const hold = new Deferred();
+    const stepAgent = new FakeStepAgent(async (request, _options, callIndex) => {
+      if (callIndex === 1) {
+        return proposalStep(boundClick(), source);
+      }
+      await hold.promise;
+      return answerStep('Opened.', dest);
+    });
+    const executor = new FakeV3Executor([succeededPopup(dest)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const run = start(coordinator);
+    const pending = loop.run(refOf(run));
+    await waitUntil(() => stepAgent.calls.length >= 2);
+    coordinator.clearTab(POPUP_DEST);
+    hold.resolve();
+    const result = await pending;
+    assert.equal(result.status, 'ignored');
+    assert.equal(executor.calls.length, 1);
+  });
+
+  it('prepares a later consequential action against the destination observation', async () => {
+    const source = observation();
+    const dest = destObservation();
+    const stepAgent = new FakeStepAgent(async (request, _options, callIndex) => {
+      if (callIndex === 1) {
+        return proposalStep(boundClick(), source);
+      }
+      if (callIndex === 2) {
+        return proposalStep(boundClick('rev-dest', 'target-dest', 'obs-dest', POPUP_DEST), dest);
+      }
+      return answerStep('Booked.', dest);
+    });
+    const executor = new FakeV3Executor([
+      succeededPopup(dest),
+      denied('DEFERRED_TO_EXECUTE'),
+    ]);
+    const coordinator = new AgentRunCoordinator();
+    const approvalPort = new FakeApprovalPort(coordinator);
+    const loop = new SafeAgentLoop({
+      coordinator,
+      stepAgent,
+      interactionExecutor: executor,
+      approvalPort,
+    });
+    const run = start(coordinator);
+    const pending = loop.run(refOf(run));
+    await waitUntil(() => coordinator.getRun(run.runId)?.state === 'awaiting-approval');
+    assert.equal(approvalPort.calls.length, 1);
+    assert.equal(approvalPort.calls[0]?.proposal.tabId, POPUP_DEST);
+    assert.equal(approvalPort.calls[0]?.observation.tabId, POPUP_DEST);
+    completeApprovedExecution(coordinator, approvalPort.lastApprovalId ?? '');
+    const result = await pending;
+    assert.equal(result.status, 'completed');
+  });
+});
+
+

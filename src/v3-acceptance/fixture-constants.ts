@@ -15,6 +15,7 @@ export const V3_DELAYED_NAVIGATION_A_PATH = '/interaction/delayed-navigation-a.h
 export const V3_DELAYED_NAVIGATION_B_PATH = '/interaction/delayed-navigation-b.html';
 export const V3_SAME_DOCUMENT_PATH = '/interaction/same-document.html';
 export const V3_POPUP_SOURCE_PATH = '/interaction/popup-source.html';
+export const V3_POPUP_DESTINATION_MARKER = 'V3_POPUP_DESTINATION_MARKER';
 
 export const V3_EXPANDED_DETAIL_MARKER = 'V3_EXPANDED_DETAIL_MARKER';
 export const V3_LOWER_SECTION_MARKER = 'V3_LOWER_SECTION_MARKER';

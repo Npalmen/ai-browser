@@ -346,6 +346,29 @@ describe('AgentRunExecutor', () => {
     assert.equal(harness.coordinator.getActiveRunForTab(TAB), undefined);
     hold.resolve({ status: 'ignored' });
   });
+
+  it('cancels the unique run from an adopted destination tab', async () => {
+    const hold = new Deferred<SafeAgentLoopResult>();
+    const loop = new FakeLoop(async () => hold.promise);
+    const lifecycle = new FakeLifecycle();
+    const harness = executorOf(loop, { lifecycle });
+    const started = await harness.executor.start(TAB, 'Do');
+    assert.equal(started.status, 'started');
+    if (started.status !== 'started') {
+      throw new Error('expected started');
+    }
+    const adopted = harness.coordinator.adoptCausalPopup(started.ref, TAB_B);
+    assert.equal(adopted.status, 'applied');
+    assert.equal(harness.executor.isActive(TAB_B), true);
+    assert.equal(harness.executor.getActiveRef(TAB_B)?.runId, started.ref.runId);
+    harness.executor.cancel(started.ref, 'TAB_CLOSED');
+    assert.equal(lifecycle.invalidated.includes(TAB), true);
+    assert.equal(lifecycle.invalidated.includes(TAB_B), true);
+    hold.resolve({ status: 'ignored' });
+    await started.completion;
+    assert.equal(harness.executor.isActive(TAB), false);
+    assert.equal(harness.executor.isActive(TAB_B), false);
+  });
 });
 
 describe('AgentRunExecutor source isolation', () => {

@@ -870,6 +870,40 @@ describe('AgentRunController', () => {
     assert.equal(second.status, 'ignored');
     assert.equal(loop.runCalls.length, 1);
   });
+
+  it('keeps the same AgentRun active and visible on an adopted popup tab', async () => {
+    const hold = new Deferred<SafeAgentLoopResult>();
+    const box: { coordinator?: AgentRunCoordinator } = {};
+    const loop = new FakeLoop(async (ref, options) => {
+      const coordinator = box.coordinator;
+      assert.ok(coordinator);
+      const adopted = coordinator.adoptCausalPopup(ref, TAB_B);
+      assert.equal(adopted.status, 'applied');
+      const snapshot = coordinator.getRun(ref.runId);
+      assert.ok(snapshot);
+      options.onContinuing?.(snapshot);
+      return hold.promise;
+    });
+    const harness = controllerOf(loop);
+    box.coordinator = harness.coordinator;
+    const started = await harness.controller.start(TAB, 'Open WebDriverIO', { askId: 'ask-1' });
+    assert.equal(started.status, 'started');
+    assert.equal(harness.controller.isActive(TAB), true);
+    assert.equal(harness.controller.isActive(TAB_B), true);
+    assert.equal(
+      harness.events.some(
+        (event) => event.type === 'agent-run-progress' && event.tabId === TAB_B,
+      ),
+      true,
+    );
+    assert.equal(harness.controller.cancel(TAB_B, 'TAB_CLOSED'), true);
+    hold.resolve({ status: 'ignored' });
+    if (started.status === 'started') {
+      await started.completion;
+    }
+    assert.equal(harness.controller.isActive(TAB), false);
+    assert.equal(harness.controller.isActive(TAB_B), false);
+  });
 });
 
 describe('AgentRunController source isolation', () => {
@@ -885,7 +919,6 @@ describe('AgentRunController source isolation', () => {
       'AgentRunCoordinator',
       'ApprovalManager',
       'ApprovalLifecycle',
-      'getActiveRef',
     ]) {
       assert.equal(source.includes(token), false, token);
     }

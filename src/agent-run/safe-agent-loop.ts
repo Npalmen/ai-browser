@@ -123,6 +123,11 @@ export class SafeAgentLoop {
         return budgetStop;
       }
 
+      const liveRun = this.coordinator.getRun(ref.runId);
+      if (liveRun === undefined) {
+        return { status: 'ignored' };
+      }
+
       let step;
       const modelStepIteration = modelIteration + 1;
       const postNavigation =
@@ -131,7 +136,7 @@ export class SafeAgentLoop {
       try {
         const trustedObservation = continuation.trustedObservation;
         continuation.trustedObservation = undefined;
-        step = await this.stepAgent.step(this.buildStepRequest(runSnapshot, options), {
+        step = await this.stepAgent.step(this.buildStepRequest(liveRun, options), {
           signal: options.signal,
           onAnswerTextDelta: options.onAnswerTextDelta,
           trustedProgress: trustedProgress.length > 0 ? trustedProgress : undefined,
@@ -186,6 +191,16 @@ export class SafeAgentLoop {
 
       const fingerprint = fingerprintBoundProposal(step.proposal);
 
+      const originPopupRepeat = this.coordinator.assertNotRepeatOriginPopupClick(
+        ref,
+        step.proposal.tabId,
+        step.proposal.kind,
+      );
+      const originPopupRepeatStop = this.terminalFromMutation(originPopupRepeat);
+      if (originPopupRepeatStop !== undefined) {
+        return originPopupRepeatStop;
+      }
+
       const noProgress = this.coordinator.assertNoImmediateRepeat(ref, fingerprint);
       const noProgressStop = this.terminalFromMutation(noProgress);
       if (noProgressStop !== undefined) {
@@ -234,7 +249,7 @@ export class SafeAgentLoop {
     options: SafeAgentLoopOptions,
   ): InteractiveStepRequest {
     return {
-      tabId: run.tabId,
+      tabId: run.executionTabId ?? run.tabId,
       instruction: run.instruction,
       ...(options.taskClass !== undefined ? { taskClass: options.taskClass } : {}),
       ...(options.needsVision === true ? { needsVision: true } : {}),
@@ -331,14 +346,43 @@ export class SafeAgentLoop {
     continuation: PostNavigationContinuation,
   ): SafeAgentLoopResult | undefined {
     const postObservation = result.observation;
-    if (postObservation === undefined || postObservation.tabId !== ref.tabId) {
+    const live = this.coordinator.getRun(ref.runId);
+    const executionTabId = live?.executionTabId ?? ref.tabId;
+    const popup = result.navigation;
+    const causalPopup =
+      popup?.kind === 'popup' &&
+      popup.sourceTabId === ref.tabId &&
+      popup.destinationTabId !== ref.tabId &&
+      postObservation?.tabId === popup.destinationTabId;
+
+    if (postObservation === undefined) {
       return this.failTerminal(ref, 'ACTION_FAILED');
+    }
+    if (
+      !causalPopup &&
+      postObservation.tabId !== executionTabId &&
+      postObservation.tabId !== ref.tabId
+    ) {
+      return this.failTerminal(ref, 'ACTION_FAILED');
+    }
+
+    if (causalPopup) {
+      const adopted = this.coordinator.adoptCausalPopup(ref, popup.destinationTabId);
+      if (adopted.status === 'ignored') {
+        return this.failTerminal(ref, 'ACTION_FAILED');
+      }
+      const adoptStop = this.terminalFromMutation(adopted);
+      if (adoptStop !== undefined) {
+        return adoptStop;
+      }
     }
 
     const revisionChanged =
       postObservation.document.revision !== step.observation.document.revision;
     const urlChanged = postObservation.document.url !== step.observation.document.url;
-    const navigated = step.proposal.kind === 'click' && (revisionChanged || urlChanged);
+    const navigated =
+      causalPopup === true ||
+      (step.proposal.kind === 'click' && (revisionChanged || urlChanged));
     const fingerprint = fingerprintBoundProposal(step.proposal);
 
     const recordedFingerprint = this.coordinator.recordSuccessfulActionFingerprint(
@@ -354,7 +398,7 @@ export class SafeAgentLoop {
       trustedProgress.push({
         kind: 'safe-navigation-succeeded',
         pageChanged: true,
-        sameDocument: !revisionChanged,
+        sameDocument: causalPopup !== true && !revisionChanged,
       });
     } else {
       trustedProgress.push({
@@ -366,7 +410,8 @@ export class SafeAgentLoop {
 
     if (navigated) {
       continuation.observationRetriesRemaining = 1;
-      continuation.trustedObservation = urlChanged ? postObservation : undefined;
+      continuation.trustedObservation =
+        causalPopup === true || urlChanged ? postObservation : undefined;
     } else {
       continuation.observationRetriesRemaining = 0;
       continuation.trustedObservation = undefined;

@@ -117,4 +117,14 @@ export interface InteractionResult {
   pageState: PageState;
   observation?: PageObservation;
   errorCode?: InteractionErrorCode;
+  /**
+   * Trusted-main causal popup navigation. Not a capability token and not
+   * model-visible. Present only when the click opened an allowed website
+   * popup inside the exact AgentInputDispatchScope.
+   */
+  navigation?: {
+    readonly kind: 'popup';
+    readonly sourceTabId: TabId;
+    readonly destinationTabId: TabId;
+  };
 }

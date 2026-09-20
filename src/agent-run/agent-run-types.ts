@@ -78,6 +78,8 @@ export interface AgentRunSnapshot {
   readonly terminalReason?: AgentRunTerminalReason;
   readonly lastSuccessfulActionFingerprint?: string;
   readonly modelErrorCode?: ModelErrorCode;
+  /** Trusted current observation/execution tab. Origin tabId remains AgentRunRef identity. */
+  readonly executionTabId?: TabId;
 }
 
 export type AgentRunRefStatus =

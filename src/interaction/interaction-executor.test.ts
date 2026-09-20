@@ -75,7 +75,7 @@ function record(targetId: string, backendNodeId: number) {
 }
 
 function createFakeAdapter(options: {
-  observePage?: () => Promise<PageObservation>;
+  observePage?: (tabId: string) => Promise<PageObservation>;
 } = {}): {
   adapter: BrowserAdapter;
   counts: {
@@ -109,10 +109,10 @@ function createFakeAdapter(options: {
     forward: async () => undefined,
     reload: async () => undefined,
     getPageState: async () => pageState(),
-    observePage: async () => {
+    observePage: async (tabId) => {
       counts.observePage += 1;
       if (options.observePage) {
-        return options.observePage();
+        return options.observePage(tabId);
       }
       return observation([
         node({
@@ -1073,15 +1073,27 @@ describe('navigation lifecycle completion', () => {
     assert.equal(counts.click, 1);
   });
 
-  it('does not wait forever on the source tab when a popup is converted', async () => {
+  it('observes the causal popup destination and does not re-click', async () => {
     const lifecycle = new TabNavigationLifecycle();
+    const destObservation = {
+      ...linkObservation('rev-dest', 'https://example.com/popup'),
+      tabId: 'tab-dest',
+      observationId: 'obs-dest',
+    };
     const { adapter, counts } = createFakeAdapter({
-      observePage: async () => linkObservation('rev-A', OLD_URL),
+      observePage: async (tabId) =>
+        tabId === 'tab-dest' ? destObservation : linkObservation('rev-A', OLD_URL),
     });
     attachLifecycle(adapter, lifecycle);
     adapter.click = async () => {
       counts.click += 1;
-      lifecycle.notePopupOpenedFrom('tab-1');
+      lifecycle.notePopupOpenedFrom({
+        sourceTabId: 'tab-1',
+        destinationTabId: 'tab-dest',
+        causedByAgentInputDispatch: true,
+      });
+      lifecycle.noteMainFrameNavigationStart('tab-dest');
+      lifecycle.noteMainFrameNavigationSettled('tab-dest');
       return { primitive: 'click' };
     };
     const { executor, registry } = createExecutor(adapter, new TargetRegistry(), {
@@ -1095,8 +1107,82 @@ describe('navigation lifecycle completion', () => {
     });
 
     assert.equal(result.status, 'succeeded');
-    assert.equal(result.observation?.document.revision, 'rev-A');
+    assert.equal(result.observation?.tabId, 'tab-dest');
+    assert.equal(result.observation?.document.url, 'https://example.com/popup');
+    assert.equal(result.navigation?.kind, 'popup');
+    assert.equal(result.navigation?.sourceTabId, 'tab-1');
+    assert.equal(result.navigation?.destinationTabId, 'tab-dest');
     assert.equal(counts.click, 1);
+  });
+
+  it('does not adopt a non-causal popup observation', async () => {
+    const lifecycle = new TabNavigationLifecycle();
+    const destObservation = {
+      ...linkObservation('rev-dest', 'https://example.com/popup'),
+      tabId: 'tab-dest',
+      observationId: 'obs-dest',
+    };
+    const { adapter, counts } = createFakeAdapter({
+      observePage: async (tabId) =>
+        tabId === 'tab-dest' ? destObservation : linkObservation('rev-A', OLD_URL),
+    });
+    attachLifecycle(adapter, lifecycle);
+    adapter.click = async () => {
+      counts.click += 1;
+      lifecycle.notePopupOpenedFrom({
+        sourceTabId: 'tab-1',
+        destinationTabId: 'tab-dest',
+        causedByAgentInputDispatch: false,
+      });
+      lifecycle.noteMainFrameNavigationStart('tab-dest');
+      lifecycle.noteMainFrameNavigationSettled('tab-dest');
+      return { primitive: 'click' };
+    };
+    const { executor, registry } = createExecutor(adapter, new TargetRegistry(), {
+      navigationWaitTimeoutMs: 200,
+    });
+    seedLink(registry);
+
+    const result = await executor.execute({
+      proposal: navigationProposal(),
+      observation: linkObservation('rev-A', OLD_URL),
+    });
+
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.observation?.tabId, 'tab-1');
+    assert.equal(result.observation?.document.url, OLD_URL);
+    assert.equal(result.navigation, undefined);
+    assert.equal(counts.click, 1);
+  });
+
+  it('does not re-click when a popup destination never becomes usable', async () => {
+    const lifecycle = new TabNavigationLifecycle();
+    const { adapter, counts } = createFakeAdapter({
+      observePage: async () => linkObservation('rev-A', OLD_URL),
+    });
+    attachLifecycle(adapter, lifecycle);
+    adapter.click = async () => {
+      counts.click += 1;
+      lifecycle.notePopupOpenedFrom({
+        sourceTabId: 'tab-1',
+        destinationTabId: 'tab-dest',
+        causedByAgentInputDispatch: true,
+      });
+      return { primitive: 'click' };
+    };
+    const { executor, registry } = createExecutor(adapter, new TargetRegistry(), {
+      navigationWaitTimeoutMs: 40,
+    });
+    seedLink(registry);
+
+    const result = await executor.execute({
+      proposal: navigationProposal(),
+      observation: linkObservation('rev-A', OLD_URL),
+    });
+
+    assert.equal(result.status, 'execution-state-unknown');
+    assert.equal(counts.click, 1);
+    assert.equal(result.navigation, undefined);
   });
 });
 

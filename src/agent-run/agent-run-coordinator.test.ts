@@ -846,7 +846,86 @@ describe('AgentRunCoordinator approval waiters and trusted outcomes', () => {
   });
 });
 
-describe('AgentRunCoordinator source isolation', () => {
+describe('AgentRunCoordinator causal popup continuation', () => {
+  it('adopts only the exact destination tab onto the same run', () => {
+    const harness = createHarness();
+    const run = start(harness);
+    const adopted = requireApplied(harness.coordinator.adoptCausalPopup(refOf(run), 'tab-dest'));
+    assert.equal(adopted.executionTabId, 'tab-dest');
+    assert.equal(adopted.tabId, 'tab-1');
+    assert.equal(harness.coordinator.getActiveRunForTab('tab-1')?.runId, run.runId);
+    assert.equal(harness.coordinator.getActiveRunForTab('tab-dest')?.runId, run.runId);
+    assert.equal(harness.coordinator.inspectRun(refOf(run)).status, 'current');
+  });
+
+  it('does not adopt a destination already owned independently by another run', () => {
+    const harness = createHarness();
+    const origin = start(harness, 'tab-1');
+    const other = start(harness, 'tab-other');
+    requireApplied(harness.coordinator.adoptCausalPopup(refOf(origin), 'tab-dest'));
+    assert.equal(harness.coordinator.getActiveRunForTab('tab-other')?.runId, other.runId);
+    assert.equal(harness.coordinator.getActiveRunForTab('tab-dest')?.runId, origin.runId);
+    assert.notEqual(harness.coordinator.getActiveRunForTab('tab-dest')?.runId, other.runId);
+  });
+
+  it('does not transfer ownership for a popup from an unrelated tab', () => {
+    const harness = createHarness();
+    const run = start(harness, 'tab-1');
+    assert.equal(harness.coordinator.getActiveRunForTab('tab-unrelated'), undefined);
+    assert.equal(harness.coordinator.getRun(run.runId)?.executionTabId, undefined);
+  });
+
+  it('blocks a repeat origin click after causal popup adoption', () => {
+    const harness = createHarness();
+    const run = start(harness);
+    requireApplied(harness.coordinator.adoptCausalPopup(refOf(run), 'tab-dest'));
+    const blocked = harness.coordinator.assertNotRepeatOriginPopupClick(refOf(run), 'tab-1', 'click');
+    assert.equal(blocked.status, 'applied');
+    if (blocked.status === 'applied') {
+      assert.equal(blocked.snapshot.state, 'blocked');
+      assert.equal(blocked.snapshot.terminalReason, 'AGENT_LOOP_NO_PROGRESS');
+    }
+  });
+
+  it('allows a later click on the adopted destination tab', () => {
+    const harness = createHarness();
+    const run = start(harness);
+    requireApplied(harness.coordinator.adoptCausalPopup(refOf(run), 'tab-dest'));
+    const allowed = harness.coordinator.assertNotRepeatOriginPopupClick(
+      refOf(run),
+      'tab-dest',
+      'click',
+    );
+    assert.equal(allowed.status, 'applied');
+    if (allowed.status === 'applied') {
+      assert.equal(allowed.snapshot.state, 'running');
+    }
+  });
+
+  it('cancels the unique run when the adopted destination tab is closed', () => {
+    const harness = createHarness();
+    const run = start(harness);
+    requireApplied(harness.coordinator.adoptCausalPopup(refOf(run), 'tab-dest'));
+    harness.coordinator.clearTab('tab-dest');
+    assert.equal(harness.coordinator.getRun(run.runId), undefined);
+    assert.equal(harness.coordinator.getActiveRunForTab('tab-1'), undefined);
+    assert.equal(harness.coordinator.getActiveRunForTab('tab-dest'), undefined);
+  });
+
+  it('supersedes the origin run when a new Act starts on the adopted destination', () => {
+    const harness = createHarness();
+    const origin = start(harness, 'tab-1', 'open popup');
+    requireApplied(harness.coordinator.adoptCausalPopup(refOf(origin), 'tab-dest'));
+    const next = start(harness, 'tab-dest', 'new task on dest');
+    assert.equal(harness.coordinator.getRun(origin.runId)?.state, 'cancelled');
+    assert.equal(harness.coordinator.getRun(origin.runId)?.terminalReason, 'SUPERSEDED');
+    assert.equal(next.state, 'running');
+    assert.equal(harness.coordinator.getActiveRunForTab('tab-dest')?.runId, next.runId);
+    assert.equal(harness.coordinator.getActiveRunForTab('tab-1'), undefined);
+  });
+});
+
+describe('AgentRunCoordinator isolation', () => {
   it('does not import browser, approval, model, Electron, React, or IPC surfaces', () => {
     const dir = path.join(__dirname);
     const files = readdirSync(dir).filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts'));

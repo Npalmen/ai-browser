@@ -17,6 +17,7 @@ import {
   V3_DELAYED_NAVIGATION_A_PATH,
   V3_POLICY_DENY_PATH,
   V3_POPUP_SOURCE_PATH,
+  V3_POPUP_DESTINATION_MARKER,
   V3_PROMPT_INJECTION_CANARY,
   V3_PROMPT_INJECTION_PATH,
   V3_SAFE_INTERACT_PATH,
@@ -560,10 +561,20 @@ async function run(): Promise<void> {
       `popup nav status=${popup.status} error=${popup.errorCode ?? 'none'}`,
     );
     assert.equal(
-      observationContainsText(popup.observation!.nodes, 'V3_POPUP_SOURCE_MARKER'),
+      observationContainsText(popup.observation!.nodes, V3_POPUP_DESTINATION_MARKER),
+      true,
+    );
+    assert.equal(popup.navigation?.kind, 'popup');
+    assert.equal(popup.navigation?.sourceTabId, tabId);
+    assert.ok(popup.navigation?.destinationTabId);
+    assert.notEqual(popup.navigation?.destinationTabId, tabId);
+    const sourceAfterPopup = await adapter.observePage(tabId, { includeScreenshot: false });
+    assert.equal(
+      observationContainsText(sourceAfterPopup.nodes, 'V3_POPUP_SOURCE_MARKER'),
       true,
     );
     await waitUntil(() => adapter.getBrowserState().tabs.length > tabsBeforePopup);
+    assert.equal(adapter.getBrowserState().tabs.length, tabsBeforePopup + 1);
     assert.equal(lastAuditEvent(audit).adapterPrimitiveInvoked, true);
     assertDebuggerDetached(window);
 

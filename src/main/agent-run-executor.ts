@@ -105,7 +105,7 @@ export class AgentRunExecutor implements AgentRunExecutorPort {
   }
 
   cancel(ref: AgentRunRef, reason: AgentRunCancelledReason = 'USER_CANCELLED'): boolean {
-    const active = this.activeByTab.get(ref.tabId);
+    const active = this.resolveActive(ref.tabId);
     if (active === undefined || !sameRef(active.ref, ref)) {
       return false;
     }
@@ -126,11 +126,11 @@ export class AgentRunExecutor implements AgentRunExecutorPort {
   }
 
   getActiveRef(tabId: TabId): AgentRunRef | undefined {
-    return this.activeByTab.get(tabId)?.ref;
+    return this.resolveActive(tabId)?.ref;
   }
 
   isActive(tabId: TabId): boolean {
-    return this.activeByTab.has(tabId);
+    return this.resolveActive(tabId) !== undefined;
   }
 
   /**
@@ -190,7 +190,7 @@ export class AgentRunExecutor implements AgentRunExecutorPort {
   }
 
   private async terminateCurrent(tabId: TabId, reason: AgentRunCancelledReason): Promise<void> {
-    const active = this.activeByTab.get(tabId);
+    const active = this.resolveActive(tabId);
     if (active === undefined) {
       return;
     }
@@ -211,6 +211,25 @@ export class AgentRunExecutor implements AgentRunExecutorPort {
     this.coordinator.cancelRun(active.ref, reason);
     active.controller.abort();
     this.lifecycle.invalidateTab(active.ref.tabId);
+    if (snapshot.executionTabId !== undefined && snapshot.executionTabId !== active.ref.tabId) {
+      this.lifecycle.invalidateTab(snapshot.executionTabId);
+    }
+  }
+
+  private resolveActive(tabId: TabId): ActiveExecution | undefined {
+    const direct = this.activeByTab.get(tabId);
+    if (direct !== undefined) {
+      return direct;
+    }
+    const snapshot = this.coordinator.getActiveRunForTab(tabId);
+    if (snapshot === undefined) {
+      return undefined;
+    }
+    const origin = this.activeByTab.get(snapshot.tabId);
+    if (origin === undefined || origin.ref.runId !== snapshot.runId) {
+      return undefined;
+    }
+    return origin;
   }
 
   private isPostDispatch(active: ActiveExecution): boolean {

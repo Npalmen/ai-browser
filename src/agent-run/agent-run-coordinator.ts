@@ -52,6 +52,8 @@ interface InternalAgentRun {
   pendingApprovalId?: string;
   cancellationRequested?: AgentRunCancelledReason;
   modelErrorCode?: ModelErrorCode;
+  executionTabId: TabId;
+  originPopupClickConsumed?: boolean;
 }
 
 interface ApprovalWaiter {
@@ -95,6 +97,7 @@ export class AgentRunCoordinator {
       modelStepCount: 0,
       actionAttemptCount: 0,
       approvalCount: 0,
+      executionTabId: tabId,
     };
 
     this.supersedeActiveRun(tabId);
@@ -136,7 +139,7 @@ export class AgentRunCoordinator {
     if (latestGeneration !== record.generation) {
       return { status: 'superseded', snapshot };
     }
-    if (isTerminalAgentRunState(record.state) || this.activeByTab.get(record.tabId) !== record.runId) {
+    if (isTerminalAgentRunState(record.state) || !this.isActiveOnOwnedTabs(record)) {
       return { status: 'terminal', snapshot };
     }
     return { status: 'current', snapshot };
@@ -171,7 +174,7 @@ export class AgentRunCoordinator {
     if (record === undefined) {
       return ignored();
     }
-    if (isTerminalAgentRunState(record.state) || this.activeByTab.get(record.tabId) !== record.runId) {
+    if (isTerminalAgentRunState(record.state) || !this.isActiveOnOwnedTabs(record)) {
       return ignored();
     }
     if (record.state !== 'awaiting-approval') {
@@ -265,7 +268,7 @@ export class AgentRunCoordinator {
     if (record === undefined || isTerminalAgentRunState(record.state)) {
       return false;
     }
-    if (this.activeByTab.get(record.tabId) !== record.runId) {
+    if (!this.isActiveOnOwnedTabs(record)) {
       return false;
     }
     if (record.state !== 'running') {
@@ -356,7 +359,7 @@ export class AgentRunCoordinator {
     ) {
       return 'ignored';
     }
-    if (isTerminalAgentRunState(record.state) || this.activeByTab.get(record.tabId) !== record.runId) {
+    if (isTerminalAgentRunState(record.state) || !this.isActiveOnOwnedTabs(record)) {
       return 'ignored';
     }
     if (record.state !== 'awaiting-approval' || record.pendingApprovalId !== approvalId) {
@@ -393,7 +396,7 @@ export class AgentRunCoordinator {
       this.releaseSettledWaiter(approvalId);
       return ignored();
     }
-    if (isTerminalAgentRunState(record.state) || this.activeByTab.get(record.tabId) !== record.runId) {
+    if (isTerminalAgentRunState(record.state) || !this.isActiveOnOwnedTabs(record)) {
       this.releaseSettledWaiter(approvalId);
       return ignored();
     }
@@ -476,6 +479,58 @@ export class AgentRunCoordinator {
     return applied(record);
   }
 
+  assertNotRepeatOriginPopupClick(
+    ref: AgentRunRef,
+    proposalTabId: TabId,
+    proposalKind: 'click' | 'type' | 'select' | 'scroll',
+  ): AgentRunMutationResult {
+    const record = this.resolveLatestMatchingRun(ref);
+    if (record === undefined) {
+      return ignored();
+    }
+    this.assertMutableCurrent(record);
+    this.assertState(record, 'running');
+    if (
+      record.originPopupClickConsumed === true &&
+      proposalKind === 'click' &&
+      proposalTabId === record.tabId &&
+      record.executionTabId !== record.tabId
+    ) {
+      return this.transitionRecord(record, 'blocked', 'AGENT_LOOP_NO_PROGRESS');
+    }
+    return applied(record);
+  }
+
+  adoptCausalPopup(ref: AgentRunRef, destinationTabId: TabId): AgentRunMutationResult {
+    requireTabId(destinationTabId);
+    const record = this.resolveLatestMatchingRun(ref);
+    if (record === undefined) {
+      return ignored();
+    }
+    this.assertMutableCurrent(record);
+    this.assertState(record, 'running');
+    if (destinationTabId === record.tabId) {
+      return ignored();
+    }
+    if (record.executionTabId === destinationTabId) {
+      return applied(record);
+    }
+    if (record.executionTabId !== record.tabId) {
+      return ignored();
+    }
+
+    this.supersedeActiveRun(destinationTabId);
+    if (isTerminalAgentRunState(record.state) || !this.isActiveOnOwnedTabs(record)) {
+      return ignored();
+    }
+
+    record.executionTabId = destinationTabId;
+    record.originPopupClickConsumed = true;
+    this.activeByTab.set(destinationTabId, record.runId);
+    this.audit('state-transition', record);
+    return applied(record);
+  }
+
   clearTab(tabId: TabId): void {
     const activeId = this.activeByTab.get(tabId);
     if (activeId !== undefined) {
@@ -486,7 +541,7 @@ export class AgentRunCoordinator {
     }
 
     for (const record of [...this.byRunId.values()]) {
-      if (record.tabId !== tabId) {
+      if (record.tabId !== tabId && record.executionTabId !== tabId) {
         continue;
       }
       this.clearApprovalCorrelation(record);
@@ -583,7 +638,7 @@ export class AgentRunCoordinator {
   }
 
   private assertMutableCurrent(record: InternalAgentRun): void {
-    if (isTerminalAgentRunState(record.state) || this.activeByTab.get(record.tabId) !== record.runId) {
+    if (isTerminalAgentRunState(record.state) || !this.isActiveOnOwnedTabs(record)) {
       throw new AgentRunError(
         'AGENT_RUN_INVALID_TRANSITION',
         `AgentRun ${record.runId} is terminal and cannot transition.`,
@@ -628,6 +683,22 @@ export class AgentRunCoordinator {
     if (this.activeByTab.get(record.tabId) === record.runId) {
       this.activeByTab.delete(record.tabId);
     }
+    if (
+      record.executionTabId !== record.tabId &&
+      this.activeByTab.get(record.executionTabId) === record.runId
+    ) {
+      this.activeByTab.delete(record.executionTabId);
+    }
+  }
+
+  private isActiveOnOwnedTabs(record: InternalAgentRun): boolean {
+    if (this.activeByTab.get(record.tabId) === record.runId) {
+      return true;
+    }
+    return (
+      record.executionTabId !== record.tabId &&
+      this.activeByTab.get(record.executionTabId) === record.runId
+    );
   }
 
   private clearApprovalCorrelation(record: InternalAgentRun): void {
@@ -747,6 +818,7 @@ function toSnapshot(record: InternalAgentRun): AgentRunSnapshot {
       ? { lastSuccessfulActionFingerprint: record.lastSuccessfulActionFingerprint }
       : {}),
     ...(record.modelErrorCode !== undefined ? { modelErrorCode: record.modelErrorCode } : {}),
+    ...(record.executionTabId !== record.tabId ? { executionTabId: record.executionTabId } : {}),
   });
 }
 

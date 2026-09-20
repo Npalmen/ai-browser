@@ -11,8 +11,16 @@ export type NavigationWaitKind = 'main-frame' | 'same-document' | 'popup';
 export type NavigationWaitResult =
   | {
       readonly status: 'settled';
-      readonly kind: NavigationWaitKind;
+      readonly kind: 'main-frame' | 'same-document';
       readonly generation: number;
+    }
+  | {
+      readonly status: 'settled';
+      readonly kind: 'popup';
+      readonly generation: number;
+      readonly sourceTabId: string;
+      readonly destinationTabId: string;
+      readonly causedByAgentInputDispatch: boolean;
     }
   | {
       readonly status: 'timeout';
@@ -21,6 +29,12 @@ export type NavigationWaitResult =
   | {
       readonly status: 'cancelled';
     };
+
+export interface CausalPopupOpened {
+  readonly sourceTabId: string;
+  readonly destinationTabId: string;
+  readonly causedByAgentInputDispatch: boolean;
+}
 
 export interface NavigationWaitOptions {
   readonly signal?: AbortSignal;
@@ -36,11 +50,18 @@ export interface NavigationLifecyclePort {
   ): Promise<NavigationWaitResult>;
 }
 
+interface RecordedPopup {
+  generation: number;
+  destinationTabId: string;
+  causedByAgentInputDispatch: boolean;
+}
+
 interface TabNavigationState {
   generation: number;
   settledGeneration: number;
   inflightGeneration: number | null;
   popupGeneration: number;
+  popups: RecordedPopup[];
   lastKind: NavigationWaitKind;
   sameDocumentPending: boolean;
 }
@@ -111,9 +132,15 @@ export class TabNavigationLifecycle {
     this.notify();
   }
 
-  notePopupOpenedFrom(sourceTabId: string): void {
-    const state = this.ensure(sourceTabId);
+  notePopupOpenedFrom(input: CausalPopupOpened): void {
+    const state = this.ensure(input.sourceTabId);
     state.popupGeneration += 1;
+    state.popups.push({
+      generation: state.popupGeneration,
+      destinationTabId: input.destinationTabId,
+      causedByAgentInputDispatch: input.causedByAgentInputDispatch,
+    });
+    this.ensure(input.destinationTabId);
     this.notify();
   }
 
@@ -145,12 +172,19 @@ export class TabNavigationLifecycle {
 
       const check = (): void => {
         const state = this.tabs.get(tabId) ?? this.ensure(tabId);
-        if (state.popupGeneration > marker.popupGeneration) {
-          finish({
-            status: 'settled',
-            kind: 'popup',
-            generation: state.generation,
-          });
+        const popup = state.popups.find((entry) => entry.generation > marker.popupGeneration);
+        if (popup !== undefined) {
+          const destination = this.tabs.get(popup.destinationTabId);
+          if (isDestinationUsable(destination)) {
+            finish({
+              status: 'settled',
+              kind: 'popup',
+              generation: state.generation,
+              sourceTabId: tabId,
+              destinationTabId: popup.destinationTabId,
+              causedByAgentInputDispatch: popup.causedByAgentInputDispatch,
+            });
+          }
           return;
         }
         if (
@@ -160,7 +194,7 @@ export class TabNavigationLifecycle {
         ) {
           finish({
             status: 'settled',
-            kind: state.lastKind,
+            kind: state.lastKind === 'popup' ? 'main-frame' : state.lastKind,
             generation: state.generation,
           });
         }
@@ -206,6 +240,7 @@ export class TabNavigationLifecycle {
       settledGeneration: 0,
       inflightGeneration: null,
       popupGeneration: 0,
+      popups: [],
       lastKind: 'main-frame',
       sameDocumentPending: false,
     };
@@ -218,6 +253,14 @@ export class TabNavigationLifecycle {
       waiter();
     }
   }
+}
+
+function isDestinationUsable(state: TabNavigationState | undefined): boolean {
+  return (
+    state !== undefined &&
+    state.settledGeneration > 0 &&
+    state.inflightGeneration === null
+  );
 }
 
 export function getNavigationLifecycle(

@@ -530,8 +530,6 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
       const activate = shouldActivateConvertedPopup(tabId, activeTabId);
 
       if (isAllowedWebsiteNavigation(url)) {
-        this.navigationLifecycle.notePopupOpenedFrom(tabId);
-        console.log('[adapter] navigation-popup-opened');
         void this.createTabInternal({
           url,
           activate,
@@ -739,6 +737,15 @@ export class ElectronBrowserAdapter implements BrowserAdapter {
       const bounds = getWebsiteViewBounds(this.mainWindow, this.websiteRightInsetPx);
       this.mainWindow.contentView.addChildView(view);
       this.hideWebsiteView(view, bounds);
+    }
+
+    if (input.cause === 'website-popup' && input.sourceTabId !== undefined) {
+      this.navigationLifecycle.notePopupOpenedFrom({
+        sourceTabId: input.sourceTabId,
+        destinationTabId: tabId,
+        causedByAgentInputDispatch: input.causedByAgentInputDispatch,
+      });
+      console.log('[adapter] navigation-popup-opened');
     }
 
     this.emitTabCreated(

@@ -93,15 +93,61 @@ describe('TabNavigationLifecycle', () => {
     }
   });
 
-  it('settles immediately when the source tab opens a converted popup', async () => {
+  it('does not settle a popup until the destination tab is usable', async () => {
     const lifecycle = new TabNavigationLifecycle();
     const marker = lifecycle.captureMarker('tab-1');
     const pending = lifecycle.waitForNavigationAfter('tab-1', marker, { timeoutMs: 80 });
-    lifecycle.notePopupOpenedFrom('tab-1');
+    lifecycle.notePopupOpenedFrom({
+      sourceTabId: 'tab-1',
+      destinationTabId: 'tab-dest',
+      causedByAgentInputDispatch: true,
+    });
+    await Promise.resolve();
+    lifecycle.noteMainFrameNavigationStart('tab-dest');
+    lifecycle.noteMainFrameNavigationSettled('tab-dest');
     const result = await pending;
     assert.equal(result.status, 'settled');
-    if (result.status === 'settled') {
-      assert.equal(result.kind, 'popup');
+    if (result.status === 'settled' && result.kind === 'popup') {
+      assert.equal(result.sourceTabId, 'tab-1');
+      assert.equal(result.destinationTabId, 'tab-dest');
+      assert.equal(result.causedByAgentInputDispatch, true);
+    } else {
+      assert.fail('expected settled popup');
+    }
+  });
+
+  it('times out as started when a popup destination never becomes usable', async () => {
+    const lifecycle = new TabNavigationLifecycle();
+    const marker = lifecycle.captureMarker('tab-1');
+    lifecycle.notePopupOpenedFrom({
+      sourceTabId: 'tab-1',
+      destinationTabId: 'tab-dest',
+      causedByAgentInputDispatch: true,
+    });
+    const result = await lifecycle.waitForNavigationAfter('tab-1', marker, { timeoutMs: 20 });
+    assert.equal(result.status, 'timeout');
+    if (result.status === 'timeout') {
+      assert.equal(result.started, true);
+    }
+  });
+
+  it('carries non-causal popup metadata without treating timing as authority', async () => {
+    const lifecycle = new TabNavigationLifecycle();
+    const marker = lifecycle.captureMarker('tab-1');
+    lifecycle.notePopupOpenedFrom({
+      sourceTabId: 'tab-1',
+      destinationTabId: 'tab-dest',
+      causedByAgentInputDispatch: false,
+    });
+    lifecycle.noteMainFrameNavigationStart('tab-dest');
+    lifecycle.noteMainFrameNavigationSettled('tab-dest');
+    const result = await lifecycle.waitForNavigationAfter('tab-1', marker, { timeoutMs: 20 });
+    assert.equal(result.status, 'settled');
+    if (result.status === 'settled' && result.kind === 'popup') {
+      assert.equal(result.causedByAgentInputDispatch, false);
+      assert.equal(result.destinationTabId, 'tab-dest');
+    } else {
+      assert.fail('expected settled popup');
     }
   });
 
@@ -144,13 +190,22 @@ describe('navigation lifecycle wiring isolation', () => {
     assert.match(handlers, /noteMainFrameNavigationStart/);
     assert.match(handlers, /noteSameDocumentNavigation/);
     assert.match(handlers, /noteMainFrameNavigationSettled/);
-    assert.match(handlers, /notePopupOpenedFrom/);
+    assert.equal(handlers.includes('notePopupOpenedFrom'), false);
 
     const popupHandler = electronAdapter.slice(
       electronAdapter.indexOf('setWindowOpenHandler'),
       electronAdapter.indexOf("webContents.on('render-process-gone'"),
     );
-    assert.ok(popupHandler.indexOf('notePopupOpenedFrom') < popupHandler.indexOf('createTabInternal'));
+    assert.ok(popupHandler.includes('createTabInternal'));
+    assert.equal(popupHandler.includes('notePopupOpenedFrom'), false);
+
+    const createTabInternal = electronAdapter.slice(
+      electronAdapter.indexOf('private async createTabInternal'),
+      electronAdapter.indexOf('private emitTabCreated'),
+    );
+    assert.match(createTabInternal, /notePopupOpenedFrom/);
+    assert.match(createTabInternal, /destinationTabId/);
+    assert.ok(createTabInternal.indexOf('const tabId') < createTabInternal.indexOf('notePopupOpenedFrom'));
   });
 
   it('does not treat duck-typed adapters without both methods as a lifecycle port', () => {
