@@ -1902,6 +1902,35 @@ describe('SafeAgentLoop causal popup continuation', () => {
     const result = await pending;
     assert.equal(result.status, 'completed');
   });
+
+  it('does not continue on the source tab when the destination is already independently owned', async () => {
+    const source = observation();
+    const dest = destObservation();
+    const stepAgent = new FakeStepAgent([proposalStep(boundClick(), source)]);
+    const coordinator = new AgentRunCoordinator();
+    const executor = new FakeV3Executor(async () => {
+      coordinator.startRun(POPUP_DEST, 'user act on dest');
+      return succeededPopup(dest);
+    });
+    const loop = new SafeAgentLoop({
+      coordinator,
+      stepAgent,
+      interactionExecutor: executor,
+    });
+    const origin = coordinator.startRun(TAB, 'Open WebDriverIO.');
+    const result = await loop.run(refOf(origin));
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.state, 'execution-state-unknown');
+      assert.equal(result.run.executionTabId, undefined);
+    }
+    assert.equal(executor.calls.length, 1);
+    const newer = coordinator.getActiveRunForTab(POPUP_DEST);
+    assert.ok(newer);
+    assert.notEqual(newer.runId, origin.runId);
+    assert.equal(newer.state, 'running');
+    assert.equal(coordinator.getActiveRunForTab(TAB), undefined);
+  });
 });
 
 

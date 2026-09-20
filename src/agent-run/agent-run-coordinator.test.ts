@@ -858,14 +858,45 @@ describe('AgentRunCoordinator causal popup continuation', () => {
     assert.equal(harness.coordinator.inspectRun(refOf(run)).status, 'current');
   });
 
-  it('does not adopt a destination already owned independently by another run', () => {
+  it('does not steal a destination that already has a newer independent AgentRun', () => {
     const harness = createHarness();
-    const origin = start(harness, 'tab-1');
-    const other = start(harness, 'tab-other');
-    requireApplied(harness.coordinator.adoptCausalPopup(refOf(origin), 'tab-dest'));
-    assert.equal(harness.coordinator.getActiveRunForTab('tab-other')?.runId, other.runId);
-    assert.equal(harness.coordinator.getActiveRunForTab('tab-dest')?.runId, origin.runId);
-    assert.notEqual(harness.coordinator.getActiveRunForTab('tab-dest')?.runId, other.runId);
+    const origin = start(harness, 'tab-a', 'open popup');
+    const newer = start(harness, 'tab-b', 'user act on dest');
+
+    const conflict = requireApplied(harness.coordinator.adoptCausalPopup(refOf(origin), 'tab-b'));
+    assert.equal(conflict.state, 'execution-state-unknown');
+    assert.equal(conflict.terminalReason, 'EXECUTION_STATE_UNKNOWN');
+    assert.equal(conflict.executionTabId, undefined);
+    assert.equal(harness.coordinator.getActiveRunForTab('tab-b')?.runId, newer.runId);
+    assert.equal(harness.coordinator.getActiveRunForTab('tab-b')?.state, 'running');
+    assert.equal(harness.coordinator.getActiveRunForTab('tab-a'), undefined);
+    assert.equal(harness.coordinator.inspectRun(refOf(origin)).status, 'terminal');
+    assert.equal(harness.coordinator.inspectRun(refOf(newer)).status, 'current');
+    assert.equal(harness.coordinator.getRunRefForApproval('appr-origin'), undefined);
+    assert.equal(harness.coordinator.getRun(newer.runId)?.approvalCount, 0);
+  });
+
+  it('adopts an unowned destination and is idempotent for the same run', () => {
+    const harness = createHarness();
+    const origin = start(harness, 'tab-a');
+    const first = requireApplied(harness.coordinator.adoptCausalPopup(refOf(origin), 'tab-b'));
+    const second = requireApplied(harness.coordinator.adoptCausalPopup(refOf(origin), 'tab-b'));
+    assert.equal(first.executionTabId, 'tab-b');
+    assert.equal(second.executionTabId, 'tab-b');
+    assert.equal(second.state, 'running');
+    assert.equal(harness.coordinator.getActiveRunForTab('tab-a')?.runId, origin.runId);
+    assert.equal(harness.coordinator.getActiveRunForTab('tab-b')?.runId, origin.runId);
+  });
+
+  it('does not migrate an origin approval binding onto a newer destination run', () => {
+    const harness = createHarness();
+    const origin = start(harness, 'tab-a', 'open popup');
+    requireApplied(harness.coordinator.presentApproval(refOf(origin), 'appr-origin'));
+    const newer = start(harness, 'tab-b', 'user act on dest');
+    assert.equal(harness.coordinator.getRunRefForApproval('appr-origin')?.runId, origin.runId);
+    assert.equal(harness.coordinator.getRun(newer.runId)?.approvalCount, 0);
+    assert.equal(harness.coordinator.getRun(origin.runId)?.state, 'awaiting-approval');
+    assert.equal(harness.coordinator.getActiveRunForTab('tab-b')?.runId, newer.runId);
   });
 
   it('does not transfer ownership for a popup from an unrelated tab', () => {

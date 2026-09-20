@@ -519,9 +519,25 @@ export class AgentRunCoordinator {
       return ignored();
     }
 
-    this.supersedeActiveRun(destinationTabId);
-    if (isTerminalAgentRunState(record.state) || !this.isActiveOnOwnedTabs(record)) {
-      return ignored();
+    const destinationOwnerId = this.activeByTab.get(destinationTabId);
+    if (destinationOwnerId === record.runId) {
+      record.executionTabId = destinationTabId;
+      record.originPopupClickConsumed = true;
+      this.audit('state-transition', record);
+      return applied(record);
+    }
+    if (destinationOwnerId !== undefined) {
+      const destinationOwner = this.byRunId.get(destinationOwnerId);
+      if (destinationOwner !== undefined && !isTerminalAgentRunState(destinationOwner.state)) {
+        return this.transitionRecord(
+          record,
+          'execution-state-unknown',
+          'EXECUTION_STATE_UNKNOWN',
+        );
+      }
+      if (this.activeByTab.get(destinationTabId) === destinationOwnerId) {
+        this.activeByTab.delete(destinationTabId);
+      }
     }
 
     record.executionTabId = destinationTabId;

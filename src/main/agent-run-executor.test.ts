@@ -369,6 +369,35 @@ describe('AgentRunExecutor', () => {
     assert.equal(harness.executor.isActive(TAB), false);
     assert.equal(harness.executor.isActive(TAB_B), false);
   });
+
+  it('does not let an origin popup adoption cancel a newer destination run', async () => {
+    const originHold = new Deferred<SafeAgentLoopResult>();
+    const destHold = new Deferred<SafeAgentLoopResult>();
+    const loop = new FakeLoop(async (ref) => {
+      return ref.tabId === TAB ? originHold.promise : destHold.promise;
+    });
+    const lifecycle = new FakeLifecycle();
+    const harness = executorOf(loop, { lifecycle });
+    const origin = await harness.executor.start(TAB, 'Open popup');
+    const dest = await harness.executor.start(TAB_B, 'User act on dest');
+    assert.equal(origin.status, 'started');
+    assert.equal(dest.status, 'started');
+    if (origin.status !== 'started' || dest.status !== 'started') {
+      throw new Error('expected both starts');
+    }
+    const conflict = harness.coordinator.adoptCausalPopup(origin.ref, TAB_B);
+    assert.equal(conflict.status, 'applied');
+    if (conflict.status === 'applied') {
+      assert.equal(conflict.snapshot.state, 'execution-state-unknown');
+    }
+    assert.equal(harness.coordinator.getActiveRunForTab(TAB_B)?.runId, dest.ref.runId);
+    assert.equal(harness.executor.getActiveRef(TAB_B)?.runId, dest.ref.runId);
+    assert.equal(harness.coordinator.getRun(origin.ref.runId)?.executionTabId, undefined);
+    originHold.resolve({ status: 'ignored' });
+    destHold.resolve({ status: 'ignored' });
+    await origin.completion;
+    await dest.completion;
+  });
 });
 
 describe('AgentRunExecutor source isolation', () => {

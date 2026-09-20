@@ -904,6 +904,43 @@ describe('AgentRunController', () => {
     assert.equal(harness.controller.isActive(TAB), false);
     assert.equal(harness.controller.isActive(TAB_B), false);
   });
+
+  it('does not alias origin product onto a destination owned by a newer Act', async () => {
+    const originHold = new Deferred<SafeAgentLoopResult>();
+    const destHold = new Deferred<SafeAgentLoopResult>();
+    const box: { coordinator?: AgentRunCoordinator } = {};
+    const loop = new FakeLoop(async (ref, options) => {
+      if (ref.tabId === TAB) {
+        await originHold.promise;
+        const coordinator = box.coordinator;
+        assert.ok(coordinator);
+        const adopted = coordinator.adoptCausalPopup(ref, TAB_B);
+        assert.equal(adopted.status, 'applied');
+        if (adopted.status === 'applied') {
+          options.onContinuing?.(adopted.snapshot);
+          return { status: 'terminal', run: adopted.snapshot };
+        }
+      }
+      return destHold.promise;
+    });
+    const harness = controllerOf(loop);
+    box.coordinator = harness.coordinator;
+    const origin = await harness.controller.start(TAB, 'Open popup', { askId: 'ask-origin' });
+    const dest = await harness.controller.start(TAB_B, 'User dest act', { askId: 'ask-dest' });
+    assert.equal(origin.status, 'started');
+    assert.equal(dest.status, 'started');
+    originHold.resolve({ status: 'ignored' });
+    if (origin.status === 'started') {
+      await origin.completion;
+    }
+    assert.equal(harness.controller.isActive(TAB_B), true);
+    assert.equal(harness.coordinator.getActiveRunForTab(TAB_B)?.instruction, 'User dest act');
+    assert.equal(harness.controller.isActive(TAB), false);
+    destHold.resolve({ status: 'ignored' });
+    if (dest.status === 'started') {
+      await dest.completion;
+    }
+  });
 });
 
 describe('AgentRunController source isolation', () => {
