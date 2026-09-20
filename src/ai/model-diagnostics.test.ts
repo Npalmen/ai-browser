@@ -51,6 +51,23 @@ describe('model diagnostics formatting', () => {
     assert.doesNotMatch(line, /duckduckgo/i);
   });
 
+  it('formats agent-loop request failures with safe category, phase, and provider status', () => {
+    const line = formatAgentLoopModelStepFailed({
+      code: 'MODEL_REQUEST_FAILED',
+      iteration: 3,
+      postNavigation: false,
+      alias: 'page-fast',
+      fallbackAttempts: 1,
+      category: 'provider-http',
+      failurePhase: 'awaiting-structured',
+      providerStatus: 502,
+    });
+    assert.equal(
+      line,
+      '[agent-loop] model-step-failed code=MODEL_REQUEST_FAILED iteration=3 postNavigation=false alias=page-fast fallbackAttempts=1 category=provider-http phase=awaiting-structured providerStatus=502',
+    );
+  });
+
   it('formats gateway request failures with alias, normalized code, and safe runtime category', () => {
     const line = formatModelRequestFailed({
       alias: 'page-standard',

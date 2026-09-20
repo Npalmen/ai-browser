@@ -1012,6 +1012,25 @@ describe('mapRuntimeError', () => {
     const mapped = mapRuntimeError(new Error('provider body should stay internal'), idle);
     assert.equal(mapped.code, 'MODEL_REQUEST_FAILED');
     assert.equal(mapped.message, 'The model request failed.');
+    assert.equal(mapped.category, 'unknown');
+    assert.equal(mapped.providerStatus, undefined);
+    assert.equal(mapped.message.includes('provider body'), false);
+  });
+
+  it('attaches a safe provider status and provider-http category for unclassified HTTP failures', () => {
+    const mapped = mapRuntimeError(
+      new APICallError({
+        message: 'bad request body must not leak',
+        url: 'https://example.invalid/secret-path',
+        requestBodyValues: { prompt: 'secret-prompt' },
+        statusCode: 400,
+      }),
+      idle,
+    );
+    assert.equal(mapped.code, 'MODEL_REQUEST_FAILED');
+    assert.equal(mapped.category, 'provider-http');
+    assert.equal(mapped.providerStatus, 400);
+    assert.equal(mapped.message, 'The model request failed.');
   });
 
   it('preserves an existing ModelError code', () => {

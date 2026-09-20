@@ -2434,6 +2434,46 @@ describe('SafeAgentLoop complete-on-success', () => {
     assert.equal(executor.calls[0]?.proposal.kind, 'click');
   });
 
+  it('uses generic Done. text when onSuccessText is omitted', async () => {
+    const obs = observation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), obs, { continuation: 'complete-on-success' }),
+    ]);
+    const executor = new FakeV3Executor([succeeded(obs)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click save.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Done.');
+    }
+    assert.equal(stepAgent.calls.length, 1);
+  });
+
+  it('never completes from a successful scroll even if marked complete-on-success', async () => {
+    const before = observation();
+    const after = observation({
+      observationId: 'obs-scrolled',
+      viewport: { ...before.viewport, scrollY: 400 },
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(
+        boundScroll(before.document.revision, before.observationId),
+        before,
+        { continuation: 'complete-on-success' },
+      ),
+      answerStep('Still looking.', after),
+    ]);
+    const executor = new FakeV3Executor([succeeded(after)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Still looking.');
+    }
+    assert.equal(stepAgent.calls.length, 2);
+    assert.equal(executor.calls.length, 1);
+  });
+
   it('ignores complete-on-success when the interaction fails', async () => {
     const stepAgent = new FakeStepAgent([
       proposalStep(boundClick(), observation(), { continuation: 'complete-on-success' }),

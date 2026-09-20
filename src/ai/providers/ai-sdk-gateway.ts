@@ -330,6 +330,7 @@ export class AiSdkGatewayRuntime
     const alias = request.profile.alias;
     let modelStartedAt: number | undefined;
     let timeoutSignal: AbortSignal | undefined;
+    let failurePhase: ModelFailurePhase = 'before-stream';
 
     try {
       if (!isUsableApiKey(this.readGatewayApiKey())) {
@@ -360,8 +361,10 @@ export class AiSdkGatewayRuntime
         providerOptions,
       });
 
+      failurePhase = 'during-partial';
       await emitTextDeltas(result.partialOutputStream, options?.onTextDelta);
 
+      failurePhase = 'awaiting-structured';
       const output = asPageAnswer(await result.output);
       const usage = normalizeModelUsage(await result.usage);
       const cost = normalizeGatewayCost(await result.providerMetadata);
@@ -391,10 +394,13 @@ export class AiSdkGatewayRuntime
         latencyMs,
       };
     } catch (error) {
-      const mapped = mapRuntimeError(error, {
-        callerAborted: Boolean(options?.signal?.aborted),
-        timedOut: Boolean(timeoutSignal?.aborted && !options?.signal?.aborted),
-      });
+      const mapped = annotateModelFailure(
+        mapRuntimeError(error, {
+          callerAborted: Boolean(options?.signal?.aborted),
+          timedOut: Boolean(timeoutSignal?.aborted && !options?.signal?.aborted),
+        }),
+        { failurePhase },
+      );
 
       const latencyMs =
         modelStartedAt === undefined ? undefined : elapsedMs(modelStartedAt, this.now());

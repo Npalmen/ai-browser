@@ -226,6 +226,48 @@ describe('InteractiveStepAgent proposal', () => {
     assert.equal(runtime.requests.length, 1);
   });
 
+  it('forwards complete-on-success and onSuccessText as non-authority task hints', async () => {
+    const runtime = new FakeInteractionRuntime({
+      kind: 'interaction',
+      proposal: { kind: 'click', targetId: 'target-1' },
+      continuation: 'complete-on-success',
+      onSuccessText: 'WebDriverIO har öppnats.',
+    });
+    const { agent } = stepAgentOf({ runtime });
+    const result = await agent.step({
+      tabId: TAB,
+      instruction: 'Click save',
+    });
+    assert.equal(result.kind, 'proposal');
+    if (result.kind === 'proposal') {
+      assert.equal(result.continuation, 'complete-on-success');
+      assert.equal(result.onSuccessText, 'WebDriverIO har öppnats.');
+    }
+  });
+
+  it('forces scroll proposals to continuation continue', async () => {
+    const runtime = new FakeInteractionRuntime({
+      kind: 'interaction',
+      proposal: {
+        kind: 'scroll',
+        mode: 'viewport',
+        direction: 'down',
+        amountPx: 400,
+      },
+      continuation: 'complete-on-success',
+    });
+    const { agent } = stepAgentOf({ runtime });
+    const result = await agent.step({
+      tabId: TAB,
+      instruction: 'Find WebDriverIO',
+    });
+    assert.equal(result.kind, 'proposal');
+    if (result.kind === 'proposal') {
+      assert.equal(result.proposal.kind, 'scroll');
+      assert.equal(result.continuation, 'continue');
+    }
+  });
+
   it('rejects unexported targets before returning a proposal', async () => {
     const { agent } = stepAgentOf({
       runtime: new FakeInteractionRuntime({
