@@ -518,6 +518,26 @@ describe('V5 AgentRun UI events', () => {
       createId,
     );
     assert.equal(assistants(state)[0]?.status, 'error');
+    assert.equal(
+      assistants(state)[0]?.text,
+      'The assistant could not complete this task.',
+    );
+
+    state = {};
+    state = applyAiAnswerEvent(state, runStarted(), createId);
+    state = applyAiAnswerEvent(
+      state,
+      {
+        type: 'agent-run-failed',
+        askId: ASK_A,
+        runId: RUN_A,
+        tabId: TAB,
+        reason: 'MODEL_FAILED',
+        safeMessage: 'The AI request timed out.',
+      },
+      createId,
+    );
+    assert.equal(assistants(state)[0]?.text, 'The AI request timed out.');
 
     state = {};
     state = applyAiAnswerEvent(state, runStarted(), createId);

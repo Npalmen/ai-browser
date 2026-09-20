@@ -242,6 +242,36 @@ describe('AgentRunController', () => {
     }
   });
 
+  it('emits a safe model failure message when the run snapshot includes modelErrorCode', async () => {
+    const loop = new FakeLoop(async (ref) => ({
+      status: 'terminal',
+      run: {
+        runId: ref.runId,
+        tabId: ref.tabId,
+        generation: ref.generation,
+        instruction: 'x',
+        startedAt: 1,
+        state: 'failed',
+        modelStepCount: 1,
+        actionAttemptCount: 0,
+        approvalCount: 0,
+        terminalReason: 'MODEL_FAILED',
+        modelErrorCode: 'MODEL_OUTPUT_INVALID',
+      },
+    }));
+    const harness = controllerOf(loop);
+    const started = await harness.controller.start(TAB, 'Do the task', { askId: 'ask-1' });
+    if (started.status === 'started') {
+      await started.completion;
+    }
+    const failed = harness.events.find((event) => event.type === 'agent-run-failed');
+    assert.ok(failed);
+    if (failed?.type === 'agent-run-failed') {
+      assert.equal(failed.reason, 'MODEL_FAILED');
+      assert.equal(failed.safeMessage, 'The AI response was invalid.');
+    }
+  });
+
   it('stops a running run and aborts the generation', async () => {
     const hold = new Deferred<SafeAgentLoopResult>();
     const loop = new FakeLoop(async (ref, options) => {

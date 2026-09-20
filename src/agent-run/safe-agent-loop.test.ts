@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 
 import { InteractiveStepAgent } from '../ai/interactive-step-agent';
 import type { InteractionModelRuntime } from '../ai/interaction-model-runtime';
@@ -546,10 +546,74 @@ describe('SafeAgentLoop termination', () => {
     if (result.status === 'terminal') {
       assert.equal(result.run.state, 'failed');
       assert.equal(result.run.terminalReason, 'MODEL_FAILED');
+      assert.equal(result.run.modelErrorCode, 'MODEL_OUTPUT_INVALID');
       assert.equal(result.run.modelStepCount, 0);
       assert.equal(result.run.actionAttemptCount, 0);
     }
     assert.equal(executor.calls.length, 0);
+  });
+});
+
+describe('SafeAgentLoop model-step diagnostics', () => {
+  function captureConsoleLog(): { lines: string[]; restore: () => void } {
+    const lines: string[] = [];
+    const restore = mock.method(console, 'log', (...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    });
+    return {
+      lines,
+      restore: () => {
+        restore.mock.restore();
+      },
+    };
+  }
+
+  it('logs MODEL_OUTPUT_INVALID with iteration and preserves terminal semantics', async () => {
+    const capture = captureConsoleLog();
+    try {
+      const stepAgent = new FakeStepAgent(async () => {
+        throw new ModelError('MODEL_OUTPUT_INVALID', 'secret prompt sk-abc123', {
+          alias: 'page-standard',
+          fallbackAttempts: 1,
+        });
+      });
+      const { coordinator, loop } = createLoop({ stepAgent, executor: new FakeV3Executor([]) });
+      const result = await loop.run(refOf(start(coordinator)));
+      assert.equal(result.status, 'terminal');
+      if (result.status === 'terminal') {
+        assert.equal(result.run.terminalReason, 'MODEL_FAILED');
+        assert.equal(result.run.modelErrorCode, 'MODEL_OUTPUT_INVALID');
+      }
+      const line = capture.lines.find((entry) => entry.includes('[agent-loop] model-step-failed'));
+      assert.ok(line);
+      assert.match(line!, /code=MODEL_OUTPUT_INVALID/);
+      assert.match(line!, /iteration=1/);
+      assert.match(line!, /postNavigation=false/);
+      assert.match(line!, /alias=page-standard/);
+      assert.match(line!, /fallbackAttempts=1/);
+      assert.doesNotMatch(line!, /sk-abc123/);
+      assert.doesNotMatch(line!, /secret prompt/);
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it('keeps MODEL_TIMEOUT and MODEL_RATE_LIMITED distinguishable in diagnostics', async () => {
+    for (const code of ['MODEL_TIMEOUT', 'MODEL_RATE_LIMITED'] as const) {
+      const capture = captureConsoleLog();
+      try {
+        const stepAgent = new FakeStepAgent(async () => {
+          throw new ModelError(code, `${code} details`);
+        });
+        const { coordinator, loop } = createLoop({ stepAgent, executor: new FakeV3Executor([]) });
+        await loop.run(refOf(start(coordinator)));
+        const line = capture.lines.find((entry) => entry.includes('[agent-loop] model-step-failed'));
+        assert.match(line!, new RegExp(`code=${code}`));
+        assert.doesNotMatch(line!, /details/);
+      } finally {
+        capture.restore();
+      }
+    }
   });
 });
 

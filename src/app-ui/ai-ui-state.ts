@@ -374,7 +374,7 @@ function applyAskProgress(tab: TabAiUiState, event: Exclude<AiAnswerEvent, { typ
     updated = {
       ...entry,
       status: 'error',
-      text: failedCopy(event.reason),
+      text: failedCopy(event.reason, event.safeMessage),
     };
   } else if (event.type === 'agent-run-execution-state-unknown') {
     if (entry.status === 'complete') {
@@ -475,9 +475,12 @@ export function blockedCopy(reason: string): string {
   }
 }
 
-function failedCopy(reason: string): string {
+function failedCopy(reason: string, safeMessage?: string): string {
   if (reason === 'ACTION_FAILED') {
     return 'The action could not be completed.';
+  }
+  if (safeMessage) {
+    return safeMessage;
   }
   return 'The assistant could not complete this task.';
 }

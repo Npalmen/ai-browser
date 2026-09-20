@@ -8,7 +8,7 @@ import { parseAgentModelOutput, type AgentModelOutput } from './interaction-outp
 import type { InteractionModelRuntime } from './interaction-model-runtime';
 import { decideModelExport } from './export-policy';
 import { MODEL_CATALOG, getModelProfile, type ModelCatalog } from './model-catalog';
-import { ModelError } from './model-errors';
+import { ModelError, withModelErrorDiagnostics } from './model-errors';
 import { routeModelRequest } from './model-router';
 import type {
   ModelAlias,
@@ -354,6 +354,7 @@ export class InteractiveStepAgent {
   }): Promise<{ output: AgentModelOutput; alias: ModelAlias }> {
     let prepared = input.prepared;
     let lastError: ModelError | undefined;
+    let fallbackAttempts = 0;
 
     for (let attempt = 1; attempt <= MAX_MODEL_ATTEMPTS; attempt += 1) {
       const result = await this.attemptGenerate(prepared, input.signal, input.onAnswerTextDelta);
@@ -372,10 +373,14 @@ export class InteractiveStepAgent {
       if (!fallback) {
         break;
       }
+      fallbackAttempts += 1;
       prepared = fallback;
     }
 
-    throw lastError ?? cancelledError();
+    throw withModelErrorDiagnostics(lastError ?? cancelledError(), {
+      alias: prepared.profile.alias,
+      fallbackAttempts,
+    });
   }
 
   private eligibleFallback(

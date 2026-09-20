@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 
 import {
   APICallError,
@@ -487,6 +487,35 @@ describe('AiSdkGatewayRuntime.generateInteraction', () => {
       (error: unknown) =>
         error instanceof ModelError && error.code === 'MODEL_OUTPUT_INVALID',
     );
+  });
+
+  it('logs trusted-main request-failed diagnostics without secrets', async () => {
+    const logs: string[] = [];
+    const restore = mock.method(console, 'log', (...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    });
+    try {
+      const runtime = new AiSdkGatewayRuntime({
+        readGatewayApiKey: () => 'test-key',
+        requestLog: new ModelRequestLog(),
+        streamText: () =>
+          interactionStreamResult({
+            output: settled({
+              kind: 'interaction',
+              proposal: { kind: 'click', targetId: 'target-1', tabId: 'tab-1' },
+            }),
+          }),
+      });
+
+      await assert.rejects(() => runtime.generateInteraction(request()));
+      const line = logs.find((entry) => entry.includes('[model] request-failed'));
+      assert.ok(line);
+      assert.match(line!, /alias=page-fast code=MODEL_OUTPUT_INVALID/);
+      assert.doesNotMatch(line!, /test-key/);
+      assert.doesNotMatch(line!, /target-1/);
+    } finally {
+      restore.mock.restore();
+    }
   });
 
   it('rejects unknown top-level fields as MODEL_OUTPUT_INVALID', async () => {

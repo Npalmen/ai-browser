@@ -40,9 +40,11 @@ import type {
   InteractionModelRuntime,
 } from '../interaction-model-runtime';
 import { getGatewayCatalogMetadata } from '../model-catalog';
+import { logModelRequestFailed } from '../model-diagnostics';
 import { ModelError } from '../model-errors';
 import type { ModelRuntime } from '../model-runtime';
 import type {
+  ModelAlias,
   ModelMessage,
   ModelProfile,
   ModelRequest,
@@ -402,6 +404,7 @@ export class AiSdkGatewayRuntime
         errorCode: mapped.code,
       });
 
+      this.logFailedRequest(alias, mapped);
       throw mapped;
     }
   }
@@ -495,6 +498,7 @@ export class AiSdkGatewayRuntime
         errorCode: mapped.code,
       });
 
+      this.logFailedRequest(alias, mapped);
       throw mapped;
     }
   }
@@ -585,6 +589,7 @@ export class AiSdkGatewayRuntime
         errorCode: mapped.code,
       });
 
+      this.logFailedRequest(alias, mapped);
       throw mapped;
     }
   }
@@ -675,8 +680,16 @@ export class AiSdkGatewayRuntime
         errorCode: mapped.code,
       });
 
+      this.logFailedRequest(alias, mapped);
       throw mapped;
     }
+  }
+
+  private logFailedRequest(alias: ModelAlias, error: ModelError): void {
+    if (error.code === 'REQUEST_CANCELLED') {
+      return;
+    }
+    logModelRequestFailed({ alias, code: error.code });
   }
 }
 

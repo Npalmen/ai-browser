@@ -1,3 +1,4 @@
+import type { ModelErrorCode } from '../ai/model-errors';
 import type { TabId } from '../shared/browser-types';
 
 export const MAX_AGENT_LOOP_MODEL_STEPS = 8;
@@ -76,6 +77,7 @@ export interface AgentRunSnapshot {
   readonly approvalCount: number;
   readonly terminalReason?: AgentRunTerminalReason;
   readonly lastSuccessfulActionFingerprint?: string;
+  readonly modelErrorCode?: ModelErrorCode;
 }
 
 export type AgentRunRefStatus =

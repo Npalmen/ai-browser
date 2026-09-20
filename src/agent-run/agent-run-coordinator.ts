@@ -6,6 +6,7 @@ import {
   type AgentRunAuditEventType,
   type AgentRunAuditSink,
 } from './agent-run-audit';
+import type { ModelErrorCode } from '../ai/model-errors';
 import { AgentRunError } from './agent-run-errors';
 import type {
   AgentRunApprovalWaitResult,
@@ -50,6 +51,7 @@ interface InternalAgentRun {
   lastSuccessfulActionFingerprint?: string;
   pendingApprovalId?: string;
   cancellationRequested?: AgentRunCancelledReason;
+  modelErrorCode?: ModelErrorCode;
 }
 
 interface ApprovalWaiter {
@@ -187,7 +189,20 @@ export class AgentRunCoordinator {
     return this.transitionCurrent(ref, 'blocked', reason);
   }
 
-  markFailed(ref: AgentRunRef, reason: AgentRunFailedReason): AgentRunMutationResult {
+  markFailed(
+    ref: AgentRunRef,
+    reason: AgentRunFailedReason,
+    options?: { modelErrorCode?: ModelErrorCode },
+  ): AgentRunMutationResult {
+    const record = this.resolveLatestMatchingRun(ref);
+    if (record === undefined) {
+      return ignored();
+    }
+    if (reason === 'MODEL_FAILED' && options?.modelErrorCode !== undefined) {
+      record.modelErrorCode = options.modelErrorCode;
+    } else {
+      record.modelErrorCode = undefined;
+    }
     return this.transitionCurrent(ref, 'failed', reason);
   }
 
@@ -731,6 +746,7 @@ function toSnapshot(record: InternalAgentRun): AgentRunSnapshot {
     ...(record.lastSuccessfulActionFingerprint !== undefined
       ? { lastSuccessfulActionFingerprint: record.lastSuccessfulActionFingerprint }
       : {}),
+    ...(record.modelErrorCode !== undefined ? { modelErrorCode: record.modelErrorCode } : {}),
   });
 }
 

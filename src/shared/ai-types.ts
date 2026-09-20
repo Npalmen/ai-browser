@@ -230,6 +230,8 @@ export type AiAnswerEvent =
       runId: AgentRunUiId;
       tabId: TabId;
       reason: AgentRunUiFailedReason;
+      /** Trusted-main sanitized copy when a specific model failure category is known. */
+      safeMessage?: string;
     }
   | {
       type: 'agent-run-execution-state-unknown';

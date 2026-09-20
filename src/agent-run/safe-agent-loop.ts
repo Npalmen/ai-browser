@@ -1,5 +1,6 @@
 import type { InteractiveStepAgent, InteractiveStepRequest } from '../ai/interactive-step-agent';
-import { ModelError } from '../ai/model-errors';
+import { logAgentLoopModelStepFailed } from '../ai/model-diagnostics';
+import { ModelError, type ModelErrorCode } from '../ai/model-errors';
 import type { ModelAlias, ModelPrivacyRequirement, TaskClass } from '../ai/model-types';
 import type { TrustedRunProgressEntry } from '../ai/trusted-run-progress';
 import { InteractionError, type InteractionErrorCode } from '../shared/interaction-errors';
@@ -123,6 +124,10 @@ export class SafeAgentLoop {
       }
 
       let step;
+      const modelStepIteration = modelIteration + 1;
+      const postNavigation =
+        continuation.trustedObservation !== undefined ||
+        continuation.observationRetriesRemaining > 0;
       try {
         const trustedObservation = continuation.trustedObservation;
         continuation.trustedObservation = undefined;
@@ -140,7 +145,10 @@ export class SafeAgentLoop {
           console.log('[agent-loop] post-navigation-observation-retry');
           continue;
         }
-        return this.handleStepError(ref, error);
+        return this.handleStepError(ref, error, {
+          iteration: modelStepIteration,
+          postNavigation,
+        });
       }
 
       if (!this.coordinator.isCurrentRun(ref)) {
@@ -258,7 +266,11 @@ export class SafeAgentLoop {
     return this.terminalFromMutation(cancelled) ?? { status: 'ignored' };
   }
 
-  private handleStepError(ref: AgentRunRef, error: unknown): SafeAgentLoopResult {
+  private handleStepError(
+    ref: AgentRunRef,
+    error: unknown,
+    context?: { iteration: number; postNavigation: boolean },
+  ): SafeAgentLoopResult {
     if (error instanceof ModelError) {
       if (error.code === 'REQUEST_CANCELLED') {
         if (this.coordinator.isCurrentRun(ref)) {
@@ -267,7 +279,14 @@ export class SafeAgentLoop {
         }
         return { status: 'ignored' };
       }
-      return this.failTerminal(ref, 'MODEL_FAILED');
+      logAgentLoopModelStepFailed({
+        code: error.code,
+        iteration: context?.iteration ?? 0,
+        postNavigation: context?.postNavigation ?? false,
+        alias: error.alias,
+        fallbackAttempts: error.fallbackAttempts,
+      });
+      return this.failTerminal(ref, 'MODEL_FAILED', error.code);
     }
 
     if (error instanceof ObservationError) {
@@ -560,11 +579,18 @@ export class SafeAgentLoop {
   private failTerminal(
     ref: AgentRunRef,
     reason: 'MODEL_FAILED' | 'ACTION_FAILED',
+    modelErrorCode?: ModelErrorCode,
   ): SafeAgentLoopResult {
     if (!this.coordinator.isCurrentRun(ref)) {
       return { status: 'ignored' };
     }
-    const failed = this.coordinator.markFailed(ref, reason);
+    const failed = this.coordinator.markFailed(
+      ref,
+      reason,
+      reason === 'MODEL_FAILED' && modelErrorCode !== undefined
+        ? { modelErrorCode }
+        : undefined,
+    );
     return this.terminalFromMutation(failed) ?? { status: 'ignored' };
   }
 

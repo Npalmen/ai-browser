@@ -1,4 +1,5 @@
 import { ConversationStore } from '../ai/conversation-store';
+import { aiSafeError } from './ai-safe-error';
 import type { SafeAgentLoopResult } from '../agent-run/safe-agent-loop';
 import type { AgentRunCancelledReason, AgentRunRef, AgentRunSnapshot } from '../agent-run/agent-run-types';
 import type { AiAnswerEvent } from '../shared/ai-types';
@@ -256,12 +257,16 @@ export class AgentRunController {
       return;
     }
     if (snapshot.state === 'failed') {
+      const reason = snapshot.terminalReason === 'ACTION_FAILED' ? 'ACTION_FAILED' : 'MODEL_FAILED';
       this.emitIfSameAsk(product, {
         type: 'agent-run-failed',
         askId: product.askId,
         runId: snapshot.runId,
         tabId: snapshot.tabId,
-        reason: snapshot.terminalReason === 'ACTION_FAILED' ? 'ACTION_FAILED' : 'MODEL_FAILED',
+        reason,
+        ...(reason === 'MODEL_FAILED' && snapshot.modelErrorCode !== undefined
+          ? { safeMessage: aiSafeError(snapshot.modelErrorCode).message }
+          : {}),
       });
       return;
     }
