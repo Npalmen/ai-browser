@@ -279,7 +279,7 @@ describe('buildModelPageContext', () => {
     assert.equal(built.context.truncated, true);
   });
 
-  it('fails CONTEXT_TOO_LARGE when the hard floor cannot fit', () => {
+  it('fails CONTEXT_TOO_LARGE only when the structural envelope cannot fit', () => {
     assert.throws(
       () =>
         buildModelPageContext(
@@ -290,10 +290,67 @@ describe('buildModelPageContext', () => {
               tag: 'h1',
             }),
           ]),
-          { maxStructuredChars: 200 },
+          { maxStructuredChars: 80 },
         ),
       (error: unknown) => error instanceof ModelError && error.code === 'CONTEXT_TOO_LARGE',
     );
+  });
+
+  it('bounds a large hard-floor set within budget while keeping visible actionable targets', () => {
+    const nodes: ObservationNode[] = [];
+    for (let index = 0; index < 180; index += 1) {
+      nodes.push(
+        node({
+          targetId: `result-link-${index}`,
+          role: 'link',
+          tag: 'a',
+          name: `Organic result ${index} `.repeat(6),
+          interactive: true,
+          inViewport: index < 12,
+          visible: true,
+        }),
+      );
+      nodes.push(
+        node({
+          role: 'heading',
+          tag: 'h3',
+          name: `Result heading ${index}`,
+          inViewport: index < 12,
+        }),
+      );
+    }
+
+    let diagnostics:
+      | {
+          sourceNodeCount: number;
+          selectedNodeCount: number;
+          charsBeforeCompaction: number;
+          charsAfterCompaction: number;
+          truncated: boolean;
+        }
+      | undefined;
+    const built = buildModelPageContext(observation(nodes), {
+      maxStructuredChars: MODEL_CONTEXT_BUDGETS.maxStructuredChars,
+      collectDiagnostics: (value) => {
+        diagnostics = value;
+      },
+    });
+
+    assert.ok(built.serialized.length <= MODEL_CONTEXT_BUDGETS.maxStructuredChars);
+    assert.equal(built.context.truncated, true);
+    assert.ok(diagnostics !== undefined);
+    assert.ok(diagnostics!.charsBeforeCompaction > MODEL_CONTEXT_BUDGETS.maxStructuredChars);
+    assert.ok(diagnostics!.selectedNodeCount < diagnostics!.sourceNodeCount);
+    assert.equal(built.exportedTargetIds.has('result-link-0'), true);
+    assert.equal(
+      built.context.nodes.some((item) => item.targetId === 'result-link-0' && item.interactive === true),
+      true,
+    );
+    const first = built.context.nodes[0];
+    const second = buildModelPageContext(observation(nodes), {
+      maxStructuredChars: MODEL_CONTEXT_BUDGETS.maxStructuredChars,
+    });
+    assert.deepEqual(built.context.nodes, second.context.nodes);
   });
 });
 

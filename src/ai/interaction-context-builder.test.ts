@@ -4,7 +4,10 @@ import { describe, it } from 'node:test';
 import {
   buildInteractiveModelPageContext,
   buildInteractiveModelMessages,
+  compactModelFacingHref,
+  MAX_EXPORTED_HREF_CHARS,
 } from './interaction-context-builder';
+import { ModelError } from './model-errors';
 import {
   buildModelPageContext,
   MODEL_CONTEXT_BUDGETS,
@@ -277,6 +280,204 @@ describe('buildInteractiveModelPageContext', () => {
       'name',
       'selected',
     ]);
+  });
+});
+
+function longRedirectHref(index: number): string {
+  const tracking = 'utm_source=duckduckgo&utm_medium=organic&utm_campaign=search&'.repeat(8);
+  return `https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fresult-${index}%2Fguide%3F${tracking}ref=ddg`;
+}
+
+function searchResultsObservation(resultCount = 80, inViewportCount = 24): PageObservation {
+  const nodes: ObservationNode[] = [
+    node({
+      targetId: 'search-input',
+      role: 'textbox',
+      name: 'Search',
+      tag: 'input',
+      interactive: true,
+      states: { focused: true, editable: true },
+    }),
+    node({
+      targetId: 'search-button',
+      role: 'button',
+      name: 'Search',
+      tag: 'button',
+      interactive: true,
+    }),
+  ];
+
+  for (let index = 0; index < resultCount; index += 1) {
+    nodes.push(
+      node({
+        targetId: `organic-heading-${index}`,
+        role: 'heading',
+        tag: 'h2',
+        name: `Electron browser automation result ${index}`,
+        inViewport: index < inViewportCount,
+      }),
+    );
+    nodes.push(
+      node({
+        targetId: `organic-link-${index}`,
+        role: 'link',
+        tag: 'a',
+        name: `Electron browser automation result ${index} `.repeat(4),
+        interactive: true,
+        inViewport: index < inViewportCount,
+        attributes: { href: longRedirectHref(index) },
+      }),
+    );
+    nodes.push(
+      node({
+        targetId: `organic-snippet-${index}`,
+        role: 'generic',
+        text: 'A long snippet about browser automation frameworks and tooling. '.repeat(12),
+        inViewport: index < inViewportCount,
+      }),
+    );
+    nodes.push(
+      node({
+        role: 'generic',
+        text: 'Offscreen filler content '.repeat(30),
+        inViewport: false,
+        visible: true,
+      }),
+    );
+  }
+
+  return observation(nodes, {
+    document: {
+      revision: 'rev-search',
+      url: 'https://duckduckgo.com/?q=electron+browser+automation',
+      title: 'electron browser automation at DuckDuckGo',
+      loading: false,
+      mainFrameId: 'frame-1',
+    },
+  });
+}
+
+describe('search-results context compaction', () => {
+  it('documents interactive href enrichment as the overflow stage on link-heavy pages', () => {
+    const nodes: ObservationNode[] = [];
+    for (let index = 0; index < 90; index += 1) {
+      nodes.push(
+        node({
+          targetId: `organic-link-${index}`,
+          role: 'link',
+          tag: 'a',
+          name: `Result ${index}`,
+          interactive: true,
+          inViewport: true,
+          attributes: { href: longRedirectHref(index) },
+        }),
+      );
+    }
+    const page = observation(nodes);
+    const base = buildModelPageContext(page);
+    const enrichedWithoutFit = {
+      ...base.context,
+      nodes: base.context.nodes.map((item) => ({
+        ...item,
+        href: longRedirectHref(Number.parseInt(item.targetId?.split('-').pop() ?? '0', 10) || 0),
+      })),
+    };
+    const enrichedLength = JSON.stringify(enrichedWithoutFit).length;
+    assert.ok(base.serialized.length <= MODEL_CONTEXT_BUDGETS.maxStructuredChars);
+    assert.ok(enrichedLength > MODEL_CONTEXT_BUDGETS.maxStructuredChars);
+
+    const built = buildInteractiveModelPageContext(page);
+    assert.ok(built.serialized.length <= MODEL_CONTEXT_BUDGETS.maxStructuredChars);
+    assert.equal(built.exportedTargetIds.has('organic-link-0'), true);
+  });
+
+  it('fits a realistic search-results page within the default budget', () => {
+    const page = searchResultsObservation(200, 24);
+    let diagnostics:
+      | {
+          charsBeforeCompaction: number;
+          charsAfterCompaction: number;
+          charsAfterInteractiveEnrichment: number;
+          truncated: boolean;
+        }
+      | undefined;
+
+    const built = buildInteractiveModelPageContext(page, {
+      collectDiagnostics: (value) => {
+        diagnostics = value;
+      },
+    });
+
+    assert.ok(diagnostics !== undefined);
+    assert.ok(diagnostics!.charsBeforeCompaction > MODEL_CONTEXT_BUDGETS.maxStructuredChars);
+    assert.ok(diagnostics!.charsAfterCompaction <= MODEL_CONTEXT_BUDGETS.maxStructuredChars);
+    assert.ok(built.serialized.length <= MODEL_CONTEXT_BUDGETS.maxStructuredChars);
+    assert.equal(built.context.truncated, true);
+    assert.equal(built.exportedTargetIds.has('organic-link-0'), true);
+    const firstLink = built.context.nodes.find((item) => item.targetId === 'organic-link-0');
+    assert.ok(firstLink);
+    if (firstLink?.href !== undefined) {
+      assert.ok(firstLink.href.length <= MAX_EXPORTED_HREF_CHARS);
+    }
+    assert.equal(built.exportedTargetIds.has('organic-link-199'), false);
+  });
+
+  it('keeps exportedTargetIds aligned with the final serialized context', () => {
+    const built = buildInteractiveModelPageContext(searchResultsObservation(), {
+      maxStructuredChars: MODEL_CONTEXT_BUDGETS.maxStructuredChars,
+    });
+
+    for (const targetId of built.exportedTargetIds) {
+      assert.match(built.serialized, new RegExp(targetId));
+    }
+    for (const node of built.context.nodes) {
+      if (node.targetId !== undefined) {
+        assert.equal(built.exportedTargetIds.has(node.targetId), true);
+      }
+      if (node.nativeOptions) {
+        for (const option of node.nativeOptions) {
+          assert.equal(built.exportedTargetIds.has(option.targetId), true);
+        }
+      }
+    }
+  });
+
+  it('compacts long redirect hrefs without exporting unsupported schemes', () => {
+    const compact = compactModelFacingHref(longRedirectHref(0));
+    assert.ok(compact.length <= MAX_EXPORTED_HREF_CHARS);
+    assert.doesNotMatch(compact, /utm_source=/);
+    assert.equal(
+      buildInteractiveModelPageContext(
+        observation([
+          node({
+            targetId: 'js-link',
+            role: 'link',
+            tag: 'a',
+            interactive: true,
+            attributes: { href: 'javascript:alert(1)' },
+          }),
+        ]),
+      ).context.nodes[0]?.href,
+      undefined,
+    );
+  });
+
+  it('produces deterministic interactive context for the same observation', () => {
+    const page = searchResultsObservation(40);
+    const first = buildInteractiveModelPageContext(page);
+    const second = buildInteractiveModelPageContext(page);
+    assert.deepEqual(first.context.nodes, second.context.nodes);
+    assert.equal(first.serialized, second.serialized);
+  });
+
+  it('still fails closed for an artificially tiny configured budget', () => {
+    assert.throws(
+      () =>
+        buildInteractiveModelPageContext(searchResultsObservation(5), {
+          maxStructuredChars: 80,
+        }),
+      (error: unknown) => error instanceof ModelError && error.code === 'CONTEXT_TOO_LARGE',
+    );
   });
 });
 

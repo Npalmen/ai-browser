@@ -19,6 +19,8 @@ export const MODEL_CONTEXT_BUDGETS = {
 
 export const SCREENSHOT_TOKEN_SURCHARGE = 1500;
 
+const FIELD_CLIP_LIMITS = [200, 120, 80, 40, 20] as const;
+
 const NEAR_VIEWPORT_MARGIN_PX = 100;
 const HEADING_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
 const LANDMARK_ROLES = new Set(['main', 'navigation', 'form', 'search', 'banner']);
@@ -82,8 +84,18 @@ export interface BuiltModelPageContext {
   exportedTargetIds: ReadonlySet<TargetId>;
 }
 
+export interface PageContextBuildDiagnostics {
+  readonly sourceNodeCount: number;
+  readonly selectedNodeCount: number;
+  readonly charsBeforeCompaction: number;
+  readonly charsAfterCompaction: number;
+  readonly truncated: boolean;
+  readonly overflowStage?: 'base-compaction' | 'interactive-enrichment' | 'none';
+}
+
 export interface BuildModelPageContextOptions {
   maxStructuredChars?: number;
+  collectDiagnostics?: (diagnostics: PageContextBuildDiagnostics) => void;
 }
 
 interface CompactCandidate {
@@ -125,10 +137,12 @@ export function buildModelPageContext(
   const candidates = observation.nodes.map((node, index) =>
     toCandidate(node, index, observation.viewport),
   );
+  const charsBeforeCompaction = serializedLength(document, viewport, candidates, false);
 
-  const selected = compactCandidates(candidates, document, viewport, maxStructuredChars);
+  const compacted = compactCandidates(candidates, document, viewport, maxStructuredChars);
+  const selected = compacted.candidates;
   const removedUsefulNodes = selected.length < candidates.length;
-  const truncated = observation.stats.truncated || removedUsefulNodes;
+  const truncated = observation.stats.truncated || removedUsefulNodes || compacted.truncated;
   const context: ModelPageContext = {
     document,
     ...(viewport === undefined ? {} : { viewport }),
@@ -137,11 +151,28 @@ export function buildModelPageContext(
   };
   const serialized = JSON.stringify(context);
   if (serialized.length > maxStructuredChars) {
+    options.collectDiagnostics?.({
+      sourceNodeCount: candidates.length,
+      selectedNodeCount: selected.length,
+      charsBeforeCompaction,
+      charsAfterCompaction: serialized.length,
+      truncated,
+      overflowStage: 'base-compaction',
+    });
     throw new ModelError(
       'CONTEXT_TOO_LARGE',
       'The compact page context exceeds the structured export budget.',
     );
   }
+
+  options.collectDiagnostics?.({
+    sourceNodeCount: candidates.length,
+    selectedNodeCount: selected.length,
+    charsBeforeCompaction,
+    charsAfterCompaction: serialized.length,
+    truncated,
+    overflowStage: 'none',
+  });
 
   return {
     context,
@@ -241,16 +272,18 @@ function compactCandidates(
   document: ModelPageContext['document'],
   viewport: ModelPageContext['viewport'],
   maxStructuredChars: number,
-): CompactCandidate[] {
+): { candidates: CompactCandidate[]; truncated: boolean } {
   let selected = candidates;
+  let truncated = false;
 
   if (serializedLength(document, viewport, selected, false) <= maxStructuredChars) {
-    return selected;
+    return { candidates: selected, truncated };
   }
 
   selected = dropMatching(selected, (candidate) => candidate.lowInformation);
+  truncated = true;
   if (serializedLength(document, viewport, selected, true) <= maxStructuredChars) {
-    return selected;
+    return { candidates: selected, truncated };
   }
 
   selected = dropMatching(
@@ -258,16 +291,180 @@ function compactCandidates(
     (candidate) => candidate.offscreenLowPriority && !candidate.node.interactive,
   );
   if (serializedLength(document, viewport, selected, true) <= maxStructuredChars) {
-    return selected;
+    return { candidates: selected, truncated };
   }
 
   selected = dropNonInteractiveTextByPriority(selected, document, viewport, maxStructuredChars);
   if (serializedLength(document, viewport, selected, true) <= maxStructuredChars) {
-    return selected;
+    return { candidates: selected, truncated };
   }
 
-  selected = selected.filter((candidate) => candidate.hardFloor);
-  return selected;
+  return fitCandidatesWithinBudget(selected, document, viewport, maxStructuredChars, truncated);
+}
+
+function fitCandidatesWithinBudget(
+  candidates: CompactCandidate[],
+  document: ModelPageContext['document'],
+  viewport: ModelPageContext['viewport'],
+  maxStructuredChars: number,
+  alreadyTruncated: boolean,
+): { candidates: CompactCandidate[]; truncated: boolean } {
+  let selected = sortCandidatesByDocumentOrder(candidates);
+  let truncated = alreadyTruncated;
+
+  const measure = () => serializedLength(document, viewport, selected, truncated);
+
+  if (measure() <= maxStructuredChars) {
+    return { candidates: selected, truncated };
+  }
+
+  for (const limit of FIELD_CLIP_LIMITS) {
+    for (const candidate of clipOrder(selected)) {
+      const nextNode = clipModelPageNodeFields(candidate.node, limit, {
+        omitBounds: limit <= 40,
+      });
+      if (nextNode !== candidate.node) {
+        candidate.node = nextNode;
+        truncated = true;
+      }
+      if (measure() <= maxStructuredChars) {
+        return { candidates: selected, truncated };
+      }
+    }
+  }
+
+  while (selected.length > 0 && measure() > maxStructuredChars) {
+    const dropIndex = selectLowestPriorityCandidateIndex(selected);
+    if (dropIndex === undefined) {
+      break;
+    }
+    selected = selected.filter((_, index) => index !== dropIndex);
+    truncated = true;
+  }
+
+  if (measure() > maxStructuredChars) {
+    for (const limit of [12, 8] as const) {
+      for (const candidate of selected) {
+        candidate.node = clipModelPageNodeFields(candidate.node, limit, {
+          omitBounds: true,
+          forceClip: true,
+        });
+        truncated = true;
+        if (measure() <= maxStructuredChars) {
+          return { candidates: selected, truncated };
+        }
+      }
+    }
+  }
+
+  return { candidates: selected, truncated };
+}
+
+function sortCandidatesByDocumentOrder(candidates: CompactCandidate[]): CompactCandidate[] {
+  return candidates.slice().sort((left, right) => left.index - right.index);
+}
+
+function clipOrder(candidates: CompactCandidate[]): CompactCandidate[] {
+  return candidates.slice().sort((left, right) => {
+    if (right.priority !== left.priority) {
+      return right.priority - left.priority;
+    }
+    return right.index - left.index;
+  });
+}
+
+function selectLowestPriorityCandidateIndex(candidates: CompactCandidate[]): number | undefined {
+  if (candidates.length === 0) {
+    return undefined;
+  }
+  let dropIndex = 0;
+  for (let index = 1; index < candidates.length; index += 1) {
+    const current = candidates[index];
+    const lowest = candidates[dropIndex];
+    if (current.priority > lowest.priority) {
+      dropIndex = index;
+      continue;
+    }
+    if (current.priority === lowest.priority && current.index > lowest.index) {
+      dropIndex = index;
+    }
+  }
+  return dropIndex;
+}
+
+export function modelPageNodeExportPriority(node: ModelPageNode): number {
+  if (node.interactive && node.inViewport !== false) {
+    return ExportPriority.VisibleInteractiveInViewport;
+  }
+  if (node.focused === true || node.editable === true) {
+    return ExportPriority.FocusedOrEditable;
+  }
+  if (node.role === 'heading' && node.inViewport !== false) {
+    return ExportPriority.HeadingInViewport;
+  }
+  if (node.inViewport !== false && hasMeaningfulContent(node)) {
+    return ExportPriority.VisibleMeaningfulTextInViewport;
+  }
+  if (
+    (LANDMARK_ROLES.has(node.role) || (node.tag ? LANDMARK_TAGS.has(node.tag.toLowerCase()) : false)) &&
+    node.inViewport !== false
+  ) {
+    return ExportPriority.LandmarkInViewport;
+  }
+  return ExportPriority.StructuralContext;
+}
+
+export function clipModelPageNodeFields(
+  node: ModelPageNode,
+  maxFieldChars: number,
+  options: { omitBounds?: boolean; forceClip?: boolean } = {},
+): ModelPageNode {
+  if (node.secret === true && !options.forceClip) {
+    const clipped: ModelPageNode = { ...node };
+    if (options.omitBounds) {
+      delete clipped.bounds;
+    }
+    return clipped;
+  }
+
+  const clipped: ModelPageNode = { ...node };
+  if (clipped.name !== undefined) {
+    clipped.name = clipField(clipped.name, maxFieldChars);
+  }
+  if (clipped.text !== undefined) {
+    clipped.text = clipField(clipped.text, maxFieldChars);
+  }
+  if (clipped.value !== undefined) {
+    clipped.value = clipField(clipped.value, maxFieldChars);
+  }
+  if (options.omitBounds) {
+    delete clipped.bounds;
+  }
+  return clipped;
+}
+
+export function estimateModelPageContextLength(
+  document: ModelPageContext['document'],
+  viewport: ModelPageContext['viewport'],
+  nodes: readonly ModelPageNode[],
+  truncated: boolean,
+): number {
+  return JSON.stringify({
+    document,
+    ...(viewport === undefined ? {} : { viewport }),
+    truncated,
+    nodes,
+  }).length;
+}
+
+function clipField(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  if (maxChars <= 3) {
+    return value.slice(0, maxChars);
+  }
+  return `${value.slice(0, maxChars - 3)}...`;
 }
 
 function dropMatching(
