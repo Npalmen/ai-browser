@@ -102,12 +102,15 @@ interface RunLocalBudgets {
   semanticActionAttempts: number;
 }
 
+type SemanticCompletionFrontier = 'none' | 'verified' | 'unverified';
+
 interface TrustedRunActionEvidence {
   successfulBrowserDispatches: number;
   verifiedObservableEffects: number;
   verifiedNavigations: number;
   approvedExecutions: number;
   lastTrustedEffect: TrustedActionEffect | undefined;
+  latestSemanticFrontier: SemanticCompletionFrontier;
 }
 
 interface TrustedActionEffect {
@@ -140,15 +143,20 @@ function createTrustedRunActionEvidence(): TrustedRunActionEvidence {
     verifiedNavigations: 0,
     approvedExecutions: 0,
     lastTrustedEffect: undefined,
+    latestSemanticFrontier: 'none',
   };
 }
 
 function hasTrustedTaskCompletionEvidence(evidence: TrustedRunActionEvidence): boolean {
-  return (
-    evidence.verifiedNavigations > 0 ||
-    evidence.verifiedObservableEffects > 0 ||
-    evidence.approvedExecutions > 0
-  );
+  return evidence.latestSemanticFrontier === 'verified';
+}
+
+function isSemanticCompletionAction(actionKind: TrustedRunProgressActionKind): boolean {
+  return actionKind !== 'scroll';
+}
+
+function semanticEffectIsVerified(effect: TrustedActionEffect): boolean {
+  return effect.navigation || effect.pageChanged || effect.observableStateChanged;
 }
 
 function recordTrustedActionEvidence(
@@ -159,17 +167,22 @@ function recordTrustedActionEvidence(
   if (effect.navigation) {
     evidence.verifiedNavigations += 1;
   } else if (
-    effect.actionKind !== 'scroll' &&
+    isSemanticCompletionAction(effect.actionKind) &&
     (effect.pageChanged || effect.observableStateChanged)
   ) {
     evidence.verifiedObservableEffects += 1;
   }
   evidence.lastTrustedEffect = effect;
+  if (!isSemanticCompletionAction(effect.actionKind)) {
+    return;
+  }
+  evidence.latestSemanticFrontier = semanticEffectIsVerified(effect) ? 'verified' : 'unverified';
 }
 
 function recordApprovedExecutionEvidence(evidence: TrustedRunActionEvidence): void {
   evidence.successfulBrowserDispatches += 1;
   evidence.approvedExecutions += 1;
+  evidence.latestSemanticFrontier = 'verified';
 }
 
 function isViewportDiscoveryScroll(proposal: BoundInteractionProposal): boolean {
@@ -402,6 +415,7 @@ export class SafeAgentLoop {
       verifiedEffects: evidence.verifiedObservableEffects,
       navigations: evidence.verifiedNavigations,
       approvedExecutions: evidence.approvedExecutions,
+      latestSemanticFrontier: evidence.latestSemanticFrontier,
       iteration: context.iteration,
     });
 

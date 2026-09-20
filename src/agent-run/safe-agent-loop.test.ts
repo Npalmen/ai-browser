@@ -152,6 +152,21 @@ function boundScroll(
   };
 }
 
+function boundScrollIntoView(
+  revision: string,
+  observationId: string,
+  targetId = 'target-1',
+): BoundInteractionProposal {
+  return {
+    kind: 'scroll',
+    mode: 'into-view',
+    targetId,
+    tabId: TAB,
+    observationId,
+    documentRevision: revision,
+  };
+}
+
 function boundType(
   revision = 'rev-a',
   targetId = 'target-1',
@@ -3437,6 +3452,448 @@ describe('SafeAgentLoop false completion guard', () => {
       ),
       true,
     );
+  });
+
+  it('does not let an older verified navigation justify a later dispatch-only click', async () => {
+    const source = observation();
+    const destination = observation({
+      observationId: 'obs-dest',
+      document: {
+        ...source.document,
+        revision: 'rev-docs',
+        url: 'https://webdriver.io/',
+      },
+      nodes: [
+        node({
+          targetId: 'target-2',
+          role: 'button',
+          name: 'Get Started',
+          tag: 'button',
+          interactive: true,
+        }),
+      ],
+    });
+    const hold = new Deferred<InteractiveStepResult>();
+    const deltas: string[] = [];
+    const stepAgent = new FakeStepAgent(async (_request, options, callIndex) => {
+      if (callIndex === 1) {
+        return proposalStep(boundClick(), source);
+      }
+      if (callIndex === 2) {
+        return proposalStep(boundClick('rev-docs', 'target-2', 'obs-dest'), destination);
+      }
+      if (callIndex === 3) {
+        options?.onAnswerTextDelta?.('Clicked B.');
+        return answerStep('Clicked B.', destination, 'task-complete');
+      }
+      return hold.promise;
+    });
+    const executor = new FakeV3Executor([succeeded(destination), succeeded(destination)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const run = start(coordinator, 'Open WebDriverIO and click Get Started.');
+    const pending = loop.run(refOf(run), {
+      onAnswerTextDelta: (text) => {
+        deltas.push(text);
+      },
+    });
+    await waitUntil(() => stepAgent.calls.length >= 4);
+    assert.equal(coordinator.getRun(run.runId)?.state, 'running');
+    assert.equal(deltas.join('').includes('Clicked B.'), false);
+    assert.equal(executor.calls.length, 2);
+    assert.equal(
+      stepAgent.calls[3]?.options?.trustedProgress?.some(
+        (entry) => entry.kind === 'no-verified-task-effect-yet',
+      ),
+      true,
+    );
+    hold.resolve(answerStep('The second click could not be verified.', destination, 'cannot-complete'));
+    const result = await pending;
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'The second click could not be verified.');
+      assert.notEqual(result.answer.text, 'Clicked B.');
+    }
+    assert.equal(executor.calls.length, 2);
+  });
+
+  it('fails bounded when task-complete is repeated after a later dispatch-only click', async () => {
+    const source = observation();
+    const destination = observation({
+      observationId: 'obs-dest',
+      document: {
+        ...source.document,
+        revision: 'rev-docs',
+        url: 'https://webdriver.io/',
+      },
+      nodes: [
+        node({
+          targetId: 'target-2',
+          role: 'button',
+          name: 'Get Started',
+          tag: 'button',
+          interactive: true,
+        }),
+      ],
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), source),
+      proposalStep(boundClick('rev-docs', 'target-2', 'obs-dest'), destination),
+      answerStep('Clicked B.', destination, 'task-complete'),
+      answerStep('Clicked B.', destination, 'task-complete'),
+    ]);
+    const executor = new FakeV3Executor([succeeded(destination), succeeded(destination)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(
+      refOf(start(coordinator, 'Open WebDriverIO and click Get Started.')),
+    );
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'MODEL_FAILED');
+      assert.equal(result.run.modelErrorCode, 'MODEL_OUTPUT_INVALID');
+    }
+    assert.equal(executor.calls.length, 2);
+    assert.equal(stepAgent.calls.length, 4);
+  });
+
+  it('does not let an older observable effect justify a later dispatch-only click', async () => {
+    const unchecked = observation({
+      nodes: [
+        node({
+          targetId: 'target-1',
+          role: 'checkbox',
+          name: 'Agree',
+          tag: 'input',
+          interactive: true,
+          states: { checked: false },
+        }),
+      ],
+    });
+    const checked = observation({
+      observationId: 'obs-checked',
+      nodes: [
+        node({
+          targetId: 'target-1',
+          role: 'checkbox',
+          name: 'Agree',
+          tag: 'input',
+          interactive: true,
+          states: { checked: true },
+        }),
+        node({
+          targetId: 'target-2',
+          role: 'button',
+          name: 'Continue',
+          tag: 'button',
+          interactive: true,
+        }),
+      ],
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), unchecked),
+      proposalStep(boundClick('rev-a', 'target-2', 'obs-checked'), checked),
+      answerStep('Clicked Continue.', checked, 'task-complete'),
+      answerStep('The button click could not be verified.', checked, 'cannot-complete'),
+    ]);
+    const executor = new FakeV3Executor([succeeded(checked), succeeded(checked)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Check agree then continue.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'The button click could not be verified.');
+    }
+    assert.equal(executor.calls.length, 2);
+  });
+
+  it('does not let an older V4 execute justify a later dispatch-only V3 click', async () => {
+    const obs = observation({
+      nodes: [
+        node({
+          targetId: 'target-1',
+          role: 'button',
+          name: 'Submit',
+          tag: 'button',
+          interactive: true,
+        }),
+        node({
+          targetId: 'target-2',
+          role: 'button',
+          name: 'Safe control',
+          tag: 'button',
+          interactive: true,
+        }),
+      ],
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), obs),
+      proposalStep(boundClick('rev-a', 'target-2'), obs),
+      answerStep('Clicked the safe control.', obs, 'task-complete'),
+      answerStep('The later click could not be verified.', obs, 'cannot-complete'),
+    ]);
+    const executor = new FakeV3Executor([
+      denied('DEFERRED_TO_EXECUTE'),
+      succeeded(obs),
+    ]);
+    const coordinator = new AgentRunCoordinator();
+    const approvalPort = new FakeApprovalPort(coordinator);
+    const loop = new SafeAgentLoop({
+      coordinator,
+      stepAgent,
+      interactionExecutor: executor,
+      approvalPort,
+    });
+    const run = start(coordinator, 'Submit then click the safe control.');
+    const pending = loop.run(refOf(run));
+    await waitUntil(() => coordinator.getRun(run.runId)?.state === 'awaiting-approval');
+    completeApprovedExecution(coordinator, approvalPort.lastApprovalId ?? '');
+    const result = await pending;
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'The later click could not be verified.');
+    }
+    assert.equal(executor.calls.length, 2);
+    assert.equal(executor.calls[1]?.proposal.kind, 'click');
+    if (executor.calls[1]?.proposal.kind === 'click') {
+      assert.equal(executor.calls[1].proposal.targetId, 'target-2');
+    }
+  });
+
+  it('allows task-complete when the latest semantic action is verified', async () => {
+    const source = observation();
+    const destination = observation({
+      observationId: 'obs-dest',
+      document: {
+        ...source.document,
+        revision: 'rev-docs',
+        url: 'https://webdriver.io/',
+      },
+      nodes: [
+        node({
+          targetId: 'target-2',
+          role: 'checkbox',
+          name: 'Agree',
+          tag: 'input',
+          interactive: true,
+          states: { checked: false },
+        }),
+      ],
+    });
+    const checked = observation({
+      observationId: 'obs-checked',
+      document: destination.document,
+      nodes: [
+        node({
+          targetId: 'target-2',
+          role: 'checkbox',
+          name: 'Agree',
+          tag: 'input',
+          interactive: true,
+          states: { checked: true },
+        }),
+      ],
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), source),
+      proposalStep(boundClick('rev-docs', 'target-2', 'obs-dest'), destination),
+      answerStep('Opened and checked agree.', checked, 'task-complete'),
+    ]);
+    const executor = new FakeV3Executor([succeeded(destination), succeeded(checked)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Open the docs and check agree.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Opened and checked agree.');
+    }
+    assert.equal(executor.calls.length, 2);
+    assert.equal(stepAgent.calls.length, 3);
+  });
+
+  it('does not let discovery scrolls replace a verified semantic frontier', async () => {
+    const source = observation();
+    const destination = observation({
+      observationId: 'obs-dest',
+      document: {
+        ...source.document,
+        revision: 'rev-docs',
+        url: 'https://webdriver.io/',
+      },
+    });
+    const scrolled = observation({
+      observationId: 'obs-scrolled',
+      document: destination.document,
+      viewport: { ...destination.viewport, scrollY: 300 },
+    });
+    const scrolledMore = observation({
+      observationId: 'obs-scrolled-2',
+      document: destination.document,
+      viewport: { ...destination.viewport, scrollY: 600 },
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), source),
+      proposalStep(boundScroll('rev-docs', 'obs-dest'), destination),
+      proposalStep(boundScroll('rev-docs', 'obs-scrolled'), scrolled),
+      answerStep('Reached the destination.', scrolledMore, 'task-complete'),
+    ]);
+    const executor = new FakeV3Executor([
+      succeeded(destination),
+      succeeded(scrolled),
+      succeeded(scrolledMore),
+    ]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Open the docs and look around.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Reached the destination.');
+    }
+    assert.equal(executor.calls.filter((call) => call.proposal.kind === 'scroll').length, 2);
+    assert.equal(executor.calls.filter((call) => call.proposal.kind === 'click').length, 1);
+  });
+
+  it('blocks task-complete after discovery scrolls then a dispatch-only semantic click', async () => {
+    const source = observation();
+    const destination = observation({
+      observationId: 'obs-dest',
+      document: {
+        ...source.document,
+        revision: 'rev-docs',
+        url: 'https://webdriver.io/',
+      },
+    });
+    const scrolled = observation({
+      observationId: 'obs-scrolled',
+      document: destination.document,
+      viewport: { ...destination.viewport, scrollY: 300 },
+      nodes: [
+        node({
+          targetId: 'target-2',
+          role: 'button',
+          name: 'Get Started',
+          tag: 'button',
+          interactive: true,
+        }),
+      ],
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), source),
+      proposalStep(boundScroll('rev-docs', 'obs-dest'), destination),
+      proposalStep(boundClick('rev-docs', 'target-2', 'obs-scrolled'), scrolled),
+      answerStep('Clicked Get Started.', scrolled, 'task-complete'),
+      answerStep('The later click could not be verified.', scrolled, 'cannot-complete'),
+    ]);
+    const executor = new FakeV3Executor([
+      succeeded(destination),
+      succeeded(scrolled),
+      succeeded(scrolled),
+    ]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(
+      refOf(start(coordinator, 'Open the docs, scroll, then click Get Started.')),
+    );
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'The later click could not be verified.');
+    }
+    assert.equal(executor.calls.filter((call) => call.proposal.kind === 'click').length, 2);
+    assert.equal(executor.calls.filter((call) => call.proposal.kind === 'scroll').length, 1);
+  });
+
+  it('does not let into-view scrolls replace a verified semantic frontier', async () => {
+    const source = observation();
+    const destination = observation({
+      observationId: 'obs-dest',
+      document: {
+        ...source.document,
+        revision: 'rev-docs',
+        url: 'https://webdriver.io/',
+      },
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), source),
+      proposalStep(boundScrollIntoView('rev-docs', 'obs-dest'), destination),
+      answerStep('Reached the destination.', destination, 'task-complete'),
+    ]);
+    const executor = new FakeV3Executor([succeeded(destination), succeeded(destination)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Open the docs and bring the control into view.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Reached the destination.');
+    }
+    assert.equal(executor.calls[1]?.proposal.kind, 'scroll');
+  });
+
+  it('does not honor later complete-on-success from earlier verified navigation', async () => {
+    const source = observation();
+    const destination = observation({
+      observationId: 'obs-dest',
+      document: {
+        ...source.document,
+        revision: 'rev-docs',
+        url: 'https://webdriver.io/',
+      },
+      nodes: [
+        node({
+          targetId: 'target-2',
+          role: 'button',
+          name: 'Get Started',
+          tag: 'button',
+          interactive: true,
+        }),
+      ],
+    });
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), source),
+      proposalStep(boundClick('rev-docs', 'target-2', 'obs-dest'), destination, {
+        continuation: 'complete-on-success',
+        onSuccessText: 'Clicked B.',
+      }),
+      answerStep('The second click had no effect.', destination, 'cannot-complete'),
+    ]);
+    const executor = new FakeV3Executor([succeeded(destination), succeeded(destination)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(
+      refOf(start(coordinator, 'Open WebDriverIO and click Get Started.')),
+    );
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'The second click had no effect.');
+      assert.notEqual(result.answer.text, 'Clicked B.');
+      assert.notEqual(result.answer.text, 'Done.');
+    }
+    assert.equal(stepAgent.calls.length, 3);
+    assert.equal(executor.calls.length, 2);
+  });
+
+  it('does not leak a verified frontier into a later run', async () => {
+    const source = observation();
+    const destination = observation({
+      observationId: 'obs-dest',
+      document: {
+        ...source.document,
+        revision: 'rev-docs',
+        url: 'https://webdriver.io/',
+      },
+    });
+    const firstAgent = new FakeStepAgent([
+      proposalStep(boundClick(), source),
+      answerStep('Opened.', destination, 'task-complete'),
+    ]);
+    const firstExecutor = new FakeV3Executor([succeeded(destination)]);
+    const first = createLoop({ stepAgent: firstAgent, executor: firstExecutor });
+    const firstResult = await first.loop.run(refOf(start(first.coordinator, 'Open the docs.')));
+    assert.equal(firstResult.status, 'completed');
+
+    const secondAgent = new FakeStepAgent([
+      answerStep('Clicked B.', source, 'task-complete'),
+      answerStep('Need a fresh action.', source, 'cannot-complete'),
+    ]);
+    const secondExecutor = new FakeV3Executor([]);
+    const second = createLoop({ stepAgent: secondAgent, executor: secondExecutor });
+    const secondResult = await second.loop.run(refOf(start(second.coordinator, 'Click Get Started.')));
+    assert.equal(secondResult.status, 'completed');
+    if (secondResult.status === 'completed') {
+      assert.equal(secondResult.answer.text, 'Need a fresh action.');
+    }
+    assert.equal(secondExecutor.calls.length, 0);
   });
 });
 

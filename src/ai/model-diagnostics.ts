@@ -134,6 +134,7 @@ const SAFE_COMPLETION_EVIDENCE = new Set([
   'observable-effect',
   'approved-execution',
 ]);
+const SAFE_SEMANTIC_FRONTIERS = new Set(['none', 'verified', 'unverified']);
 const SAFE_DEFERRED_REASONS = new Set(['no-observable-effect']);
 
 function sanitizeAllowlisted(value: string, allowed: Set<string>, fallback: string): string {
@@ -146,6 +147,7 @@ export function formatAgentLoopAnswerReceived(diagnostics: {
   readonly verifiedEffects: number;
   readonly navigations: number;
   readonly approvedExecutions: number;
+  readonly latestSemanticFrontier: string;
   readonly iteration: number;
 }): string {
   return [
@@ -155,6 +157,7 @@ export function formatAgentLoopAnswerReceived(diagnostics: {
     `verifiedEffects=${Math.max(0, Math.floor(diagnostics.verifiedEffects))}`,
     `navigations=${Math.max(0, Math.floor(diagnostics.navigations))}`,
     `approvedExecutions=${Math.max(0, Math.floor(diagnostics.approvedExecutions))}`,
+    `latestSemanticFrontier=${sanitizeAllowlisted(diagnostics.latestSemanticFrontier, SAFE_SEMANTIC_FRONTIERS, 'unknown')}`,
     `iteration=${Math.max(0, Math.floor(diagnostics.iteration))}`,
   ].join(' ');
 }

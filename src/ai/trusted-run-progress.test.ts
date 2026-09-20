@@ -102,7 +102,7 @@ describe('trusted run progress', () => {
     assert.ok(serialized);
     assert.match(
       serialized,
-      /A browser primitive may have been dispatched, but no trusted observable task effect has been verified/,
+      /The most recent semantic browser action was dispatched, but no trusted observable task effect was verified/,
     );
     assert.match(serialized, /Do not claim that the requested browser action completed/);
     assert.match(serialized, /completion cannot be verified/);

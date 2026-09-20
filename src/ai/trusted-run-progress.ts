@@ -84,7 +84,7 @@ function summarizeTrustedProgressEntry(
 ): string {
   if (entry.kind === 'no-verified-task-effect-yet') {
     return [
-      'A browser primitive may have been dispatched, but no trusted observable task effect has been verified in this current task.',
+      'The most recent semantic browser action was dispatched, but no trusted observable task effect was verified.',
       'Do not claim that the requested browser action completed.',
       'Re-evaluate current state and either propose the necessary next interaction, explain that completion cannot be verified, or request clarification.',
     ].join(' ');
