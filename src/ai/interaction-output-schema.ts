@@ -15,9 +15,17 @@ export interface AgentModelAnswerOutput {
   referencedTargets: TargetId[];
 }
 
+export const AGENT_TASK_CONTINUATIONS = ['continue', 'complete-on-success'] as const;
+export type AgentTaskContinuation = (typeof AGENT_TASK_CONTINUATIONS)[number];
+
+export const MAX_ON_SUCCESS_TEXT_LENGTH = 280;
+export const DEFAULT_TASK_COMPLETION_TEXT = 'Done.';
+
 export interface AgentModelInteractionOutput {
   kind: 'interaction';
   proposal: ModelInteractionProposal;
+  continuation?: AgentTaskContinuation;
+  onSuccessText?: string;
 }
 
 export type AgentModelOutput = AgentModelAnswerOutput | AgentModelInteractionOutput;
@@ -110,8 +118,10 @@ export const AGENT_MODEL_OUTPUT_JSON_SCHEMA = {
       properties: {
         kind: { const: 'interaction' },
         proposal: PROPOSAL_JSON_SCHEMA,
+        continuation: { type: 'string', enum: [...AGENT_TASK_CONTINUATIONS] },
+        onSuccessText: { type: 'string', minLength: 1, maxLength: MAX_ON_SUCCESS_TEXT_LENGTH },
       },
-      required: ['kind', 'proposal'],
+      required: ['kind', 'proposal', 'continuation'],
     },
   ],
 };
@@ -171,18 +181,58 @@ function parseAnswerOutput(record: Record<string, unknown>): AgentModelAnswerOut
 }
 
 function parseInteractionOutput(record: Record<string, unknown>): AgentModelInteractionOutput {
-  assertAllowedKeys(record, new Set(['kind', 'proposal']));
+  assertAllowedKeys(record, new Set(['kind', 'proposal', 'continuation', 'onSuccessText']));
 
   if (typeof record.proposal !== 'object' || record.proposal === null || Array.isArray(record.proposal)) {
     throw new ModelError('MODEL_OUTPUT_INVALID', 'Interaction proposal must be an object.');
   }
 
   const proposal = parseModelInteractionProposal(record.proposal);
+  const continuation = parseContinuation(record.continuation, proposal.kind);
+  const onSuccessText = parseOnSuccessText(record.onSuccessText);
 
   return {
     kind: 'interaction',
     proposal,
+    continuation,
+    ...(onSuccessText !== undefined ? { onSuccessText } : {}),
   };
+}
+
+function parseContinuation(
+  value: unknown,
+  proposalKind: ModelInteractionProposal['kind'],
+): AgentTaskContinuation {
+  if (value === undefined) {
+    return 'continue';
+  }
+  if (value !== 'continue' && value !== 'complete-on-success') {
+    throw new ModelError(
+      'MODEL_OUTPUT_INVALID',
+      'Interaction continuation must be continue or complete-on-success.',
+    );
+  }
+  if (proposalKind === 'scroll') {
+    return 'continue';
+  }
+  return value;
+}
+
+function parseOnSuccessText(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new ModelError('MODEL_OUTPUT_INVALID', 'onSuccessText must be a string.');
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+  if (trimmed.length > MAX_ON_SUCCESS_TEXT_LENGTH) {
+    throw new ModelError('MODEL_OUTPUT_INVALID', 'onSuccessText exceeds the allowed length.');
+  }
+  return trimmed;
 }
 
 function assertNoForbiddenTopLevelKeys(record: Record<string, unknown>): void {

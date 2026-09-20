@@ -511,6 +511,8 @@ describe('AiSdkGatewayRuntime.generateInteraction', () => {
       const line = logs.find((entry) => entry.includes('[model] request-failed'));
       assert.ok(line);
       assert.match(line!, /alias=page-fast code=MODEL_OUTPUT_INVALID/);
+      assert.match(line!, /category=output-invalid/);
+      assert.match(line!, /phase=awaiting-structured/);
       assert.doesNotMatch(line!, /test-key/);
       assert.doesNotMatch(line!, /target-1/);
     } finally {

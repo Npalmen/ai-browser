@@ -379,7 +379,7 @@ describe('AgentRunCoordinator budgets', () => {
     const harness = createHarness();
     const run = start(harness);
     let current = refOf(run);
-    for (let step = 1; step <= 7; step += 1) {
+    for (let step = 1; step <= MAX_AGENT_LOOP_MODEL_STEPS - 1; step += 1) {
       requireApplied(harness.coordinator.assertCanStartModelStep(current));
       const recorded = requireApplied(harness.coordinator.recordModelStepCompleted(current));
       assert.equal(recorded.modelStepCount, step);
@@ -387,15 +387,18 @@ describe('AgentRunCoordinator budgets', () => {
     }
 
     requireApplied(harness.coordinator.assertCanStartModelStep(current));
-    const eighth = requireApplied(harness.coordinator.recordModelStepCompleted(current));
-    assert.equal(eighth.modelStepCount, MAX_AGENT_LOOP_MODEL_STEPS);
-    assert.equal(eighth.state, 'running');
+    const last = requireApplied(harness.coordinator.recordModelStepCompleted(current));
+    assert.equal(last.modelStepCount, MAX_AGENT_LOOP_MODEL_STEPS);
+    assert.equal(last.state, 'running');
 
     const blocked = requireApplied(harness.coordinator.assertCanStartModelStep(current));
     assert.equal(blocked.state, 'blocked');
     assert.equal(blocked.terminalReason, 'STEP_LIMIT_REACHED');
     assert.equal(blocked.modelStepCount, MAX_AGENT_LOOP_MODEL_STEPS);
-    assert.equal(harness.coordinator.getRun(run.runId)?.modelStepCount, 8);
+    assert.equal(
+      harness.coordinator.getRun(run.runId)?.modelStepCount,
+      MAX_AGENT_LOOP_MODEL_STEPS,
+    );
   });
 
   it('allows six action attempts and blocks a seventh without incrementing past the cap', () => {

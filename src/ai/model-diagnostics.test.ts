@@ -17,7 +17,7 @@ describe('model diagnostics formatting', () => {
     });
     assert.equal(
       line,
-      '[agent-loop] model-step-failed code=MODEL_OUTPUT_INVALID iteration=2 postNavigation=true alias=page-standard fallbackAttempts=1',
+      '[agent-loop] model-step-failed code=MODEL_OUTPUT_INVALID iteration=2 postNavigation=true alias=page-standard fallbackAttempts=1 category=unknown phase=unknown',
     );
   });
 
@@ -51,11 +51,34 @@ describe('model diagnostics formatting', () => {
     assert.doesNotMatch(line, /duckduckgo/i);
   });
 
-  it('formats gateway request failures with alias and normalized code', () => {
+  it('formats gateway request failures with alias, normalized code, and safe runtime category', () => {
     const line = formatModelRequestFailed({
       alias: 'page-standard',
-      code: 'MODEL_OUTPUT_INVALID',
+      code: 'MODEL_REQUEST_FAILED',
+      category: 'provider-http',
+      failurePhase: 'awaiting-structured',
+      providerStatus: 502,
     });
-    assert.equal(line, '[model] request-failed alias=page-standard code=MODEL_OUTPUT_INVALID');
+    assert.equal(
+      line,
+      '[model] request-failed alias=page-standard code=MODEL_REQUEST_FAILED category=provider-http phase=awaiting-structured providerStatus=502',
+    );
+  });
+
+  it('omits unsafe provider status values and does not leak request content', () => {
+    const line = formatModelRequestFailed({
+      alias: 'page-standard',
+      code: 'MODEL_REQUEST_FAILED',
+      category: 'unknown',
+      failurePhase: 'before-stream',
+      providerStatus: 12,
+    });
+    assert.equal(
+      line,
+      '[model] request-failed alias=page-standard code=MODEL_REQUEST_FAILED category=unknown phase=before-stream',
+    );
+    assert.doesNotMatch(line, /sk-[A-Za-z0-9]+/);
+    assert.doesNotMatch(line, /target-/i);
+    assert.doesNotMatch(line, /prompt/i);
   });
 });

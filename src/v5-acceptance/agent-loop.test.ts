@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
-  MAX_AGENT_LOOP_ACTION_ATTEMPTS,
   MAX_AGENT_LOOP_APPROVALS,
   MAX_AGENT_LOOP_MODEL_STEPS,
+  MAX_AGENT_LOOP_SEMANTIC_ACTIONS,
   toAgentRunRef,
 } from '../agent-run/agent-run-types';
 import { TargetRegistry } from '../observation/target-registry';
@@ -306,9 +306,9 @@ describe('V5 agent loop acceptance', () => {
     assert.equal(result.status, 'terminal');
     if (result.status === 'terminal') {
       assert.equal(result.run.terminalReason, 'STEP_LIMIT_REACHED');
-      assert.equal(result.run.actionAttemptCount, MAX_AGENT_LOOP_ACTION_ATTEMPTS);
+      assert.equal(result.run.actionAttemptCount, MAX_AGENT_LOOP_SEMANTIC_ACTIONS);
     }
-    assert.equal(counts.click, MAX_AGENT_LOOP_ACTION_ATTEMPTS);
+    assert.equal(counts.click, MAX_AGENT_LOOP_SEMANTIC_ACTIONS);
   });
 
   it('blocks the ninth model step at STEP_LIMIT_REACHED', async () => {

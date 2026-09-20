@@ -4,7 +4,7 @@ import {
   estimateInteractiveModelInputTokens,
   type BuiltInteractiveModelPageContext,
 } from './interaction-context-builder';
-import { parseAgentModelOutput, type AgentModelOutput } from './interaction-output-schema';
+import { parseAgentModelOutput, type AgentModelOutput, type AgentTaskContinuation } from './interaction-output-schema';
 import type { InteractionModelRuntime } from './interaction-model-runtime';
 import { decideModelExport } from './export-policy';
 import { MODEL_CATALOG, getModelProfile, type ModelCatalog } from './model-catalog';
@@ -90,6 +90,8 @@ export type InteractiveStepResult =
       readonly observation: PageObservation;
       readonly alias: ModelAlias;
       readonly truncatedContext: boolean;
+      readonly continuation: AgentTaskContinuation;
+      readonly onSuccessText?: string;
     };
 
 export class InteractiveStepAgent {
@@ -183,6 +185,9 @@ export class InteractiveStepAgent {
       observation,
       alias,
       truncatedContext: builtContext.context.truncated,
+      continuation:
+        output.proposal.kind === 'scroll' ? 'continue' : (output.continuation ?? 'continue'),
+      ...(output.onSuccessText !== undefined ? { onSuccessText: output.onSuccessText } : {}),
     };
   }
 

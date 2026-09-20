@@ -8,7 +8,7 @@ import type { InteractionModelRuntime } from '../ai/interaction-model-runtime';
 import type { AgentModelOutput } from '../ai/interaction-output-schema';
 import { MODEL_CATALOG } from '../ai/model-catalog';
 import { ModelError } from '../ai/model-errors';
-import type { ModelRequest } from '../ai/model-types';
+import type { AgentTaskContinuation } from '../ai/interaction-output-schema';
 import {
   serializeTrustedRunProgress,
   TRUSTED_RUN_PROGRESS_OPEN,
@@ -28,6 +28,7 @@ import { AgentRunCoordinator } from './agent-run-coordinator';
 import {
   MAX_AGENT_LOOP_ACTION_ATTEMPTS,
   MAX_AGENT_LOOP_MODEL_STEPS,
+  MAX_AGENT_LOOP_SEMANTIC_ACTIONS,
   toAgentRunRef,
   type AgentRunRef,
   type AgentRunSnapshot,
@@ -350,6 +351,10 @@ function refOf(snapshot: AgentRunSnapshot): AgentRunRef {
 function proposalStep(
   proposal: BoundInteractionProposal,
   obs: PageObservation,
+  extras?: {
+    continuation?: 'continue' | 'complete-on-success';
+    onSuccessText?: string;
+  },
 ): InteractiveStepResult {
   return {
     kind: 'proposal',
@@ -357,6 +362,8 @@ function proposalStep(
     observation: obs,
     alias: 'page-standard',
     truncatedContext: false,
+    continuation: extras?.continuation ?? 'continue',
+    ...(extras?.onSuccessText !== undefined ? { onSuccessText: extras.onSuccessText } : {}),
   };
 }
 
@@ -859,7 +866,7 @@ describe('SafeAgentLoop budgets and no-progress', () => {
   it('blocks the seventh action attempt after six successes', async () => {
     const responses: InteractiveStepResult[] = [];
     const results: InteractionResult[] = [];
-    for (let index = 0; index < 6; index += 1) {
+    for (let index = 0; index < MAX_AGENT_LOOP_SEMANTIC_ACTIONS; index += 1) {
       const revision = `rev-${index}`;
       const obs = observation({ document: { ...observation().document, revision } });
       responses.push(proposalStep(boundClick(revision), obs));
@@ -873,9 +880,9 @@ describe('SafeAgentLoop budgets and no-progress', () => {
     assert.equal(result.status, 'terminal');
     if (result.status === 'terminal') {
       assert.equal(result.run.terminalReason, 'STEP_LIMIT_REACHED');
-      assert.equal(result.run.actionAttemptCount, MAX_AGENT_LOOP_ACTION_ATTEMPTS);
+      assert.equal(result.run.actionAttemptCount, MAX_AGENT_LOOP_SEMANTIC_ACTIONS);
     }
-    assert.equal(executor.calls.length, 6);
+    assert.equal(executor.calls.length, MAX_AGENT_LOOP_SEMANTIC_ACTIONS);
   });
 
   it('does not call the step agent when model budget is already exhausted', async () => {
@@ -2401,6 +2408,323 @@ describe('SafeAgentLoop multi-step navigation completion', () => {
     assert.equal(result.status, 'completed');
     assert.equal(executor.calls.length, 4);
     assert.equal(executor.calls[3]?.proposal.kind, 'scroll');
+  });
+});
+
+describe('SafeAgentLoop complete-on-success', () => {
+  it('completes a final popup navigation without a second model call', async () => {
+    const source = observation();
+    const dest = destObservation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), source, {
+        continuation: 'complete-on-success',
+        onSuccessText: 'WebDriverIO har öppnats.',
+      }),
+    ]);
+    const executor = new FakeV3Executor([succeededPopup(dest)]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'WebDriverIO har öppnats.');
+      assert.equal(result.run.executionTabId, POPUP_DEST);
+    }
+    assert.equal(stepAgent.calls.length, 1);
+    assert.equal(executor.calls.length, 1);
+    assert.equal(executor.calls[0]?.proposal.kind, 'click');
+  });
+
+  it('ignores complete-on-success when the interaction fails', async () => {
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), observation(), { continuation: 'complete-on-success' }),
+    ]);
+    const executor = new FakeV3Executor([failed('INTERACTION_FAILED')]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'ACTION_FAILED');
+      assert.notEqual(result.run.state, 'completed');
+    }
+    assert.equal(stepAgent.calls.length, 1);
+  });
+
+  it('never completes when final-action execution state is unknown', async () => {
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), observation(), { continuation: 'complete-on-success' }),
+    ]);
+    const executor = new FakeV3Executor([
+      {
+        actionId: 'action-1',
+        status: 'execution-state-unknown',
+        pageState: pageState(),
+        errorCode: 'PAGE_NOT_READY',
+      },
+    ]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Click WebDriverIO.')));
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.state, 'execution-state-unknown');
+      assert.equal(result.run.terminalReason, 'EXECUTION_STATE_UNKNOWN');
+    }
+    assert.equal(stepAgent.calls.length, 1);
+  });
+
+  it('does not complete a consequential click until trusted V4 execution succeeds', async () => {
+    const obs = observation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), obs, {
+        continuation: 'complete-on-success',
+        onSuccessText: 'Submitted.',
+      }),
+    ]);
+    const executor = new FakeV3Executor([denied('DEFERRED_TO_EXECUTE')]);
+    const coordinator = new AgentRunCoordinator();
+    const approvalPort = new FakeApprovalPort(coordinator);
+    const loop = new SafeAgentLoop({
+      coordinator,
+      stepAgent,
+      interactionExecutor: executor,
+      approvalPort,
+    });
+    const run = start(coordinator, 'Submit the form.');
+    const pending = loop.run(refOf(run));
+    await waitUntil(() => coordinator.getRun(run.runId)?.state === 'awaiting-approval');
+    assert.equal(stepAgent.calls.length, 1);
+    assert.notEqual(coordinator.getRun(run.runId)?.state, 'completed');
+    completeApprovedExecution(coordinator, approvalPort.lastApprovalId ?? '');
+    const result = await pending;
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Submitted.');
+      assert.equal(result.run.modelStepCount, 1);
+    }
+    assert.equal(stepAgent.calls.length, 1);
+  });
+
+  it('does not complete when a complete-on-success consequential click is rejected', async () => {
+    const obs = observation();
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), obs, { continuation: 'complete-on-success' }),
+    ]);
+    const executor = new FakeV3Executor([denied('DEFERRED_TO_EXECUTE')]);
+    const coordinator = new AgentRunCoordinator();
+    const approvalPort = new FakeApprovalPort(coordinator);
+    const loop = new SafeAgentLoop({
+      coordinator,
+      stepAgent,
+      interactionExecutor: executor,
+      approvalPort,
+    });
+    const run = start(coordinator, 'Buy now.');
+    const pending = loop.run(refOf(run));
+    await waitUntil(() => coordinator.getRun(run.runId)?.state === 'awaiting-approval');
+    const notified = coordinator.notifyApprovalOutcome(approvalPort.lastApprovalId ?? '', 'rejected');
+    assert.equal(notified.status, 'applied');
+    const result = await pending;
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'APPROVAL_REJECTED');
+      assert.notEqual(result.run.state, 'completed');
+    }
+    assert.equal(stepAgent.calls.length, 1);
+  });
+
+  it('completes a multi-step chain after the final complete-on-success click', async () => {
+    const first = observation({
+      observationId: 'obs-a',
+      document: { ...observation().document, revision: 'rev-a' },
+    });
+    const afterA = observation({
+      observationId: 'obs-b',
+      document: { ...observation().document, revision: 'rev-b' },
+    });
+    const scrolled = observation({
+      observationId: 'obs-c',
+      document: { ...afterA.document, revision: 'rev-b' },
+      viewport: { ...afterA.viewport, scrollY: 300 },
+    });
+    const scrolledMore = observation({
+      observationId: 'obs-d',
+      document: { ...afterA.document, revision: 'rev-b' },
+      viewport: { ...afterA.viewport, scrollY: 600 },
+    });
+    const pageB = observation({
+      observationId: 'obs-e',
+      document: { ...observation().document, revision: 'rev-e', url: 'https://example.com/b' },
+      nodes: [node({ targetId: 'target-b', role: 'link', tag: 'a', interactive: true })],
+    });
+    const pageC = observation({
+      observationId: 'obs-f',
+      document: { ...observation().document, revision: 'rev-f', url: 'https://example.com/c' },
+      nodes: [node({ targetId: 'target-c', role: 'link', tag: 'a', interactive: true })],
+    });
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex === 1) {
+        return proposalStep(boundClick('rev-a', 'target-1', 'obs-a'), first);
+      }
+      if (callIndex === 2) {
+        return proposalStep(boundScroll('rev-b', 'obs-b'), afterA);
+      }
+      if (callIndex === 3) {
+        return proposalStep(boundScroll('rev-b', 'obs-c'), scrolled);
+      }
+      if (callIndex === 4) {
+        return proposalStep(boundClick('rev-b', 'target-b', 'obs-d'), scrolledMore);
+      }
+      return proposalStep(boundClick('rev-e', 'target-c', 'obs-e'), pageB, {
+        continuation: 'complete-on-success',
+        onSuccessText: 'All steps complete.',
+      });
+    });
+    const executor = new FakeV3Executor([
+      succeeded(afterA),
+      succeeded(scrolled),
+      succeeded(scrolledMore),
+      succeeded(pageB),
+      succeeded(pageC),
+    ]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(
+      refOf(start(coordinator, 'Click A, scroll, click B, then click C.')),
+    );
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'All steps complete.');
+    }
+    assert.equal(stepAgent.calls.length, 5);
+    assert.equal(executor.calls.length, 5);
+    assert.equal(executor.calls[4]?.proposal.kind, 'click');
+    if (executor.calls[4]?.proposal.kind === 'click') {
+      assert.equal(executor.calls[4].proposal.targetId, 'target-c');
+    }
+  });
+
+  it('does not grant authority when a denied proposal is marked complete-on-success', async () => {
+    const stepAgent = new FakeStepAgent([
+      proposalStep(boundClick(), observation(), { continuation: 'complete-on-success' }),
+    ]);
+    const executor = new FakeV3Executor([denied('TARGET_SENSITIVE')]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Buy now.')));
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'POLICY_BLOCKED');
+      assert.notEqual(result.run.state, 'completed');
+    }
+    assert.equal(executor.calls.length, 1);
+    assert.equal(stepAgent.calls.length, 1);
+  });
+});
+
+describe('SafeAgentLoop supported small-viewport budget', () => {
+  it('fits source navigation, four discovery scrolls, popup click, and final click', async () => {
+    const source = observation({
+      observationId: 'obs-search',
+      document: { ...observation().document, revision: 'rev-search' },
+    });
+    const electronPages = [0, 300, 600, 900, 1200].map((scrollY) =>
+      electronTestingObservation(scrollY, scrollY === 1200),
+    );
+    const dest = destObservation();
+    const gettingStarted = observation({
+      tabId: POPUP_DEST,
+      observationId: 'obs-getting-started',
+      document: {
+        ...dest.document,
+        revision: 'rev-getting-started',
+        url: 'https://webdriver.io/docs/gettingstarted',
+      },
+    });
+    const stepAgent = new FakeStepAgent(async (_request, _options, callIndex) => {
+      if (callIndex === 1) {
+        return proposalStep(boundClick('rev-search', 'target-1', 'obs-search'), source);
+      }
+      if (callIndex >= 2 && callIndex <= 5) {
+        const current = electronPages[callIndex - 2]!;
+        return proposalStep(boundScroll(current.document.revision, current.observationId), current);
+      }
+      if (callIndex === 6) {
+        const revealed = electronPages[4]!;
+        return proposalStep(
+          boundClick(revealed.document.revision, WEBDRIVERIO_TARGET, revealed.observationId),
+          revealed,
+        );
+      }
+      return proposalStep(
+        boundClick('rev-dest', 'target-dest', 'obs-dest', POPUP_DEST),
+        dest,
+        { continuation: 'complete-on-success', onSuccessText: 'Opened Getting Started.' },
+      );
+    });
+    const executor = new FakeV3Executor([
+      succeeded(electronPages[0]!),
+      succeeded(electronPages[1]!),
+      succeeded(electronPages[2]!),
+      succeeded(electronPages[3]!),
+      succeeded(electronPages[4]!),
+      succeededPopup(dest),
+      succeeded(gettingStarted),
+    ]);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(
+      refOf(
+        start(
+          coordinator,
+          'Open the first result, click WebDriverIO, then click Get Started.',
+        ),
+      ),
+    );
+    assert.equal(result.status, 'completed');
+    if (result.status === 'completed') {
+      assert.equal(result.answer.text, 'Opened Getting Started.');
+      assert.ok(result.run.actionAttemptCount <= MAX_AGENT_LOOP_ACTION_ATTEMPTS);
+      assert.ok(result.run.modelStepCount <= MAX_AGENT_LOOP_MODEL_STEPS);
+      assert.equal(result.run.actionAttemptCount, 7);
+      assert.equal(result.run.modelStepCount, 7);
+    }
+    assert.equal(stepAgent.calls.length, 7);
+    assert.equal(executor.calls.length, 7);
+    assert.equal(executor.calls.filter((call) => call.proposal.kind === 'scroll').length, 4);
+  });
+
+  it('still enforces the absolute action ceiling', async () => {
+    const responses: InteractiveStepResult[] = [];
+    const results: InteractionResult[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      const obs = electronTestingObservation(index * 300, false);
+      responses.push(proposalStep(boundScroll(obs.document.revision, obs.observationId), obs));
+      results.push(succeeded(electronTestingObservation((index + 1) * 300, false)));
+    }
+    for (let index = 0; index < MAX_AGENT_LOOP_SEMANTIC_ACTIONS; index += 1) {
+      const revision = `rev-sem-${index}`;
+      const obs = observation({
+        observationId: `obs-sem-${index}`,
+        document: { ...observation().document, revision },
+      });
+      responses.push(proposalStep(boundClick(revision, `target-${index}`, `obs-sem-${index}`), obs));
+      results.push(
+        succeeded(
+          observation({
+            observationId: `obs-sem-post-${index}`,
+            document: { ...obs.document, revision: `${revision}-post` },
+          }),
+        ),
+      );
+    }
+    const overflow = electronTestingObservation(0, false);
+    responses.push(proposalStep(boundScroll(overflow.document.revision, overflow.observationId), overflow));
+    const stepAgent = new FakeStepAgent(responses);
+    const executor = new FakeV3Executor(results);
+    const { coordinator, loop } = createLoop({ stepAgent, executor });
+    const result = await loop.run(refOf(start(coordinator, 'Search then click around.')));
+    assert.equal(result.status, 'terminal');
+    if (result.status === 'terminal') {
+      assert.equal(result.run.terminalReason, 'STEP_LIMIT_REACHED');
+      assert.equal(result.run.actionAttemptCount, MAX_AGENT_LOOP_ACTION_ATTEMPTS);
+    }
+    assert.equal(executor.calls.length, MAX_AGENT_LOOP_ACTION_ATTEMPTS);
   });
 });
 

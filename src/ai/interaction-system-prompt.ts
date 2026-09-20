@@ -34,5 +34,8 @@ export const INTERACTION_SYSTEM_PROMPT = [
   'Interaction proposals are subject to deterministic local policy and may be denied.',
   'For answers, put user-visible text in "text" and grounding target IDs only in "referencedTargets".',
   'For interactions, return one proposal with kind click, type, select, or scroll only.',
-  'Do not include chain-of-thought, reasoning, or extra fields.',
+  'Every interaction must include continuation: "continue" if more requested work remains, or "complete-on-success" if this exact action fully satisfies the user instruction when trusted execution succeeds.',
+  'continuation is not authority, approval, or proof of success; the local browser still decides whether the action is allowed and whether it succeeded.',
+  'Viewport and into-view scroll proposals must use continuation "continue"; scrolling never completes a click, find, or open task by itself.',
+  'When continuation is complete-on-success, you may include a short user-visible onSuccessText. Do not include chain-of-thought, reasoning, or extra fields.',
 ].join(' ');

@@ -6,6 +6,7 @@ import {
   MAX_AGENT_LOOP_ACTION_ATTEMPTS,
   MAX_AGENT_LOOP_APPROVALS,
   MAX_AGENT_LOOP_MODEL_STEPS,
+  MAX_AGENT_LOOP_SEMANTIC_ACTIONS,
   TERMINAL_AGENT_RUN_STATES,
   toAgentRunRef,
   type AgentRunSnapshot,
@@ -14,8 +15,9 @@ import {
 
 describe('AgentRun constants and terminal states', () => {
   it('locks exact conservative loop budgets', () => {
-    assert.equal(MAX_AGENT_LOOP_MODEL_STEPS, 8);
-    assert.equal(MAX_AGENT_LOOP_ACTION_ATTEMPTS, 6);
+    assert.equal(MAX_AGENT_LOOP_SEMANTIC_ACTIONS, 6);
+    assert.equal(MAX_AGENT_LOOP_ACTION_ATTEMPTS, 10);
+    assert.equal(MAX_AGENT_LOOP_MODEL_STEPS, 12);
     assert.equal(MAX_AGENT_LOOP_APPROVALS, 2);
   });
 

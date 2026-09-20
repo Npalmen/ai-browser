@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 
 import { ModelError } from './model-errors';
 import { MAX_INTERACTION_TYPE_TEXT_LENGTH } from '../shared/interaction-types';
-import { parseAgentModelOutput } from './interaction-output-schema';
+import { MAX_ON_SUCCESS_TEXT_LENGTH, parseAgentModelOutput } from './interaction-output-schema';
 
 function isModelOutputInvalid(error: unknown): boolean {
   return error instanceof ModelError && error.code === 'MODEL_OUTPUT_INVALID';
@@ -31,12 +31,47 @@ describe('parseAgentModelOutput', () => {
         kind: 'click',
         targetId: 'target-1',
       },
+      continuation: 'complete-on-success',
+      onSuccessText: 'WebDriverIO har öppnats.',
     });
 
     assert.equal(parsed.kind, 'interaction');
     if (parsed.kind === 'interaction') {
       assert.equal(parsed.proposal.kind, 'click');
       assert.equal(parsed.proposal.targetId, 'target-1');
+      assert.equal(parsed.continuation, 'complete-on-success');
+      assert.equal(parsed.onSuccessText, 'WebDriverIO har öppnats.');
+    }
+  });
+
+  it('defaults missing continuation to continue and never treats it as authority', () => {
+    const parsed = parseAgentModelOutput({
+      kind: 'interaction',
+      proposal: {
+        kind: 'click',
+        targetId: 'target-1',
+      },
+    });
+    assert.equal(parsed.kind, 'interaction');
+    if (parsed.kind === 'interaction') {
+      assert.equal(parsed.continuation, 'continue');
+    }
+  });
+
+  it('forces scroll proposals to continuation continue', () => {
+    const parsed = parseAgentModelOutput({
+      kind: 'interaction',
+      proposal: {
+        kind: 'scroll',
+        mode: 'viewport',
+        direction: 'down',
+        amountPx: 400,
+      },
+      continuation: 'complete-on-success',
+    });
+    assert.equal(parsed.kind, 'interaction');
+    if (parsed.kind === 'interaction') {
+      assert.equal(parsed.continuation, 'continue');
     }
   });
 
@@ -128,6 +163,19 @@ describe('parseAgentModelOutput', () => {
             targetId: 'target-1',
             text: 'x'.repeat(MAX_INTERACTION_TYPE_TEXT_LENGTH + 1),
           },
+        }),
+      isModelOutputInvalid,
+    );
+  });
+
+  it('rejects oversized onSuccessText', () => {
+    assert.throws(
+      () =>
+        parseAgentModelOutput({
+          kind: 'interaction',
+          proposal: { kind: 'click', targetId: 'target-1' },
+          continuation: 'complete-on-success',
+          onSuccessText: 'x'.repeat(MAX_ON_SUCCESS_TEXT_LENGTH + 1),
         }),
       isModelOutputInvalid,
     );

@@ -41,7 +41,11 @@ import type {
 } from '../interaction-model-runtime';
 import { getGatewayCatalogMetadata } from '../model-catalog';
 import { logModelRequestFailed } from '../model-diagnostics';
-import { ModelError } from '../model-errors';
+import {
+  annotateModelFailure,
+  ModelError,
+  type ModelFailurePhase,
+} from '../model-errors';
 import type { ModelRuntime } from '../model-runtime';
 import type {
   ModelAlias,
@@ -420,6 +424,7 @@ export class AiSdkGatewayRuntime
     const alias = request.profile.alias;
     let modelStartedAt: number | undefined;
     let timeoutSignal: AbortSignal | undefined;
+    let failurePhase: ModelFailurePhase = 'before-stream';
 
     try {
       if (!isUsableApiKey(this.readGatewayApiKey())) {
@@ -451,8 +456,10 @@ export class AiSdkGatewayRuntime
         outputSchema: 'agentModelOutput',
       });
 
+      failurePhase = 'during-partial';
       await emitAnswerTextDeltas(result.partialOutputStream, options?.onAnswerTextDelta);
 
+      failurePhase = 'awaiting-structured';
       const output = asAgentModelOutput(await result.output);
       const usage = normalizeModelUsage(await result.usage);
       const cost = normalizeGatewayCost(await result.providerMetadata);
@@ -481,10 +488,13 @@ export class AiSdkGatewayRuntime
         latencyMs,
       };
     } catch (error) {
-      const mapped = mapRuntimeError(error, {
-        callerAborted: Boolean(options?.signal?.aborted),
-        timedOut: Boolean(timeoutSignal?.aborted && !options?.signal?.aborted),
-      });
+      const mapped = annotateModelFailure(
+        mapRuntimeError(error, {
+          callerAborted: Boolean(options?.signal?.aborted),
+          timedOut: Boolean(timeoutSignal?.aborted && !options?.signal?.aborted),
+        }),
+        { failurePhase },
+      );
 
       const latencyMs =
         modelStartedAt === undefined ? undefined : elapsedMs(modelStartedAt, this.now());
@@ -689,7 +699,13 @@ export class AiSdkGatewayRuntime
     if (error.code === 'REQUEST_CANCELLED') {
       return;
     }
-    logModelRequestFailed({ alias, code: error.code });
+    logModelRequestFailed({
+      alias,
+      code: error.code,
+      category: error.category,
+      failurePhase: error.failurePhase,
+      providerStatus: error.providerStatus,
+    });
   }
 }
 
@@ -864,16 +880,21 @@ export function mapRuntimeError(
   if (context.callerAborted) {
     return new ModelError('REQUEST_CANCELLED', 'The model request was cancelled.', {
       cause: error,
+      category: 'cancelled',
     });
   }
 
   if (context.timedOut) {
-    return new ModelError('MODEL_TIMEOUT', 'The model request timed out.', { cause: error });
+    return new ModelError('MODEL_TIMEOUT', 'The model request timed out.', {
+      cause: error,
+      category: 'timeout',
+    });
   }
 
   if (LoadAPIKeyError.isInstance(error)) {
     return new ModelError('MODEL_NOT_CONFIGURED', 'AI Gateway is not configured.', {
       cause: error,
+      category: 'not-configured',
     });
   }
 
@@ -883,11 +904,15 @@ export function mapRuntimeError(
   ) {
     return new ModelError('MODEL_OUTPUT_INVALID', 'The model output was invalid.', {
       cause: error,
+      category: 'output-invalid',
     });
   }
 
   if (NoSuchModelError.isInstance(error)) {
-    return new ModelError('MODEL_UNAVAILABLE', 'The model is unavailable.', { cause: error });
+    return new ModelError('MODEL_UNAVAILABLE', 'The model is unavailable.', {
+      cause: error,
+      category: 'unavailable',
+    });
   }
 
   const statusCode = statusCodeOf(error);
@@ -896,34 +921,47 @@ export function mapRuntimeError(
     return new ModelError(
       'MODEL_AUTH_FAILED',
       'The model request was not authorized.',
-      { cause: error },
+      { cause: error, category: 'auth', providerStatus: statusCode },
     );
   }
 
   if (statusCode === 429) {
     return new ModelError('MODEL_RATE_LIMITED', 'The model is rate limited.', {
       cause: error,
+      category: 'rate-limited',
+      providerStatus: statusCode,
     });
   }
 
   if (statusCode === 408 || statusCode === 504) {
-    return new ModelError('MODEL_TIMEOUT', 'The model request timed out.', { cause: error });
+    return new ModelError('MODEL_TIMEOUT', 'The model request timed out.', {
+      cause: error,
+      category: 'timeout',
+      providerStatus: statusCode,
+    });
   }
 
   if (
     statusCode === 404 ||
     (typeof statusCode === 'number' && statusCode >= 500 && statusCode <= 599)
   ) {
-    return new ModelError('MODEL_UNAVAILABLE', 'The model is unavailable.', { cause: error });
+    return new ModelError('MODEL_UNAVAILABLE', 'The model is unavailable.', {
+      cause: error,
+      category: 'unavailable',
+      providerStatus: statusCode,
+    });
   }
 
   if (isAbortLike(error)) {
     return new ModelError('REQUEST_CANCELLED', 'The model request was cancelled.', {
       cause: error,
+      category: 'cancelled',
     });
   }
 
   return new ModelError('MODEL_REQUEST_FAILED', 'The model request failed.', {
     cause: error,
+    category: statusCode !== undefined ? 'provider-http' : 'unknown',
+    ...(statusCode !== undefined ? { providerStatus: statusCode } : {}),
   });
 }

@@ -26,9 +26,11 @@ describe('INTERACTION_SYSTEM_PROMPT precedence', () => {
       INTERACTION_SYSTEM_PROMPT,
       /truncated=true means the exported node list was shortened/,
     );
+    assert.match(INTERACTION_SYSTEM_PROMPT, /continuation: "continue"/);
+    assert.match(INTERACTION_SYSTEM_PROMPT, /complete-on-success/);
     assert.match(
       INTERACTION_SYSTEM_PROMPT,
-      /truncated=false does not guarantee every offscreen element is exported/,
+      /Viewport and into-view scroll proposals must use continuation "continue"/,
     );
   });
 

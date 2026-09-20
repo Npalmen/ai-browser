@@ -220,6 +220,7 @@ describe('InteractiveStepAgent proposal', () => {
       assert.equal(result.proposal.tabId, page.tabId);
       assert.equal(result.proposal.observationId, page.observationId);
       assert.equal(result.proposal.documentRevision, page.document.revision);
+      assert.equal(result.continuation, 'continue');
     }
     assert.equal(pages.calls.length, 1);
     assert.equal(runtime.requests.length, 1);

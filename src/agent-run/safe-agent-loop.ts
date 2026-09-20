@@ -1,4 +1,5 @@
 import type { InteractiveStepAgent, InteractiveStepRequest } from '../ai/interactive-step-agent';
+import { DEFAULT_TASK_COMPLETION_TEXT } from '../ai/interaction-output-schema';
 import { logAgentLoopModelStepFailed } from '../ai/model-diagnostics';
 import { ModelError, type ModelErrorCode } from '../ai/model-errors';
 import type { ModelAlias, ModelPrivacyRequirement, TaskClass } from '../ai/model-types';
@@ -17,6 +18,7 @@ import type { AgentRunCoordinator } from './agent-run-coordinator';
 import type { AgentRunApprovalPort } from './approval-pause-port';
 import {
   isTerminalAgentRunState,
+  MAX_AGENT_LOOP_SEMANTIC_ACTIONS,
   type AgentRunBlockedReason,
   type AgentRunMutationResult,
   type AgentRunRef,
@@ -77,8 +79,9 @@ interface PostNavigationContinuation {
   observationRetriesRemaining: number;
 }
 
-interface ViewportDiscoveryState {
+interface RunLocalBudgets {
   consecutiveViewportScrolls: number;
+  semanticActionAttempts: number;
 }
 
 function createPostNavigationContinuation(): PostNavigationContinuation {
@@ -88,14 +91,21 @@ function createPostNavigationContinuation(): PostNavigationContinuation {
   };
 }
 
-function createViewportDiscoveryState(): ViewportDiscoveryState {
+function createRunLocalBudgets(): RunLocalBudgets {
   return {
     consecutiveViewportScrolls: 0,
+    semanticActionAttempts: 0,
   };
 }
 
 function isViewportDiscoveryScroll(proposal: BoundInteractionProposal): boolean {
   return proposal.kind === 'scroll' && proposal.mode === 'viewport';
+}
+
+function shouldCompleteOnTrustedSuccess(
+  step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'proposal' }>,
+): boolean {
+  return step.continuation === 'complete-on-success' && step.proposal.kind !== 'scroll';
 }
 
 export class SafeAgentLoop {
@@ -119,7 +129,7 @@ export class SafeAgentLoop {
 
     const trustedProgress: TrustedRunProgressEntry[] = [];
     const continuation = createPostNavigationContinuation();
-    const discoveryState = createViewportDiscoveryState();
+    const budgets = createRunLocalBudgets();
     let modelIteration = 0;
 
     while (true) {
@@ -205,11 +215,12 @@ export class SafeAgentLoop {
         };
       }
 
-      if (
-        isViewportDiscoveryScroll(step.proposal) &&
-        discoveryState.consecutiveViewportScrolls >= MAX_VIEWPORT_DISCOVERY_SCROLLS
-      ) {
-        return this.blockTerminal(ref, 'AGENT_LOOP_NO_PROGRESS');
+      if (isViewportDiscoveryScroll(step.proposal)) {
+        if (budgets.consecutiveViewportScrolls >= MAX_VIEWPORT_DISCOVERY_SCROLLS) {
+          return this.blockTerminal(ref, 'AGENT_LOOP_NO_PROGRESS');
+        }
+      } else if (budgets.semanticActionAttempts >= MAX_AGENT_LOOP_SEMANTIC_ACTIONS) {
+        return this.blockTerminal(ref, 'STEP_LIMIT_REACHED');
       }
 
       const fingerprint = fingerprintBoundProposal(step.proposal, step.observation);
@@ -236,6 +247,10 @@ export class SafeAgentLoop {
         return actionBudgetStop;
       }
 
+      if (!isViewportDiscoveryScroll(step.proposal)) {
+        budgets.semanticActionAttempts += 1;
+      }
+
       const result = await this.interactionExecutor.execute({
         proposal: step.proposal,
         observation: step.observation,
@@ -253,7 +268,7 @@ export class SafeAgentLoop {
         trustedProgress,
         options,
         continuation,
-        discoveryState,
+        budgets,
       );
       if (actionOutcome !== undefined) {
         return actionOutcome;
@@ -324,6 +339,9 @@ export class SafeAgentLoop {
         postNavigation: context?.postNavigation ?? false,
         alias: error.alias,
         fallbackAttempts: error.fallbackAttempts,
+        category: error.category,
+        failurePhase: error.failurePhase,
+        providerStatus: error.providerStatus,
       });
       return this.failTerminal(ref, 'MODEL_FAILED', error.code);
     }
@@ -349,7 +367,7 @@ export class SafeAgentLoop {
     trustedProgress: TrustedRunProgressEntry[],
     options: SafeAgentLoopOptions,
     continuation: PostNavigationContinuation,
-    discoveryState: ViewportDiscoveryState,
+    budgets: RunLocalBudgets,
   ): Promise<SafeAgentLoopResult | undefined> {
     if (result.status === 'succeeded') {
       return this.handleSucceededAction(
@@ -358,7 +376,7 @@ export class SafeAgentLoop {
         result,
         trustedProgress,
         continuation,
-        discoveryState,
+        budgets,
       );
     }
     if (result.status === 'denied') {
@@ -376,7 +394,7 @@ export class SafeAgentLoop {
     result: InteractionResult,
     trustedProgress: TrustedRunProgressEntry[],
     continuation: PostNavigationContinuation,
-    discoveryState: ViewportDiscoveryState,
+    budgets: RunLocalBudgets,
   ): SafeAgentLoopResult | undefined {
     const postObservation = result.observation;
     const live = this.coordinator.getRun(ref.runId);
@@ -433,16 +451,16 @@ export class SafeAgentLoop {
         pageChanged: true,
         sameDocument: causalPopup !== true && !revisionChanged,
       });
-      discoveryState.consecutiveViewportScrolls = 0;
+      budgets.consecutiveViewportScrolls = 0;
     } else if (isViewportDiscoveryScroll(step.proposal)) {
-      discoveryState.consecutiveViewportScrolls += 1;
+      budgets.consecutiveViewportScrolls += 1;
       trustedProgress.push({
         kind: 'safe-interaction-succeeded',
         actionKind: step.proposal.kind,
         pageChanged: revisionChanged,
       });
     } else {
-      discoveryState.consecutiveViewportScrolls = 0;
+      budgets.consecutiveViewportScrolls = 0;
       trustedProgress.push({
         kind: 'safe-interaction-succeeded',
         actionKind: step.proposal.kind,
@@ -457,6 +475,10 @@ export class SafeAgentLoop {
     } else {
       continuation.observationRetriesRemaining = 0;
       continuation.trustedObservation = undefined;
+    }
+
+    if (shouldCompleteOnTrustedSuccess(step)) {
+      return this.completeAfterTrustedSuccess(ref, step, postObservation);
     }
 
     return undefined;
@@ -603,6 +625,10 @@ export class SafeAgentLoop {
         trustedProgress.push({
           kind: 'approved-execution-succeeded',
         });
+        if (shouldCompleteOnTrustedSuccess(step)) {
+          const observation = step.observation;
+          return this.completeAfterTrustedSuccess(ref, step, observation);
+        }
         return undefined;
       }
       if (isTerminalAgentRunState(waited.snapshot.state)) {
@@ -662,6 +688,31 @@ export class SafeAgentLoop {
       return this.blockTerminal(ref, 'POLICY_BLOCKED');
     }
     return this.failTerminal(ref, 'ACTION_FAILED');
+  }
+
+  private completeAfterTrustedSuccess(
+    ref: AgentRunRef,
+    step: Extract<Awaited<ReturnType<InteractiveStepAgent['step']>>, { kind: 'proposal' }>,
+    observation: PageObservation,
+  ): SafeAgentLoopResult {
+    const completed = this.coordinator.markCompleted(ref);
+    if (completed.status === 'ignored') {
+      return { status: 'ignored' };
+    }
+    if (completed.snapshot.state !== 'completed') {
+      return { status: 'terminal', run: completed.snapshot };
+    }
+    return {
+      status: 'completed',
+      run: completed.snapshot,
+      answer: {
+        text: step.onSuccessText ?? DEFAULT_TASK_COMPLETION_TEXT,
+        referencedTargets: [],
+        alias: step.alias,
+        truncatedContext: step.truncatedContext,
+        documentRevision: observation.document.revision,
+      },
+    };
   }
 
   private blockTerminal(ref: AgentRunRef, reason: AgentRunBlockedReason): SafeAgentLoopResult {

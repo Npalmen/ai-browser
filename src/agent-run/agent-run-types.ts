@@ -1,8 +1,21 @@
 import type { ModelErrorCode } from '../ai/model-errors';
 import type { TabId } from '../shared/browser-types';
 
-export const MAX_AGENT_LOOP_MODEL_STEPS = 8;
-export const MAX_AGENT_LOOP_ACTION_ATTEMPTS = 6;
+/**
+ * AgentRun execution ceilings.
+ *
+ * Supported small-viewport multi-step shape:
+ *   1 source navigation + 4 discovery scrolls + 1 popup click + 1 destination click = 7
+ *
+ * Categories:
+ * - semantic actions (click / type / select / into-view): MAX_AGENT_LOOP_SEMANTIC_ACTIONS
+ * - consecutive viewport discovery scrolls: MAX_VIEWPORT_DISCOVERY_SCROLLS (4)
+ * - absolute dispatched browser actions, including scrolls: MAX_AGENT_LOOP_ACTION_ATTEMPTS
+ * - model steps sit above the absolute action ceiling so an explicit answer remains possible
+ */
+export const MAX_AGENT_LOOP_SEMANTIC_ACTIONS = 6;
+export const MAX_AGENT_LOOP_ACTION_ATTEMPTS = 10;
+export const MAX_AGENT_LOOP_MODEL_STEPS = 12;
 export const MAX_AGENT_LOOP_APPROVALS = 2;
 
 export type AgentRunId = string;
