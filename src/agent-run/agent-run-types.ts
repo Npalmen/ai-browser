@@ -113,6 +113,11 @@ export function toAgentRunRef(snapshot: AgentRunSnapshot): AgentRunRef {
   });
 }
 
+/** Trusted tab that owns conversation storage and completion UI for a run snapshot. */
+export function conversationTabIdForSnapshot(snapshot: AgentRunSnapshot): TabId {
+  return snapshot.executionTabId ?? snapshot.tabId;
+}
+
 export function isAgentRunApplied(
   result: AgentRunMutationResult,
 ): result is Extract<AgentRunMutationResult, { status: 'applied' }> {

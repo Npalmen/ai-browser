@@ -36,7 +36,7 @@ class FakeLoop {
   constructor(impl?: FakeLoop['impl']) {
     this.impl =
       impl ??
-      (async (_ref, options) => {
+      (async (ref, options) => {
         this.lastOptions = options;
         options.signal?.addEventListener('abort', () => {
           this.aborted = true;
@@ -44,9 +44,9 @@ class FakeLoop {
         return {
           status: 'completed',
           run: {
-            runId: 'run-unused',
-            tabId: TAB,
-            generation: 1,
+            runId: ref.runId,
+            tabId: ref.tabId,
+            generation: ref.generation,
             instruction: 'x',
             startedAt: 1,
             state: 'completed',
@@ -907,6 +907,209 @@ describe('AgentRunController', () => {
     }
     assert.equal(harness.controller.isActive(TAB), false);
     assert.equal(harness.controller.isActive(TAB_B), false);
+  });
+
+  it('commits a same-tab completion to the origin tab', async () => {
+    const harness = controllerOf(new FakeLoop());
+    const started = await harness.controller.start(TAB, 'Same tab act', { askId: 'ask-1' });
+    if (started.status === 'started') {
+      await started.completion;
+    }
+    const stored = harness.conversationStore.get(TAB);
+    assert.equal(stored?.turns.length, 1);
+    assert.equal(stored?.turns[0]?.question, 'Same tab act');
+    assert.equal(harness.conversationStore.get(TAB_B), undefined);
+    const completed = harness.events.find((event) => event.type === 'agent-run-completed');
+    assert.ok(completed);
+    if (completed?.type === 'agent-run-completed') {
+      assert.equal(completed.tabId, TAB);
+    }
+  });
+
+  it('commits a causal popup completion only to the execution tab', async () => {
+    const box: { coordinator?: AgentRunCoordinator } = {};
+    const loop = new FakeLoop(async (ref, options) => {
+      const coordinator = box.coordinator;
+      assert.ok(coordinator);
+      const adopted = coordinator.adoptCausalPopup(ref, TAB_B);
+      assert.equal(adopted.status, 'applied');
+      const snapshot = coordinator.getRun(ref.runId);
+      assert.ok(snapshot);
+      options.onContinuing?.(snapshot);
+      return {
+        status: 'completed',
+        run: {
+          ...snapshot,
+          state: 'completed',
+          terminalReason: 'COMPLETED',
+        },
+        answer: {
+          text: 'Clicked WebdriverIO.',
+          referencedTargets: [],
+          alias: 'page-standard',
+          truncatedContext: false,
+          documentRevision: 'rev-webdriverio',
+        },
+      };
+    });
+    const harness = controllerOf(loop);
+    box.coordinator = harness.coordinator;
+    const started = await harness.controller.start(TAB, 'klicka på WebDriverIO', { askId: 'ask-1' });
+    assert.equal(started.status, 'started');
+    if (started.status === 'started') {
+      await started.completion;
+    }
+    assert.equal(harness.conversationStore.get(TAB), undefined);
+    const stored = harness.conversationStore.get(TAB_B);
+    assert.equal(stored?.turns.length, 1);
+    assert.equal(stored?.turns[0]?.question, 'klicka på WebDriverIO');
+    assert.equal(stored?.turns[0]?.answer, 'Clicked WebdriverIO.');
+    assert.equal(stored?.documentRevision, 'rev-webdriverio');
+    const completed = harness.events.filter((event) => event.type === 'agent-run-completed');
+    assert.equal(completed.length, 1);
+    if (completed[0]?.type === 'agent-run-completed') {
+      assert.equal(completed[0].tabId, TAB_B);
+    }
+    assert.equal(harness.controller.isActive(TAB), false);
+    assert.equal(harness.controller.isActive(TAB_B), false);
+  });
+
+  it('commits a multi-step popup destination completion to the final execution tab and revision', async () => {
+    const box: { coordinator?: AgentRunCoordinator } = {};
+    const loop = new FakeLoop(async (ref, options) => {
+      const coordinator = box.coordinator;
+      assert.ok(coordinator);
+      const adopted = coordinator.adoptCausalPopup(ref, TAB_B);
+      assert.equal(adopted.status, 'applied');
+      const snapshot = coordinator.getRun(ref.runId);
+      assert.ok(snapshot);
+      options.onContinuing?.(snapshot);
+      return {
+        status: 'completed',
+        run: {
+          ...snapshot,
+          state: 'completed',
+          terminalReason: 'COMPLETED',
+        },
+        answer: {
+          text: 'Opened Getting Started.',
+          referencedTargets: [],
+          alias: 'page-standard',
+          truncatedContext: false,
+          documentRevision: 'rev-getting-started',
+        },
+      };
+    });
+    const harness = controllerOf(loop);
+    box.coordinator = harness.coordinator;
+    const started = await harness.controller.start(
+      TAB,
+      'Open result, click WebDriverIO, then Get Started',
+      { askId: 'ask-chain' },
+    );
+    if (started.status === 'started') {
+      await started.completion;
+    }
+    assert.equal(harness.conversationStore.get(TAB), undefined);
+    const stored = harness.conversationStore.get(TAB_B);
+    assert.equal(stored?.documentRevision, 'rev-getting-started');
+    assert.equal(stored?.turns[0]?.answer, 'Opened Getting Started.');
+    const completed = harness.events.find((event) => event.type === 'agent-run-completed');
+    if (completed?.type === 'agent-run-completed') {
+      assert.equal(completed.tabId, TAB_B);
+    }
+  });
+
+  it('keeps pre-existing source history when popup completion is stored on the destination', async () => {
+    const box: { coordinator?: AgentRunCoordinator } = {};
+    const loop = new FakeLoop(async (ref, options) => {
+      const coordinator = box.coordinator;
+      assert.ok(coordinator);
+      const adopted = coordinator.adoptCausalPopup(ref, TAB_B);
+      assert.equal(adopted.status, 'applied');
+      const snapshot = coordinator.getRun(ref.runId);
+      assert.ok(snapshot);
+      options.onContinuing?.(snapshot);
+      return {
+        status: 'completed',
+        run: { ...snapshot, state: 'completed', terminalReason: 'COMPLETED' },
+        answer: {
+          text: 'Done on destination.',
+          referencedTargets: [],
+          alias: 'page-standard',
+          truncatedContext: false,
+          documentRevision: 'rev-dest',
+        },
+      };
+    });
+    const harness = controllerOf(loop);
+    box.coordinator = harness.coordinator;
+    harness.conversationStore.commitTurn(TAB, 'rev-source-old', {
+      question: 'older source question',
+      answer: 'older source answer',
+    });
+    const started = await harness.controller.start(TAB, 'popup act', { askId: 'ask-popup' });
+    if (started.status === 'started') {
+      await started.completion;
+    }
+    const source = harness.conversationStore.get(TAB);
+    assert.equal(source?.turns.length, 1);
+    assert.equal(source?.turns[0]?.question, 'older source question');
+    assert.equal(source?.documentRevision, 'rev-source-old');
+    const dest = harness.conversationStore.get(TAB_B);
+    assert.equal(dest?.turns.length, 1);
+    assert.equal(dest?.turns[0]?.question, 'popup act');
+  });
+
+  it('lets a follow-up Act on the destination tab read popup completion history', async () => {
+    const box: { coordinator?: AgentRunCoordinator } = {};
+    const popupHold = new Deferred<SafeAgentLoopResult>();
+    const followHold = new Deferred<SafeAgentLoopResult>();
+    let runs = 0;
+    const loop = new FakeLoop(async (ref, options) => {
+      runs += 1;
+      if (runs === 1) {
+        const coordinator = box.coordinator;
+        assert.ok(coordinator);
+        const adopted = coordinator.adoptCausalPopup(ref, TAB_B);
+        assert.equal(adopted.status, 'applied');
+        const snapshot = coordinator.getRun(ref.runId);
+        assert.ok(snapshot);
+        options.onContinuing?.(snapshot);
+        return popupHold.promise;
+      }
+      return followHold.promise;
+    });
+    const harness = controllerOf(loop);
+    box.coordinator = harness.coordinator;
+    const first = await harness.controller.start(TAB, 'Open WebDriverIO', { askId: 'ask-popup' });
+    assert.equal(first.status, 'started');
+    const snapshot = first.status === 'started' ? harness.coordinator.getRun(first.run.runId) : undefined;
+    assert.ok(snapshot);
+    popupHold.resolve({
+      status: 'completed',
+      run: { ...snapshot, state: 'completed', terminalReason: 'COMPLETED' },
+      answer: {
+        text: 'Opened WebDriverIO.',
+        referencedTargets: [],
+        alias: 'page-standard',
+        truncatedContext: false,
+        documentRevision: 'rev-webdriverio',
+      },
+    });
+    if (first.status === 'started') {
+      await first.completion;
+    }
+    const second = await harness.controller.start(TAB_B, 'Click Get Started', { askId: 'ask-follow' });
+    assert.equal(second.status, 'started');
+    assert.match(
+      harness.loop.lastOptions?.priorConversationForRevision?.(TAB_B, 'rev-webdriverio') ?? '',
+      /Open WebDriverIO/,
+    );
+    followHold.resolve({ status: 'ignored' });
+    if (second.status === 'started') {
+      await second.completion;
+    }
   });
 
   it('does not alias origin product onto a destination owned by a newer Act', async () => {

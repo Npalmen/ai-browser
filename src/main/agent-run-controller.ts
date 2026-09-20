@@ -1,7 +1,12 @@
 import { ConversationStore } from '../ai/conversation-store';
 import { aiSafeError } from './ai-safe-error';
 import type { SafeAgentLoopResult } from '../agent-run/safe-agent-loop';
-import type { AgentRunCancelledReason, AgentRunRef, AgentRunSnapshot } from '../agent-run/agent-run-types';
+import {
+  conversationTabIdForSnapshot,
+  type AgentRunCancelledReason,
+  type AgentRunRef,
+  type AgentRunSnapshot,
+} from '../agent-run/agent-run-types';
 import type { AiAnswerEvent } from '../shared/ai-types';
 import type { TabId } from '../shared/browser-types';
 import type { AgentRunExecutorPort } from './agent-run-executor';
@@ -253,15 +258,16 @@ export class AgentRunController {
 
     const snapshot = result.run;
     if (result.status === 'completed' && snapshot.state === 'completed') {
-      this.conversationStore.commitTurn(product.ref.tabId, result.answer.documentRevision, {
+      const conversationTabId = conversationTabIdForSnapshot(snapshot);
+      this.conversationStore.commitTurn(conversationTabId, result.answer.documentRevision, {
         question: product.instruction,
         answer: result.answer.text,
       });
-      this.emitIfSameAsk(product, {
+      this.emitIfCurrentRun(conversationTabId, product.askId, snapshot.runId, {
         type: 'agent-run-completed',
         askId: product.askId,
         runId: snapshot.runId,
-        tabId: snapshot.tabId,
+        tabId: conversationTabId,
         answer: {
           text: result.answer.text,
           truncatedContext: result.answer.truncatedContext,

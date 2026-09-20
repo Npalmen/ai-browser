@@ -626,6 +626,43 @@ describe('V5 AgentRun UI events', () => {
     assert.equal(tab(state).activeAskId, null);
   });
 
+  it('shows popup completion on the destination tab without attributing it to the origin tab', () => {
+    const createId = ids();
+    const dest = 'tab-popup';
+    let state: AiUiState = {};
+    state = appendUserQuestion(state, TAB, 'klicka på WebDriverIO', SUB_A, createId);
+    state = applyAiAnswerEvent(state, runStarted(), createId);
+    state = applyAiAnswerEvent(
+      state,
+      {
+        type: 'agent-run-progress',
+        askId: ASK_A,
+        runId: RUN_A,
+        tabId: dest,
+        modelStepCount: 1,
+        actionAttemptCount: 1,
+        approvalCount: 0,
+      },
+      createId,
+    );
+    state = applyAiAnswerEvent(
+      state,
+      {
+        type: 'agent-run-completed',
+        askId: ASK_A,
+        runId: RUN_A,
+        tabId: dest,
+        answer: { text: 'Clicked WebdriverIO.', truncatedContext: false },
+      },
+      createId,
+    );
+    assert.equal(assistants(state, dest).at(-1)?.status, 'complete');
+    assert.equal(assistants(state, dest).at(-1)?.text, 'Clicked WebdriverIO.');
+    assert.equal(assistants(state, TAB).at(-1)?.status, 'working');
+    assert.equal(tab(state, dest).entries.some((entry) => entry.role === 'user'), true);
+    assert.equal(tab(state, TAB).entries.some((entry) => entry.role === 'user'), true);
+  });
+
   it('keeps the same logical AgentRun visible after a causal popup tab switch', () => {
     const createId = ids();
     const dest = 'tab-popup';
