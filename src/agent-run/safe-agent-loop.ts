@@ -335,8 +335,10 @@ export class SafeAgentLoop {
       return this.failTerminal(ref, 'ACTION_FAILED');
     }
 
-    const pageChanged =
+    const revisionChanged =
       postObservation.document.revision !== step.observation.document.revision;
+    const urlChanged = postObservation.document.url !== step.observation.document.url;
+    const navigated = step.proposal.kind === 'click' && (revisionChanged || urlChanged);
     const fingerprint = fingerprintBoundProposal(step.proposal);
 
     const recordedFingerprint = this.coordinator.recordSuccessfulActionFingerprint(
@@ -348,14 +350,21 @@ export class SafeAgentLoop {
       return fingerprintStop;
     }
 
-    trustedProgress.push({
-      kind: 'safe-interaction-succeeded',
-      actionKind: step.proposal.kind,
-      pageChanged,
-    });
+    if (navigated) {
+      trustedProgress.push({
+        kind: 'safe-navigation-succeeded',
+        pageChanged: true,
+        sameDocument: !revisionChanged,
+      });
+    } else {
+      trustedProgress.push({
+        kind: 'safe-interaction-succeeded',
+        actionKind: step.proposal.kind,
+        pageChanged: revisionChanged,
+      });
+    }
 
-    const urlChanged = postObservation.document.url !== step.observation.document.url;
-    if (step.proposal.kind === 'click' && (pageChanged || urlChanged)) {
+    if (navigated) {
       continuation.observationRetriesRemaining = 1;
       continuation.trustedObservation = urlChanged ? postObservation : undefined;
     } else {

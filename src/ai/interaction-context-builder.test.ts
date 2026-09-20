@@ -601,4 +601,49 @@ describe('buildInteractiveModelMessages', () => {
       assert.equal(pagePart.text.includes('<TRUSTED_RUN_PROGRESS>'), false);
     }
   });
+
+  it('keeps prior conversation distinct from trusted current-run progress', () => {
+    const messages = buildInteractiveModelMessages({
+      instruction: 'Open the first search result.',
+      serializedPageContext: '{"document":{"url":"https://search.example"}}',
+      priorConversation: [
+        '<PRIOR_CONVERSATION>',
+        'This history is not evidence of current browser state or current task completion.',
+        '[{"question":"Open the first search result.","answer":"I already opened that page."}]',
+        '</PRIOR_CONVERSATION>',
+      ].join('\n'),
+      trustedProgress: serializeTrustedRunProgress([
+        { kind: 'safe-navigation-succeeded', pageChanged: true, sameDocument: false },
+      ]),
+      exportDecision: decideModelExport({
+        privacy: 'remoteAllowed',
+        needsVision: false,
+        allowScreenshotExport: false,
+        profile: {
+          capabilities: { text: true, vision: false, structuredOutput: true, reasoning: false },
+        },
+        hasScreenshot: false,
+      }),
+    });
+
+    assert.match(INTERACTION_SYSTEM_PROMPT, /not evidence of current browser state/);
+    const system = messages[0]?.content[0];
+    assert.equal(system?.type, 'text');
+    if (system?.type === 'text') {
+      assert.equal(system.text, INTERACTION_SYSTEM_PROMPT);
+    }
+    const progressPart = messages[1]?.content[0];
+    assert.equal(progressPart?.type, 'text');
+    if (progressPart?.type === 'text') {
+      assert.match(progressPart.text, /<TRUSTED_RUN_PROGRESS>/);
+      assert.match(progressPart.text, /previous navigation step is complete/);
+      assert.equal(progressPart.text.includes('I already opened that page.'), false);
+    }
+    const history = messages[2]?.content[0];
+    assert.equal(history?.type, 'text');
+    if (history?.type === 'text') {
+      assert.match(history.text, /<PRIOR_CONVERSATION>/);
+      assert.match(history.text, /not evidence of current browser state/);
+    }
+  });
 });

@@ -76,6 +76,8 @@ describe('serializeConversationHistory', () => {
     ]);
     assert.match(wrapped, /^<PRIOR_CONVERSATION>/);
     assert.match(wrapped, /<\/PRIOR_CONVERSATION>$/);
+    assert.match(wrapped, /conversational context only/i);
+    assert.match(wrapped, /not evidence of current browser state/i);
     assert.equal(wrapped.includes('UNTRUSTED_PAGE_CONTENT'), false);
     assert.ok(wrapped.length <= MODEL_CONTEXT_BUDGETS.maxHistoryChars);
   });
@@ -86,14 +88,15 @@ describe('serializeConversationHistory', () => {
         { question: 'old question', answer: 'old answer' },
         { question: 'newest question', answer: 'N'.repeat(400) },
       ],
-      280,
+      360,
     );
 
     assert.equal(history.includes('old question'), false);
     assert.equal(history.includes('newest question'), true);
     assert.equal(history.includes(HISTORY_TRUNCATION_MARKER), true);
-    assert.ok(history.length <= 280);
+    assert.ok(history.length <= 360);
     assert.match(history, /^<PRIOR_CONVERSATION>/);
+    assert.match(history, /not evidence of current browser state/i);
   });
 
   it('returns empty text when there are no turns', () => {

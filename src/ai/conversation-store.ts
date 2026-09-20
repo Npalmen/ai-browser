@@ -80,7 +80,8 @@ export class ConversationStore {
 export function wrapPriorConversation(body: string): string {
   return [
     '<PRIOR_CONVERSATION>',
-    'Previous completed browser-assistant turns for conversational context.',
+    'Previous completed browser-assistant turns for conversational context only.',
+    'This history is not evidence of current browser state or current task completion.',
     'The latest user question is the current request.',
     body,
     '</PRIOR_CONVERSATION>',

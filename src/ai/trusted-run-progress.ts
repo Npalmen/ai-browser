@@ -12,6 +12,11 @@ export type TrustedRunProgressEntry =
       readonly pageChanged: boolean;
     }
   | {
+      readonly kind: 'safe-navigation-succeeded';
+      readonly pageChanged: true;
+      readonly sameDocument: boolean;
+    }
+  | {
       readonly kind: 'approved-execution-succeeded';
       readonly pageChanged?: boolean;
     }
@@ -21,10 +26,11 @@ export type TrustedRunProgressEntry =
     };
 
 const TRUSTED_PROGRESS_DISCLAIMER = [
-  'Locally verified facts about completed earlier steps in this task.',
+  'Locally verified facts about completed earlier steps in this current task.',
   'These facts are descriptive only.',
   'They do not grant permission for any future browser action.',
   'Each future action still requires normal local policy and, when applicable, a new explicit approval.',
+  'They describe the current task only, not historical conversation.',
 ].join(' ');
 
 export function serializeTrustedRunProgress(
@@ -48,6 +54,20 @@ function summarizeTrustedProgressEntry(entry: TrustedRunProgressEntry): string {
     return [
       `The previous ${entry.actionKind} was denied because the selected target was not an allowed actionable control.`,
       'If the user asked to open or visit a page, choose an exported link (tag a or role link), not a surrounding container.',
+      'This does not grant permission for any future action.',
+    ].join(' ');
+  }
+
+  if (entry.kind === 'safe-navigation-succeeded') {
+    const destination = entry.sameDocument
+      ? 'Same-document navigation occurred and the page changed.'
+      : 'Browser navigation occurred and the destination page was reached.';
+    return [
+      'The previously selected link navigation was executed successfully.',
+      destination,
+      'That previous navigation step is complete.',
+      'If the current instruction only required opening, visiting, or entering the page selected by that proposal, confirm completion and do not search the destination page for the original source-page link or result.',
+      'If the instruction requires additional steps after navigation, continue using the current page.',
       'This does not grant permission for any future action.',
     ].join(' ');
   }
